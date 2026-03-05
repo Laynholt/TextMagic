@@ -1,0 +1,10 @@
+name=Uppercase
+description=Преобразует текст в верхний регистр
+hotkey=Ctrl+Alt+U
+enabled=true
+---
+[Console]::InputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+$inputText = [Console]::In.ReadToEnd()
+[Console]::Out.Write($inputText.ToUpperInvariant())

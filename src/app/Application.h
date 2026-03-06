@@ -10,6 +10,7 @@
 #include "ScriptManifest.h"
 #include "ScriptRunner.h"
 #include "TextBridge.h"
+#include "UiRenderer.h"
 #include "UpdateService.h"
 
 #include <map>
@@ -58,7 +59,6 @@ private:
     void CreateMoreMenu();
     void ApplyLocalization();
     void SetLanguage(const std::wstring& languageCode);
-    void UpdateLanguageMenuChecks();
     void UpdateScriptInputModeMenuChecks();
     void SetScriptInputMode(bool fallbackToAllText);
     void OnResize(int width, int height);
@@ -66,6 +66,24 @@ private:
     void OnCommand(UINT controlId, UINT notifyCode);
     void OnMenuCommand(UINT menuId);
     void ShowMoreMenu();
+    bool RegisterMorePopupWindowClass();
+    static LRESULT CALLBACK MorePopupWindowProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+    LRESULT HandleMorePopupMessage(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+    void CloseMorePopupWindows();
+    void CloseMoreSubPopupWindow();
+    void EnsureMoreSubPopup(UINT headerItemId);
+    void StartMoreMenuTracking();
+    void StopMoreMenuTracking();
+    void UpdateMorePopupTracking();
+    bool HandleMorePopupMouseDown(POINT screenPoint);
+    static LRESULT CALLBACK MorePopupMouseHookProc(int code, WPARAM wParam, LPARAM lParam);
+    std::vector<UiRenderer::PopupMenuItem> BuildMainMorePopupItems() const;
+    std::vector<UiRenderer::PopupMenuItem> BuildSubMorePopupItems(UINT headerItemId) const;
+    SIZE MeasureMorePopupWindow(const std::vector<UiRenderer::PopupMenuItem>& items) const;
+    int HitTestMorePopupItem(HWND popupWindow, const std::vector<UiRenderer::PopupMenuItem>& items, POINT screenPoint) const;
+    RECT GetMorePopupItemRect(HWND popupWindow, const std::vector<UiRenderer::PopupMenuItem>& items, size_t index) const;
+    bool IsPointInWindow(HWND windowHandle, POINT screenPoint) const;
+    bool IsPointInMoreButton(POINT screenPoint) const;
     bool InitializeTrayIcon();
     void RemoveTrayIcon();
     void ShowTrayContextMenu(POINT screenPoint);
@@ -133,9 +151,8 @@ private:
 
     HWND m_hAboutWindow = nullptr;
     HWND m_hLogsWindow = nullptr;
-    HMENU m_hMoreMenu = nullptr;
-    HMENU m_hLanguageMenu = nullptr;
-    HMENU m_hInputModeMenu = nullptr;
+    HWND m_hMorePopupWindow = nullptr;
+    HWND m_hMoreSubPopupWindow = nullptr;
 
     HFONT m_hTitleFont = nullptr;
     HFONT m_hFont = nullptr;
@@ -155,11 +172,16 @@ private:
     bool m_comInitialized = false;
     bool m_infoWindowClassRegistered = false;
     bool m_messageWindowClassRegistered = false;
+    bool m_morePopupWindowClassRegistered = false;
     bool m_isExiting = false;
     bool m_scriptExecutionInProgress = false;
     bool m_updateInProgress = false;
     bool m_archiveTaskInProgress = false;
     bool m_scriptInputFallbackToAllText = false;
+    UINT m_activeMoreSubMenuHeaderId = 0;
+    UINT m_hoveredMorePopupItemId = 0;
+    UINT m_hoveredMoreSubPopupItemId = 0;
+    HHOOK m_morePopupMouseHook = nullptr;
 
     NOTIFYICONDATAW m_trayIconData = {};
 
@@ -168,11 +190,15 @@ private:
     std::vector<RegisteredScript> m_scripts;
     std::map<int, size_t> m_scriptIndexByHotkeyId;
     std::vector<std::wstring> m_executionLogs;
+    std::vector<UiRenderer::PopupMenuItem> m_morePopupItems;
+    std::vector<UiRenderer::PopupMenuItem> m_moreSubPopupItems;
 
     std::unique_ptr<ToolTip> m_toolTip;
     std::unique_ptr<UpdateService> m_updateService;
     TextBridge m_textBridge;
     ScriptRunner m_scriptRunner;
+
+    static Application* s_morePopupMouseHookOwner;
 
     static constexpr int MIN_WINDOW_WIDTH = 760;
     static constexpr int MIN_WINDOW_HEIGHT = 520;

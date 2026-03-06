@@ -30,6 +30,7 @@ namespace {
 const wchar_t* WINDOW_CLASS_NAME = TM_APP_NAME_W L"WinApiClass";
 const wchar_t* INFO_WINDOW_CLASS_NAME = TM_APP_NAME_W L"InfoWindowClass";
 const wchar_t* MESSAGE_WINDOW_CLASS_NAME = TM_APP_NAME_W L"MessageWindowClass";
+const wchar_t* MORE_POPUP_WINDOW_CLASS_NAME = TM_APP_NAME_W L"MorePopupWindowClass";
 const wchar_t* SINGLE_INSTANCE_MUTEX_NAME = L"Local\\" TM_APP_NAME_W L".SingleInstance";
 
 enum ControlId {
@@ -117,6 +118,7 @@ constexpr UINT WM_UPDATE_CHECK_COMPLETE = WM_APP + 3;
 constexpr UINT WM_UPDATE_INSTALL_COMPLETE = WM_APP + 4;
 constexpr UINT WM_IMPORT_ZIP_COMPLETE = WM_APP + 5;
 constexpr UINT WM_EXPORT_ZIP_COMPLETE = WM_APP + 6;
+constexpr UINT MORE_POPUP_TRACK_TIMER_ID = 0x4D31;
 constexpr UINT TRAY_ICON_ID = 1;
 constexpr int LOGS_MIN_WIDTH = 640;
 constexpr int LOGS_MIN_HEIGHT = 420;
@@ -128,6 +130,13 @@ constexpr const wchar_t* LANGUAGE_SETTINGS_KEY = L"language";
 constexpr const wchar_t* SCRIPT_INPUT_SETTINGS_KEY = L"script_input_mode";
 constexpr const wchar_t* SCRIPT_INPUT_MODE_PREVIOUS_WORD = L"previous_word";
 constexpr const wchar_t* SCRIPT_INPUT_MODE_ALL_TEXT = L"all_text";
+constexpr int MORE_POPUP_ITEM_HEIGHT = 34;
+constexpr int MORE_POPUP_SEPARATOR_HEIGHT = 10;
+constexpr int MORE_POPUP_MIN_WIDTH = 170;
+constexpr int MORE_POPUP_ARROW_EXTRA_WIDTH = 48;
+constexpr int MORE_POPUP_ITEM_EXTRA_WIDTH = 34;
+constexpr int MORE_POPUP_WIDTH_PADDING = 14;
+constexpr int MORE_POPUP_TRACK_INTERVAL_MS = 25;
 
 struct ScriptExecutionTaskResult {
     std::wstring scriptName;
@@ -704,25 +713,7 @@ std::wstring BuildDialogFilter(std::initializer_list<DialogFilterEntry> entries)
     return filter;
 }
 
-bool AppendStyledPopupSubMenu(HMENU parentMenu, HMENU childMenu, UINT styleId, const wchar_t* text) {
-    if (!parentMenu || !childMenu) {
-        return false;
-    }
-    if (!AppendMenuW(parentMenu, MF_OWNERDRAW | MF_POPUP, reinterpret_cast<UINT_PTR>(childMenu), text)) {
-        return false;
-    }
-
-    const int itemCount = GetMenuItemCount(parentMenu);
-    if (itemCount <= 0) {
-        return false;
-    }
-
-    MENUITEMINFOW itemInfo = {};
-    itemInfo.cbSize = sizeof(itemInfo);
-    itemInfo.fMask = MIIM_DATA;
-    itemInfo.dwItemData = static_cast<ULONG_PTR>(styleId);
-    return SetMenuItemInfoW(parentMenu, static_cast<UINT>(itemCount - 1), TRUE, &itemInfo) != FALSE;
-}
+UINT ResolveStyledMenuItemId(UINT itemId, ULONG_PTR itemData);
 
 std::wstring GetLanguageSettingsPath(const std::wstring& executableDirectory) {
     return executableDirectory + L"\\" + LANGUAGE_SETTINGS_FILE_NAME;
@@ -1124,15 +1115,11 @@ void DrawStyledMenuItem(const DRAWITEMSTRUCT* dis) {
         textRect.left += checked ? 28 : 14;
         textRect.right -= IsSubmenuHeaderMenuItem(itemId) ? 28 : 10;
         SetBkMode(dis->hDC, TRANSPARENT);
-        SetTextColor(dis->hDC, disabled ? RGB(120, 120, 120) : RGB(235, 235, 235));
+        const COLORREF textColor = disabled ? RGB(120, 120, 120) : RGB(235, 235, 235);
+        SetTextColor(dis->hDC, textColor);
 
         if (checked) {
-            SetTextColor(dis->hDC, disabled ? RGB(120, 120, 120) : RGB(190, 220, 255));
-            RECT checkRect = dis->rcItem;
-            checkRect.left += 10;
-            checkRect.right = checkRect.left + 12;
-            DrawTextW(dis->hDC, L"•", -1, &checkRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-            SetTextColor(dis->hDC, disabled ? RGB(120, 120, 120) : RGB(235, 235, 235));
+            UiRenderer::DrawMenuCheckMark(dis->hDC, dis->rcItem, textColor);
         }
 
         HFONT menuFont = GetMenuFontForItem(itemId);
@@ -1142,15 +1129,7 @@ void DrawStyledMenuItem(const DRAWITEMSTRUCT* dis) {
             const COLORREF arrowColor = disabled
                 ? RGB(95, 95, 95)
                 : (selected ? RGB(175, 175, 175) : RGB(128, 128, 128));
-            HPEN arrowPen = CreatePen(PS_SOLID, 2, arrowColor);
-            HPEN oldArrowPen = static_cast<HPEN>(SelectObject(dis->hDC, arrowPen));
-            const int cx = dis->rcItem.right - 18;
-            const int cy = (dis->rcItem.top + dis->rcItem.bottom) / 2;
-            MoveToEx(dis->hDC, cx - 3, cy - 4, nullptr);
-            LineTo(dis->hDC, cx + 1, cy);
-            LineTo(dis->hDC, cx - 3, cy + 4);
-            SelectObject(dis->hDC, oldArrowPen);
-            DeleteObject(arrowPen);
+            UiRenderer::DrawMenuChevron(dis->hDC, dis->rcItem, arrowColor);
         }
         SelectObject(dis->hDC, oldFont);
     }
@@ -1233,6 +1212,7 @@ LRESULT CALLBACK CopyOnlyContextSubclassProc(HWND hWnd, UINT message, WPARAM wPa
 }
 
 Application::Application() = default;
+Application* Application::s_morePopupMouseHookOwner = nullptr;
 
 Application::~Application() {
     Shutdown();
@@ -1301,6 +1281,10 @@ bool Application::Initialize(HINSTANCE hInstance) {
     }
     if (!RegisterMessageWindowClass()) {
         m_initializationError = T(L"app.error.init.message_class");
+        return false;
+    }
+    if (!RegisterMorePopupWindowClass()) {
+        m_initializationError = T(L"app.error.init.main_window");
         return false;
     }
 
@@ -1383,16 +1367,10 @@ void Application::Shutdown() {
         DestroyWindow(m_hLogsWindow);
         m_hLogsWindow = nullptr;
     }
+    CloseMorePopupWindows();
 
     m_toolTip.reset();
     m_updateService.reset();
-
-    if (m_hMoreMenu) {
-        DestroyMenu(m_hMoreMenu);
-        m_hMoreMenu = nullptr;
-        m_hLanguageMenu = nullptr;
-        m_hInputModeMenu = nullptr;
-    }
 
     if (m_hTitleFont) {
         DeleteObject(m_hTitleFont);
@@ -1766,9 +1744,26 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         return 0;
 
     case WM_LBUTTONDOWN:
+        if (m_hMorePopupWindow) {
+            POINT cursorPos = {};
+            GetCursorPos(&cursorPos);
+            HandleMorePopupMouseDown(cursorPos);
+        }
         if (m_hoveredControl) {
             m_pressedControl = m_hoveredControl;
             InvalidateRect(m_pressedControl, nullptr, TRUE);
+        }
+        break;
+
+    case WM_RBUTTONDOWN:
+    case WM_MBUTTONDOWN:
+    case WM_NCLBUTTONDOWN:
+    case WM_NCRBUTTONDOWN:
+    case WM_NCMBUTTONDOWN:
+        if (m_hMorePopupWindow) {
+            POINT cursorPos = {};
+            GetCursorPos(&cursorPos);
+            HandleMorePopupMouseDown(cursorPos);
         }
         break;
 
@@ -1826,6 +1821,27 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 popupMenuInfo.hbrBack = m_hCardBrush;
                 SetMenuInfo(popupMenu, &popupMenuInfo);
             }
+        }
+        break;
+
+    case WM_TIMER:
+        if (wParam == MORE_POPUP_TRACK_TIMER_ID) {
+            UpdateMorePopupTracking();
+            return 0;
+        }
+        break;
+
+    case WM_ACTIVATEAPP:
+        if (!wParam) {
+            CloseMorePopupWindows();
+        }
+        break;
+
+    case WM_KEYDOWN:
+    case WM_SYSKEYDOWN:
+        if (wParam == VK_ESCAPE && m_hMorePopupWindow) {
+            CloseMorePopupWindows();
+            return 0;
         }
         break;
 
@@ -1945,30 +1961,8 @@ void Application::CreateControls() {
 }
 
 void Application::CreateMoreMenu() {
-    if (m_hMoreMenu) {
-        DestroyMenu(m_hMoreMenu);
-        m_hMoreMenu = nullptr;
-        m_hLanguageMenu = nullptr;
-        m_hInputModeMenu = nullptr;
-    }
+    CloseMorePopupWindows();
     ClearDynamicLanguageMenuItems();
-    m_hMoreMenu = CreatePopupMenu();
-    if (!m_hMoreMenu) {
-        return;
-    }
-    m_hLanguageMenu = CreatePopupMenu();
-    if (!m_hLanguageMenu) {
-        DestroyMenu(m_hMoreMenu);
-        m_hMoreMenu = nullptr;
-        return;
-    }
-    m_hInputModeMenu = CreatePopupMenu();
-    if (!m_hInputModeMenu) {
-        DestroyMenu(m_hMoreMenu);
-        m_hMoreMenu = nullptr;
-        m_hLanguageMenu = nullptr;
-        return;
-    }
 
     const std::vector<std::wstring> languageCodes = Localization::GetAvailableLanguageCodes();
     UINT nextLanguageMenuId = ID_MENU_LANGUAGE_DYNAMIC_FIRST;
@@ -1983,38 +1977,15 @@ void Application::CreateMoreMenu() {
         }
         g_languageMenuTextById[nextLanguageMenuId] = displayName;
         g_languageMenuCodeById[nextLanguageMenuId] = languageCode;
-        AppendMenuW(m_hLanguageMenu, MF_OWNERDRAW, nextLanguageMenuId, g_languageMenuTextById[nextLanguageMenuId].c_str());
         ++nextLanguageMenuId;
     }
 
-    if (GetMenuItemCount(m_hLanguageMenu) <= 0) {
+    if (g_languageMenuTextById.empty()) {
         const UINT fallbackId = ID_MENU_LANGUAGE_DYNAMIC_FIRST;
         const std::wstring fallbackCode = L"ru";
         g_languageMenuTextById[fallbackId] = Localization::GetLanguageDisplayName(fallbackCode);
         g_languageMenuCodeById[fallbackId] = fallbackCode;
-        AppendMenuW(m_hLanguageMenu, MF_OWNERDRAW, fallbackId, g_languageMenuTextById[fallbackId].c_str());
     }
-
-    MENUINFO menuInfo = {};
-    menuInfo.cbSize = sizeof(MENUINFO);
-    menuInfo.fMask = MIM_BACKGROUND;
-    menuInfo.hbrBack = m_hCardBrush;
-    SetMenuInfo(m_hMoreMenu, &menuInfo);
-    SetMenuInfo(m_hLanguageMenu, &menuInfo);
-    SetMenuInfo(m_hInputModeMenu, &menuInfo);
-
-    AppendMenuW(m_hInputModeMenu, MF_OWNERDRAW, ID_MENU_INPUT_MODE_PREVIOUS_WORD, GetMenuItemText(ID_MENU_INPUT_MODE_PREVIOUS_WORD));
-    AppendMenuW(m_hInputModeMenu, MF_OWNERDRAW, ID_MENU_INPUT_MODE_ALL_TEXT, GetMenuItemText(ID_MENU_INPUT_MODE_ALL_TEXT));
-
-    AppendMenuW(m_hMoreMenu, MF_OWNERDRAW, ID_MENU_MORE_LOGS, GetMenuItemText(ID_MENU_MORE_LOGS));
-    AppendMenuW(m_hMoreMenu, MF_OWNERDRAW, ID_MENU_MORE_SEPARATOR, L"");
-    AppendStyledPopupSubMenu(m_hMoreMenu, m_hLanguageMenu, ID_MENU_LANGUAGE_LABEL, GetMenuItemText(ID_MENU_LANGUAGE_LABEL));
-    AppendMenuW(m_hMoreMenu, MF_OWNERDRAW, ID_MENU_MORE_SEPARATOR, L"");
-    AppendStyledPopupSubMenu(m_hMoreMenu, m_hInputModeMenu, ID_MENU_INPUT_MODE_LABEL, GetMenuItemText(ID_MENU_INPUT_MODE_LABEL));
-    AppendMenuW(m_hMoreMenu, MF_OWNERDRAW, ID_MENU_MORE_SEPARATOR, L"");
-    AppendMenuW(m_hMoreMenu, MF_OWNERDRAW, ID_MENU_MORE_ABOUT, GetMenuItemText(ID_MENU_MORE_ABOUT));
-    UpdateLanguageMenuChecks();
-    UpdateScriptInputModeMenuChecks();
 }
 
 void Application::OnResize(int width, int height) {
@@ -2149,15 +2120,474 @@ void Application::OnMenuCommand(UINT menuId) {
 }
 
 void Application::ShowMoreMenu() {
-    if (!m_hMoreMenu) {
+    if (m_hMorePopupWindow && IsWindow(m_hMorePopupWindow)) {
+        CloseMorePopupWindows();
         return;
     }
-    UpdateLanguageMenuChecks();
-    UpdateScriptInputModeMenuChecks();
+
+    m_morePopupItems = BuildMainMorePopupItems();
+    if (m_morePopupItems.empty() || !m_hWnd || !m_hMoreButton) {
+        return;
+    }
+
+    m_activeMoreSubMenuHeaderId = 0;
+    m_hoveredMorePopupItemId = 0;
+    m_hoveredMoreSubPopupItemId = 0;
+    m_moreSubPopupItems.clear();
+
+    const SIZE popupSize = MeasureMorePopupWindow(m_morePopupItems);
     RECT rect = {};
     GetWindowRect(m_hMoreButton, &rect);
-    TrackPopupMenu(m_hMoreMenu, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON,
-        rect.left, rect.bottom + 2, 0, m_hWnd, nullptr);
+    m_hMorePopupWindow = CreateWindowExW(
+        WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+        MORE_POPUP_WINDOW_CLASS_NAME,
+        L"",
+        WS_POPUP,
+        rect.left,
+        rect.bottom + 2,
+        popupSize.cx,
+        popupSize.cy,
+        m_hWnd,
+        nullptr,
+        m_hInstance,
+        this
+    );
+    if (!m_hMorePopupWindow) {
+        m_morePopupItems.clear();
+        return;
+    }
+
+    SetWindowPos(
+        m_hMorePopupWindow,
+        HWND_TOPMOST,
+        rect.left,
+        rect.bottom + 2,
+        popupSize.cx,
+        popupSize.cy,
+        SWP_SHOWWINDOW | SWP_NOACTIVATE
+    );
+    StartMoreMenuTracking();
+    UpdateMorePopupTracking();
+}
+
+void Application::StartMoreMenuTracking() {
+    if (m_hWnd) {
+        SetTimer(m_hWnd, MORE_POPUP_TRACK_TIMER_ID, MORE_POPUP_TRACK_INTERVAL_MS, nullptr);
+    }
+    if (!m_morePopupMouseHook) {
+        s_morePopupMouseHookOwner = this;
+        m_morePopupMouseHook = SetWindowsHookExW(WH_MOUSE, MorePopupMouseHookProc, nullptr, GetCurrentThreadId());
+    }
+}
+
+void Application::StopMoreMenuTracking() {
+    if (m_hWnd) {
+        KillTimer(m_hWnd, MORE_POPUP_TRACK_TIMER_ID);
+    }
+    if (m_morePopupMouseHook) {
+        UnhookWindowsHookEx(m_morePopupMouseHook);
+        m_morePopupMouseHook = nullptr;
+    }
+    if (s_morePopupMouseHookOwner == this) {
+        s_morePopupMouseHookOwner = nullptr;
+    }
+}
+
+void Application::CloseMorePopupWindows() {
+    StopMoreMenuTracking();
+    CloseMoreSubPopupWindow();
+    if (m_hMorePopupWindow && IsWindow(m_hMorePopupWindow)) {
+        DestroyWindow(m_hMorePopupWindow);
+    }
+}
+
+void Application::CloseMoreSubPopupWindow() {
+    if (m_hMoreSubPopupWindow && IsWindow(m_hMoreSubPopupWindow)) {
+        DestroyWindow(m_hMoreSubPopupWindow);
+    }
+}
+
+void Application::EnsureMoreSubPopup(UINT headerItemId) {
+    if (!IsSubmenuHeaderMenuItem(headerItemId) || !m_hMorePopupWindow || !IsWindow(m_hMorePopupWindow)) {
+        CloseMoreSubPopupWindow();
+        return;
+    }
+
+    if (headerItemId == m_activeMoreSubMenuHeaderId
+        && m_hMoreSubPopupWindow
+        && IsWindow(m_hMoreSubPopupWindow)) {
+        return;
+    }
+
+    int headerIndex = -1;
+    for (size_t index = 0; index < m_morePopupItems.size(); ++index) {
+        if (m_morePopupItems[index].id == headerItemId) {
+            headerIndex = static_cast<int>(index);
+            break;
+        }
+    }
+    if (headerIndex < 0) {
+        return;
+    }
+
+    RECT headerRect = GetMorePopupItemRect(
+        m_hMorePopupWindow,
+        m_morePopupItems,
+        static_cast<size_t>(headerIndex)
+    );
+    if (IsRectEmpty(&headerRect)) {
+        return;
+    }
+
+    POINT topLeft = { headerRect.left, headerRect.top };
+    POINT bottomRight = { headerRect.right, headerRect.bottom };
+    ClientToScreen(m_hMorePopupWindow, &topLeft);
+    ClientToScreen(m_hMorePopupWindow, &bottomRight);
+
+    m_moreSubPopupItems = BuildSubMorePopupItems(headerItemId);
+    if (m_moreSubPopupItems.empty()) {
+        CloseMoreSubPopupWindow();
+        return;
+    }
+
+    const SIZE popupSize = MeasureMorePopupWindow(m_moreSubPopupItems);
+    CloseMoreSubPopupWindow();
+    m_activeMoreSubMenuHeaderId = headerItemId;
+    m_hMoreSubPopupWindow = CreateWindowExW(
+        WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+        MORE_POPUP_WINDOW_CLASS_NAME,
+        L"",
+        WS_POPUP,
+        bottomRight.x - 1,
+        topLeft.y,
+        popupSize.cx,
+        popupSize.cy,
+        m_hWnd,
+        nullptr,
+        m_hInstance,
+        this
+    );
+    if (!m_hMoreSubPopupWindow) {
+        m_moreSubPopupItems.clear();
+        m_activeMoreSubMenuHeaderId = 0;
+        return;
+    }
+
+    SetWindowPos(
+        m_hMoreSubPopupWindow,
+        HWND_TOPMOST,
+        bottomRight.x - 1,
+        topLeft.y,
+        popupSize.cx,
+        popupSize.cy,
+        SWP_SHOWWINDOW | SWP_NOACTIVATE
+    );
+    m_hoveredMoreSubPopupItemId = 0;
+}
+
+void Application::UpdateMorePopupTracking() {
+    if (!m_hMorePopupWindow || !IsWindow(m_hMorePopupWindow)) {
+        StopMoreMenuTracking();
+        return;
+    }
+
+    POINT cursorPos = {};
+    GetCursorPos(&cursorPos);
+
+    const bool isInMainPopup = IsPointInWindow(m_hMorePopupWindow, cursorPos);
+    const bool isInSubPopup = IsPointInWindow(m_hMoreSubPopupWindow, cursorPos);
+    const bool isInMoreButton = IsPointInMoreButton(cursorPos);
+
+    UINT hoveredMainItemId = 0;
+    if (isInMainPopup) {
+        const int itemIndex = HitTestMorePopupItem(m_hMorePopupWindow, m_morePopupItems, cursorPos);
+        if (itemIndex >= 0) {
+            hoveredMainItemId = m_morePopupItems[static_cast<size_t>(itemIndex)].id;
+        }
+    } else if (m_activeMoreSubMenuHeaderId != 0) {
+        hoveredMainItemId = m_activeMoreSubMenuHeaderId;
+    }
+    if (hoveredMainItemId != m_hoveredMorePopupItemId) {
+        m_hoveredMorePopupItemId = hoveredMainItemId;
+        if (m_hMorePopupWindow && IsWindow(m_hMorePopupWindow)) {
+            InvalidateRect(m_hMorePopupWindow, nullptr, FALSE);
+        }
+    }
+
+    if (isInMainPopup) {
+        const int itemIndex = HitTestMorePopupItem(m_hMorePopupWindow, m_morePopupItems, cursorPos);
+        if (itemIndex >= 0) {
+            const UiRenderer::PopupMenuItem& item = m_morePopupItems[static_cast<size_t>(itemIndex)];
+            if (item.submenu) {
+                EnsureMoreSubPopup(item.id);
+            } else {
+                CloseMoreSubPopupWindow();
+            }
+        } else if (!isInMoreButton) {
+            CloseMoreSubPopupWindow();
+        }
+    }
+
+    UINT hoveredSubItemId = 0;
+    if (isInSubPopup) {
+        const int itemIndex = HitTestMorePopupItem(m_hMoreSubPopupWindow, m_moreSubPopupItems, cursorPos);
+        if (itemIndex >= 0) {
+            hoveredSubItemId = m_moreSubPopupItems[static_cast<size_t>(itemIndex)].id;
+        }
+    }
+    if (hoveredSubItemId != m_hoveredMoreSubPopupItemId) {
+        m_hoveredMoreSubPopupItemId = hoveredSubItemId;
+        if (m_hMoreSubPopupWindow && IsWindow(m_hMoreSubPopupWindow)) {
+            InvalidateRect(m_hMoreSubPopupWindow, nullptr, FALSE);
+        }
+    }
+}
+
+bool Application::HandleMorePopupMouseDown(POINT screenPoint) {
+    if (!m_hMorePopupWindow || !IsWindow(m_hMorePopupWindow)) {
+        return false;
+    }
+    if (IsPointInWindow(m_hMorePopupWindow, screenPoint)
+        || IsPointInWindow(m_hMoreSubPopupWindow, screenPoint)
+        || IsPointInMoreButton(screenPoint)) {
+        return false;
+    }
+
+    CloseMorePopupWindows();
+    return true;
+}
+
+LRESULT CALLBACK Application::MorePopupMouseHookProc(int code, WPARAM wParam, LPARAM lParam) {
+    if (code >= 0 && s_morePopupMouseHookOwner) {
+        const auto* mouseInfo = reinterpret_cast<MOUSEHOOKSTRUCT*>(lParam);
+        switch (wParam) {
+        case WM_LBUTTONDOWN:
+        case WM_RBUTTONDOWN:
+        case WM_MBUTTONDOWN:
+        case WM_NCLBUTTONDOWN:
+        case WM_NCRBUTTONDOWN:
+        case WM_NCMBUTTONDOWN:
+            if (mouseInfo) {
+                s_morePopupMouseHookOwner->HandleMorePopupMouseDown(mouseInfo->pt);
+            }
+            break;
+        default:
+            break;
+        }
+    }
+
+    HHOOK hookHandle = s_morePopupMouseHookOwner ? s_morePopupMouseHookOwner->m_morePopupMouseHook : nullptr;
+    return CallNextHookEx(hookHandle, code, wParam, lParam);
+}
+
+std::vector<UiRenderer::PopupMenuItem> Application::BuildMainMorePopupItems() const {
+    return {
+        { ID_MENU_MORE_LOGS, GetMenuItemText(ID_MENU_MORE_LOGS), false, false, false },
+        { ID_MENU_MORE_SEPARATOR, L"", true, false, false },
+        { ID_MENU_LANGUAGE_LABEL, GetMenuItemText(ID_MENU_LANGUAGE_LABEL), false, false, true },
+        { ID_MENU_MORE_SEPARATOR, L"", true, false, false },
+        { ID_MENU_INPUT_MODE_LABEL, GetMenuItemText(ID_MENU_INPUT_MODE_LABEL), false, false, true },
+        { ID_MENU_MORE_SEPARATOR, L"", true, false, false },
+        { ID_MENU_MORE_ABOUT, GetMenuItemText(ID_MENU_MORE_ABOUT), false, false, false }
+    };
+}
+
+std::vector<UiRenderer::PopupMenuItem> Application::BuildSubMorePopupItems(UINT headerItemId) const {
+    std::vector<UiRenderer::PopupMenuItem> items;
+    if (headerItemId == ID_MENU_LANGUAGE_LABEL) {
+        const std::wstring currentLanguageCode = Localization::GetCurrentLanguageCode();
+        for (const auto& pair : g_languageMenuCodeById) {
+            const auto textIt = g_languageMenuTextById.find(pair.first);
+            if (textIt == g_languageMenuTextById.end()) {
+                continue;
+            }
+            items.push_back({
+                pair.first,
+                textIt->second,
+                false,
+                _wcsicmp(pair.second.c_str(), currentLanguageCode.c_str()) == 0,
+                false
+            });
+        }
+        return items;
+    }
+
+    if (headerItemId == ID_MENU_INPUT_MODE_LABEL) {
+        items.push_back({
+            ID_MENU_INPUT_MODE_PREVIOUS_WORD,
+            GetMenuItemText(ID_MENU_INPUT_MODE_PREVIOUS_WORD),
+            false,
+            !m_scriptInputFallbackToAllText,
+            false
+        });
+        items.push_back({
+            ID_MENU_INPUT_MODE_ALL_TEXT,
+            GetMenuItemText(ID_MENU_INPUT_MODE_ALL_TEXT),
+            false,
+            m_scriptInputFallbackToAllText,
+            false
+        });
+    }
+    return items;
+}
+
+SIZE Application::MeasureMorePopupWindow(const std::vector<UiRenderer::PopupMenuItem>& items) const {
+    SIZE size = { MORE_POPUP_MIN_WIDTH, 2 };
+    HDC hdc = GetDC(nullptr);
+    for (const UiRenderer::PopupMenuItem& item : items) {
+        size.cy += item.separator ? MORE_POPUP_SEPARATOR_HEIGHT : MORE_POPUP_ITEM_HEIGHT;
+        if (!hdc || item.separator) {
+            continue;
+        }
+
+        RECT textRect = { 0, 0, 0, 0 };
+        HFONT menuFont = GetMenuFontForItem(item.id);
+        HFONT oldFont = static_cast<HFONT>(SelectObject(hdc, menuFont));
+        DrawTextW(hdc, item.text.c_str(), -1, &textRect, DT_CALCRECT | DT_SINGLELINE);
+        SelectObject(hdc, oldFont);
+        const int extraWidth = item.submenu ? MORE_POPUP_ARROW_EXTRA_WIDTH : MORE_POPUP_ITEM_EXTRA_WIDTH;
+        size.cx = std::max(size.cx, (textRect.right - textRect.left) + extraWidth);
+    }
+    if (hdc) {
+        ReleaseDC(nullptr, hdc);
+    }
+    size.cx += MORE_POPUP_WIDTH_PADDING;
+    return size;
+}
+
+int Application::HitTestMorePopupItem(HWND popupWindow, const std::vector<UiRenderer::PopupMenuItem>& items, POINT screenPoint) const {
+    if (!popupWindow || !IsWindow(popupWindow)) {
+        return -1;
+    }
+
+    RECT windowRect = {};
+    if (!GetWindowRect(popupWindow, &windowRect) || !PtInRect(&windowRect, screenPoint)) {
+        return -1;
+    }
+
+    POINT clientPoint = screenPoint;
+    ScreenToClient(popupWindow, &clientPoint);
+    for (size_t index = 0; index < items.size(); ++index) {
+        const RECT itemRect = GetMorePopupItemRect(popupWindow, items, index);
+        if (PtInRect(&itemRect, clientPoint)) {
+            return items[index].separator ? -1 : static_cast<int>(index);
+        }
+    }
+    return -1;
+}
+
+RECT Application::GetMorePopupItemRect(HWND popupWindow, const std::vector<UiRenderer::PopupMenuItem>& items, size_t index) const {
+    RECT clientRect = {};
+    if (!popupWindow || !IsWindow(popupWindow) || !GetClientRect(popupWindow, &clientRect) || index >= items.size()) {
+        return RECT{ 0, 0, 0, 0 };
+    }
+
+    int top = 1;
+    for (size_t itemIndex = 0; itemIndex < index; ++itemIndex) {
+        top += items[itemIndex].separator ? MORE_POPUP_SEPARATOR_HEIGHT : MORE_POPUP_ITEM_HEIGHT;
+    }
+    const int itemHeight = items[index].separator ? MORE_POPUP_SEPARATOR_HEIGHT : MORE_POPUP_ITEM_HEIGHT;
+    return RECT{ 1, top, clientRect.right - 1, top + itemHeight };
+}
+
+bool Application::IsPointInWindow(HWND windowHandle, POINT screenPoint) const {
+    if (!windowHandle || !IsWindow(windowHandle)) {
+        return false;
+    }
+    RECT windowRect = {};
+    return GetWindowRect(windowHandle, &windowRect) && PtInRect(&windowRect, screenPoint);
+}
+
+bool Application::IsPointInMoreButton(POINT screenPoint) const {
+    if (!m_hMoreButton || !IsWindow(m_hMoreButton)) {
+        return false;
+    }
+    RECT buttonRect = {};
+    return GetWindowRect(m_hMoreButton, &buttonRect) && PtInRect(&buttonRect, screenPoint);
+}
+
+LRESULT CALLBACK Application::MorePopupWindowProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    if (message == WM_NCCREATE) {
+        const auto* createStruct = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        auto* owner = static_cast<Application*>(createStruct->lpCreateParams);
+        SetWindowLongPtrW(hWnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(owner));
+        return TRUE;
+    }
+
+    auto* owner = reinterpret_cast<Application*>(GetWindowLongPtrW(hWnd, GWLP_USERDATA));
+    if (!owner) {
+        return DefWindowProcW(hWnd, message, wParam, lParam);
+    }
+    return owner->HandleMorePopupMessage(hWnd, message, wParam, lParam);
+}
+
+LRESULT Application::HandleMorePopupMessage(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    const bool isMainPopup = hWnd == m_hMorePopupWindow;
+    std::vector<UiRenderer::PopupMenuItem>& items = isMainPopup ? m_morePopupItems : m_moreSubPopupItems;
+
+    switch (message) {
+    case WM_MOUSEACTIVATE:
+        return MA_NOACTIVATE;
+
+    case WM_ERASEBKGND:
+        return 1;
+
+    case WM_MOUSEMOVE:
+        UpdateMorePopupTracking();
+        return 0;
+
+    case WM_LBUTTONUP:
+        {
+            POINT cursorPos = {};
+            GetCursorPos(&cursorPos);
+            const int itemIndex = HitTestMorePopupItem(hWnd, items, cursorPos);
+            if (itemIndex < 0) {
+                return 0;
+            }
+
+            const UiRenderer::PopupMenuItem& item = items[static_cast<size_t>(itemIndex)];
+            if (item.separator) {
+                return 0;
+            }
+            if (isMainPopup && item.submenu) {
+                EnsureMoreSubPopup(item.id);
+                return 0;
+            }
+
+            CloseMorePopupWindows();
+            PostMessageW(m_hWnd, WM_COMMAND, MAKEWPARAM(item.id, 0), 0);
+            return 0;
+        }
+
+    case WM_PAINT:
+        {
+            PAINTSTRUCT ps = {};
+            HDC hdc = BeginPaint(hWnd, &ps);
+            RECT clientRect = {};
+            GetClientRect(hWnd, &clientRect);
+            HFONT oldFont = static_cast<HFONT>(SelectObject(hdc, GetStyledMenuFont()));
+            UiRenderer::DrawPopupMenu(hdc, clientRect, items, isMainPopup ? m_hoveredMorePopupItemId : m_hoveredMoreSubPopupItemId);
+            SelectObject(hdc, oldFont);
+            EndPaint(hWnd, &ps);
+            return 0;
+        }
+
+    case WM_DESTROY:
+        if (isMainPopup) {
+            m_hMorePopupWindow = nullptr;
+            m_hoveredMorePopupItemId = 0;
+            m_morePopupItems.clear();
+        } else {
+            m_hMoreSubPopupWindow = nullptr;
+            m_hoveredMoreSubPopupItemId = 0;
+            m_moreSubPopupItems.clear();
+            m_activeMoreSubMenuHeaderId = 0;
+        }
+        return 0;
+
+    default:
+        return DefWindowProcW(hWnd, message, wParam, lParam);
+    }
 }
 
 void Application::ApplyLocalization() {
@@ -2224,35 +2654,11 @@ void Application::SetLanguage(const std::wstring& languageCode) {
     SetStatusText(L(Localization::Key::StatusLanguageUpdated));
 }
 
-void Application::UpdateLanguageMenuChecks() {
-    if (!m_hLanguageMenu) {
-        return;
-    }
-    const std::wstring currentLanguageCode = Localization::GetCurrentLanguageCode();
-    for (const auto& pair : g_languageMenuCodeById) {
-        const bool checked = _wcsicmp(pair.second.c_str(), currentLanguageCode.c_str()) == 0;
-        CheckMenuItem(
-            m_hLanguageMenu,
-            pair.first,
-            MF_BYCOMMAND | (checked ? MF_CHECKED : MF_UNCHECKED)
-        );
-    }
-}
-
 void Application::UpdateScriptInputModeMenuChecks() {
-    if (!m_hInputModeMenu) {
-        return;
+    if (m_activeMoreSubMenuHeaderId == ID_MENU_INPUT_MODE_LABEL && m_hMoreSubPopupWindow && IsWindow(m_hMoreSubPopupWindow)) {
+        m_moreSubPopupItems = BuildSubMorePopupItems(ID_MENU_INPUT_MODE_LABEL);
+        InvalidateRect(m_hMoreSubPopupWindow, nullptr, FALSE);
     }
-    CheckMenuItem(
-        m_hInputModeMenu,
-        ID_MENU_INPUT_MODE_PREVIOUS_WORD,
-        MF_BYCOMMAND | (!m_scriptInputFallbackToAllText ? MF_CHECKED : MF_UNCHECKED)
-    );
-    CheckMenuItem(
-        m_hInputModeMenu,
-        ID_MENU_INPUT_MODE_ALL_TEXT,
-        MF_BYCOMMAND | (m_scriptInputFallbackToAllText ? MF_CHECKED : MF_UNCHECKED)
-    );
 }
 
 void Application::SetScriptInputMode(bool fallbackToAllText) {
@@ -3164,6 +3570,28 @@ bool Application::RegisterMessageWindowClass() {
     }
 
     m_messageWindowClassRegistered = true;
+    return true;
+}
+
+bool Application::RegisterMorePopupWindowClass() {
+    if (m_morePopupWindowClassRegistered) {
+        return true;
+    }
+
+    WNDCLASSEXW wcex = {};
+    wcex.cbSize = sizeof(wcex);
+    wcex.style = CS_HREDRAW | CS_VREDRAW;
+    wcex.lpfnWndProc = MorePopupWindowProc;
+    wcex.hInstance = m_hInstance;
+    wcex.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wcex.hbrBackground = m_hCardBrush;
+    wcex.lpszClassName = MORE_POPUP_WINDOW_CLASS_NAME;
+
+    if (!RegisterClassExW(&wcex) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+        return false;
+    }
+
+    m_morePopupWindowClassRegistered = true;
     return true;
 }
 

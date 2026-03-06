@@ -6,6 +6,7 @@
 
 #include <windows.h>
 
+#include "AppVersion.h"
 #include "ScriptManifest.h"
 #include "ScriptRunner.h"
 #include "TextBridge.h"
@@ -20,8 +21,9 @@ class ToolTip;
 
 class Application {
 public:
-    static constexpr const wchar_t* WINDOW_TITLE = L"TextMagic";
-    static constexpr const wchar_t* APP_VERSION = L"0.1.0";
+    static constexpr const wchar_t* WINDOW_TITLE = TM_APP_NAME_W;
+    static constexpr const wchar_t* APP_VERSION = TM_APP_VERSION_W;
+    static constexpr const wchar_t* INIT_ERROR_ALREADY_RUNNING = L"__already_running__";
 
     Application();
     ~Application();
@@ -55,14 +57,15 @@ private:
     void CreateControls();
     void CreateMoreMenu();
     void ApplyLocalization();
-    void SetLanguage(bool useEnglish);
+    void SetLanguage(const std::wstring& languageCode);
     void UpdateLanguageMenuChecks();
+    void UpdateScriptInputModeMenuChecks();
+    void SetScriptInputMode(bool fallbackToAllText);
     void OnResize(int width, int height);
     void OnPaint();
     void OnCommand(UINT controlId, UINT notifyCode);
     void OnMenuCommand(UINT menuId);
     void ShowMoreMenu();
-    void ShowLanguageMenuPopup(POINT screenPoint, bool recurse);
     bool InitializeTrayIcon();
     void RemoveTrayIcon();
     void ShowTrayContextMenu(POINT screenPoint);
@@ -132,6 +135,7 @@ private:
     HWND m_hLogsWindow = nullptr;
     HMENU m_hMoreMenu = nullptr;
     HMENU m_hLanguageMenu = nullptr;
+    HMENU m_hInputModeMenu = nullptr;
 
     HFONT m_hTitleFont = nullptr;
     HFONT m_hFont = nullptr;
@@ -147,14 +151,15 @@ private:
     HWND m_pressedControl = nullptr;
 
     ULONG_PTR m_gdiplusToken = 0;
+    HANDLE m_singleInstanceMutex = nullptr;
     bool m_comInitialized = false;
     bool m_infoWindowClassRegistered = false;
     bool m_messageWindowClassRegistered = false;
     bool m_isExiting = false;
-    bool m_hiddenToTray = false;
-    bool m_moreMenuTracking = false;
-    bool m_languageMenuPopupOpen = false;
-    DWORD m_languageMenuLastOpenTick = 0;
+    bool m_scriptExecutionInProgress = false;
+    bool m_updateInProgress = false;
+    bool m_archiveTaskInProgress = false;
+    bool m_scriptInputFallbackToAllText = false;
 
     NOTIFYICONDATAW m_trayIconData = {};
 

@@ -14,6 +14,9 @@ int APIENTRY wWinMain(
     Application app;
     if (!app.Initialize(hInstance)) {
         const std::wstring initError = app.GetInitializationError();
+        if (initError == Application::INIT_ERROR_ALREADY_RUNNING) {
+            return 0;
+        }
         if (!initError.empty()) {
             OutputDebugStringW((L"[InitError] " + initError + L"\n").c_str());
         }

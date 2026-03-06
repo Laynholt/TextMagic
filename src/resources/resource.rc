@@ -1,11 +1,12 @@
 #include "resource.h"
+#include "AppVersion.h"
 #include <windows.h>
 
 IDI_MAIN_ICON ICON "../../assets/icon.ico"
 
 1 VERSIONINFO
-FILEVERSION 0,1,0,0
-PRODUCTVERSION 0,1,0,0
+FILEVERSION TM_VERSION_MAJOR,TM_VERSION_MINOR,TM_VERSION_PATCH,TM_VERSION_BUILD
+PRODUCTVERSION TM_VERSION_MAJOR,TM_VERSION_MINOR,TM_VERSION_PATCH,TM_VERSION_BUILD
 FILEFLAGSMASK 0x3fL
 FILEFLAGS 0x0L
 FILEOS 0x40004L
@@ -17,13 +18,13 @@ BEGIN
         BLOCK "041904b0"
         BEGIN
             VALUE "CompanyName", "laynholt"
-            VALUE "FileDescription", "TextMagic script host"
-            VALUE "FileVersion", "0.1.0.0"
-            VALUE "InternalName", "TextMagic"
+            VALUE "FileDescription", TM_APP_NAME_A " script host"
+            VALUE "FileVersion", TM_APP_FILE_VERSION_A
+            VALUE "InternalName", TM_APP_NAME_A
             VALUE "LegalCopyright", "Copyright (C) 2026"
-            VALUE "OriginalFilename", "TextMagic.exe"
-            VALUE "ProductName", "TextMagic"
-            VALUE "ProductVersion", "0.1.0.0"
+            VALUE "OriginalFilename", TM_APP_NAME_A ".exe"
+            VALUE "ProductName", TM_APP_NAME_A
+            VALUE "ProductVersion", TM_APP_FILE_VERSION_A
         END
     END
     BLOCK "VarFileInfo"

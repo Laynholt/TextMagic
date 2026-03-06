@@ -1,5 +1,8 @@
 #include "ScriptManifest.h"
 
+#include "EncodingUtils.h"
+#include "Localization.h"
+
 #include <algorithm>
 #include <cwctype>
 #include <filesystem>
@@ -11,6 +14,10 @@
 namespace fs = std::filesystem;
 
 namespace {
+const wchar_t* T(const wchar_t* key) {
+    return Localization::GetTextByName(key);
+}
+
 std::wstring Trim(const std::wstring& text) {
     size_t begin = 0;
     while (begin < text.size() && std::iswspace(text[begin])) {
@@ -33,39 +40,6 @@ std::wstring ToUpperAscii(std::wstring value) {
         return ch;
     });
     return value;
-}
-
-std::wstring Utf8ToWide(const std::string& text) {
-    if (text.empty()) {
-        return L"";
-    }
-
-    const int required = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
-    if (required <= 0) {
-        return std::wstring(text.begin(), text.end());
-    }
-
-    std::wstring result(static_cast<size_t>(required), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), result.data(), required);
-    if (!result.empty() && result.front() == 0xFEFF) {
-        result.erase(result.begin());
-    }
-    return result;
-}
-
-std::string WideToUtf8(const std::wstring& text) {
-    if (text.empty()) {
-        return std::string();
-    }
-
-    const int required = WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
-    if (required <= 0) {
-        return std::string();
-    }
-
-    std::string result(static_cast<size_t>(required), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), result.data(), required, nullptr, nullptr);
-    return result;
 }
 
 std::vector<std::wstring> Split(const std::wstring& text, wchar_t delimiter) {
@@ -179,14 +153,14 @@ bool ReadUtf8TextFile(const fs::path& path, std::wstring* text, std::wstring* er
     std::ifstream input(path, std::ios::binary);
     if (!input) {
         if (error) {
-            *error = L"Не удалось прочитать файл: " + path.wstring();
+            *error = std::wstring(T(L"manifest.error.read_file_prefix")) + path.wstring();
         }
         return false;
     }
 
     const std::string raw((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
     if (text) {
-        *text = Utf8ToWide(raw);
+        *text = EncodingUtils::Utf8ToWide(raw);
     }
     return true;
 }
@@ -199,7 +173,7 @@ bool WriteUtf8TextFile(const fs::path& path, const std::wstring& text, std::wstr
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
     if (!output) {
         if (error) {
-            *error = L"Не удалось открыть файл для записи: " + path.wstring();
+            *error = std::wstring(T(L"manifest.error.open_write_prefix")) + path.wstring();
         }
         return false;
     }
@@ -207,13 +181,13 @@ bool WriteUtf8TextFile(const fs::path& path, const std::wstring& text, std::wstr
     const unsigned char bom[3] = { 0xEF, 0xBB, 0xBF };
     output.write(reinterpret_cast<const char*>(bom), sizeof(bom));
 
-    const std::string raw = WideToUtf8(text);
+    const std::string raw = EncodingUtils::WideToUtf8(text);
     if (!raw.empty()) {
         output.write(raw.data(), static_cast<std::streamsize>(raw.size()));
     }
     if (!output.good()) {
         if (error) {
-            *error = L"Ошибка записи файла: " + path.wstring();
+            *error = std::wstring(T(L"manifest.error.write_file_prefix")) + path.wstring();
         }
         return false;
     }
@@ -252,7 +226,7 @@ ScriptManifest::LoadResult ScriptManifest::LoadFromDirectory(const std::wstring&
         std::wstring wide;
         std::wstring readError;
         if (!ReadUtf8TextFile(path, &wide, &readError)) {
-            warnings << L"[Load] " << readError << L"\n";
+            warnings << T(L"manifest.warning.load_prefix") << readError << L"\n";
             continue;
         }
 
@@ -307,14 +281,14 @@ ScriptManifest::LoadResult ScriptManifest::LoadFromDirectory(const std::wstring&
         const bool hasCommandLine = !Trim(manifest.commandLine).empty();
 
         if (manifest.name.empty() || manifest.hotkeyText.empty() || (!hasInlineScript && !hasCommandLine)) {
-            warnings << L"[Parse] Пропуск " << path.filename().wstring()
-                     << L": поля name/hotkey и script-body (или command) обязательны.\n";
+            warnings << T(L"manifest.warning.parse_skip_prefix") << path.filename().wstring()
+                     << T(L"manifest.warning.required_fields");
             continue;
         }
 
         std::wstring hotkeyError;
         if (!ScriptManifest::ParseHotkey(manifest.hotkeyText, &manifest.modifiers, &manifest.virtualKey, &hotkeyError)) {
-            warnings << L"[Parse] Пропуск " << path.filename().wstring()
+            warnings << T(L"manifest.warning.parse_skip_prefix") << path.filename().wstring()
                      << L": " << hotkeyError << L"\n";
             continue;
         }
@@ -409,7 +383,7 @@ bool ScriptManifest::SetEnabledInFile(const std::wstring& manifestPath, bool ena
 bool ScriptManifest::ParseHotkey(const std::wstring& hotkeyText, UINT* modifiers, UINT* virtualKey, std::wstring* error) {
     if (!modifiers || !virtualKey) {
         if (error) {
-            *error = L"Внутренняя ошибка: null output.";
+            *error = T(L"manifest.error.internal_null_output");
         }
         return false;
     }
@@ -427,32 +401,76 @@ bool ScriptManifest::ParseHotkey(const std::wstring& hotkeyText, UINT* modifiers
         }
 
         if (token == L"CTRL" || token == L"CONTROL") {
+            if ((*modifiers & MOD_CONTROL) != 0) {
+                if (keyFound) {
+                    if (error) {
+                        *error = T(L"manifest.error.one_primary_key");
+                    }
+                    return false;
+                }
+                *virtualKey = VK_CONTROL;
+                keyFound = true;
+                continue;
+            }
             *modifiers |= MOD_CONTROL;
             continue;
         }
         if (token == L"ALT") {
+            if ((*modifiers & MOD_ALT) != 0) {
+                if (keyFound) {
+                    if (error) {
+                        *error = T(L"manifest.error.one_primary_key");
+                    }
+                    return false;
+                }
+                *virtualKey = VK_MENU;
+                keyFound = true;
+                continue;
+            }
             *modifiers |= MOD_ALT;
             continue;
         }
         if (token == L"SHIFT") {
+            if ((*modifiers & MOD_SHIFT) != 0) {
+                if (keyFound) {
+                    if (error) {
+                        *error = T(L"manifest.error.one_primary_key");
+                    }
+                    return false;
+                }
+                *virtualKey = VK_SHIFT;
+                keyFound = true;
+                continue;
+            }
             *modifiers |= MOD_SHIFT;
             continue;
         }
         if (token == L"WIN" || token == L"WINDOWS") {
+            if ((*modifiers & MOD_WIN) != 0) {
+                if (keyFound) {
+                    if (error) {
+                        *error = T(L"manifest.error.one_primary_key");
+                    }
+                    return false;
+                }
+                *virtualKey = VK_LWIN;
+                keyFound = true;
+                continue;
+            }
             *modifiers |= MOD_WIN;
             continue;
         }
 
         if (keyFound) {
             if (error) {
-                *error = L"В hotkey должен быть только один основной ключ.";
+                *error = T(L"manifest.error.one_primary_key");
             }
             return false;
         }
 
         if (!ParseVirtualKey(token, virtualKey)) {
             if (error) {
-                *error = L"Неизвестный основной ключ: " + token;
+                *error = std::wstring(T(L"manifest.error.unknown_primary_key_prefix")) + token;
             }
             return false;
         }
@@ -461,14 +479,14 @@ bool ScriptManifest::ParseHotkey(const std::wstring& hotkeyText, UINT* modifiers
 
     if (!keyFound) {
         if (error) {
-            *error = L"Не найден основной ключ hotkey.";
+            *error = T(L"manifest.error.primary_key_missing");
         }
         return false;
     }
 
     if (*modifiers == 0) {
         if (error) {
-            *error = L"Hotkey должен содержать хотя бы один модификатор (Ctrl/Alt/Shift/Win).";
+            *error = T(L"manifest.error.modifier_required");
         }
         return false;
     }

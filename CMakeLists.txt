@@ -10,6 +10,38 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+set(TM_APP_NAME "TextMagic")
+set(TM_GITHUB_OWNER "Laynholt")
+set(TM_GITHUB_REPO "TextMagic")
+
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/resources/AppVersion.h.in
+    ${CMAKE_BINARY_DIR}/generated/AppVersion.h
+    @ONLY
+)
+
+file(GLOB TM_LANGUAGE_SOURCE_FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/lang/*.ini"
+)
+list(SORT TM_LANGUAGE_SOURCE_FILES)
+string(JOIN "|" TM_LANGUAGE_SOURCE_FILES_ARG ${TM_LANGUAGE_SOURCE_FILES})
+
+set(TM_EMBEDDED_LANG_HEADER "${CMAKE_BINARY_DIR}/generated/EmbeddedLanguages.h")
+
+add_custom_command(
+    OUTPUT "${TM_EMBEDDED_LANG_HEADER}"
+    COMMAND ${CMAKE_COMMAND}
+        -DTM_OUTPUT_FILE=${TM_EMBEDDED_LANG_HEADER}
+        -DTM_LANG_FILES=${TM_LANGUAGE_SOURCE_FILES_ARG}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateEmbeddedLanguages.cmake
+    DEPENDS
+        ${TM_LANGUAGE_SOURCE_FILES}
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateEmbeddedLanguages.cmake"
+    VERBATIM
+)
+
+set_source_files_properties("${TM_EMBEDDED_LANG_HEADER}" PROPERTIES GENERATED TRUE)
+
 if(WIN32)
     add_definitions(-DUNICODE -D_UNICODE)
 endif()
@@ -17,7 +49,10 @@ endif()
 set(SOURCES
     src/app/main.cpp
     src/app/Application.cpp
+    src/app/AppUiHelpers.cpp
     src/app/Localization.cpp
+    src/core/common/EncodingUtils.cpp
+    src/core/common/PowerShellUtils.cpp
     src/core/scripts/ScriptManifest.cpp
     src/core/scripts/ScriptRunner.cpp
     src/core/text/TextBridge.cpp
@@ -29,7 +64,10 @@ set(SOURCES
 
 set(HEADERS
     src/app/Application.h
+    src/app/AppUiHelpers.h
     src/app/Localization.h
+    src/core/common/EncodingUtils.h
+    src/core/common/PowerShellUtils.h
     src/core/scripts/ScriptManifest.h
     src/core/scripts/ScriptRunner.h
     src/core/text/TextBridge.h
@@ -37,14 +75,17 @@ set(HEADERS
     src/ui/ToolTip.h
     src/ui/UiRenderer.h
     src/resources/resource.h
+    ${TM_EMBEDDED_LANG_HEADER}
 )
 
 add_executable(${PROJECT_NAME} WIN32 ${SOURCES} ${HEADERS})
 
 target_include_directories(${PROJECT_NAME} PRIVATE
+    ${CMAKE_BINARY_DIR}/generated
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/src/app
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core/scripts
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core/text
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core/update
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ui
@@ -59,6 +100,7 @@ if(WIN32)
         ole32
         oleaut32
         shell32
+        uxtheme
         user32
         winhttp
     )
@@ -80,7 +122,7 @@ elseif(MINGW)
 endif()
 
 set_target_properties(${PROJECT_NAME} PROPERTIES
-    OUTPUT_NAME "TextMagic"
+    OUTPUT_NAME "${TM_APP_NAME}"
     WIN32_EXECUTABLE TRUE
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )

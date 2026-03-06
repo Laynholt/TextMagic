@@ -1,12 +1,16 @@
 #include "Localization.h"
 
-#include <windows.h>
+#include "EmbeddedLanguages.h"
+#include "EncodingUtils.h"
 
-#include <array>
+#include <algorithm>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace Localization {
 namespace {
@@ -15,76 +19,56 @@ namespace fs = std::filesystem;
 struct Entry {
     Key key;
     const wchar_t* iniName;
-    const wchar_t* ru;
-    const wchar_t* en;
 };
-
-constexpr size_t kKeyCount = static_cast<size_t>(Key::InfoButtonCheckUpdates) + 1;
 
 constexpr Entry kEntries[] = {
-    { Key::MenuMoreLogs, L"menu.more.logs", L"Логи выполнения", L"Execution Logs" },
-    { Key::MenuMoreAbout, L"menu.more.about", L"О программе", L"About" },
-    { Key::MenuCopy, L"menu.copy", L"Копировать", L"Copy" },
-    { Key::MenuSaveAs, L"menu.save_as", L"Сохранить как...", L"Save As..." },
-    { Key::MenuClearLogs, L"menu.clear_logs", L"Очистить логи", L"Clear Logs" },
-    { Key::MenuScriptsAdd, L"menu.scripts.add", L"Добавить скрипт", L"Add Script" },
-    { Key::MenuScriptsImportZip, L"menu.scripts.import_zip", L"Импорт из ZIP", L"Import from ZIP" },
-    { Key::MenuScriptsExportZip, L"menu.scripts.export_zip", L"Экспорт всех скриптов в ZIP", L"Export All Scripts to ZIP" },
-    { Key::MenuScriptsEnable, L"menu.scripts.enable", L"Включить выбранные", L"Enable Selected" },
-    { Key::MenuScriptsDisable, L"menu.scripts.disable", L"Отключить выбранные", L"Disable Selected" },
-    { Key::MenuScriptsDelete, L"menu.scripts.delete", L"Удалить выбранные", L"Delete Selected" },
-    { Key::MenuTrayExit, L"menu.tray.exit", L"Закрыть", L"Exit" },
-    { Key::MenuLanguageTitle, L"menu.language.title", L"Язык", L"Language" },
-    { Key::HintLabel, L"hint.label",
-      L"Глобальные скрипты для текста. Если есть выделение, обработка применяется к выделению.\r\n"
-      L"Если выделения нет, берется весь текст из активного поля ввода. ПКМ по списку: управление/импорт/экспорт.",
-      L"Global text scripts. If there is a selection, processing is applied to the selection.\r\n"
-      L"If there is no selection, text is taken from the active input field. Right-click list for management/import/export." },
-    { Key::ButtonReloadScripts, L"button.reload_scripts", L"Перезагрузить скрипты", L"Reload Scripts" },
-    { Key::ButtonOpenScriptsFolder, L"button.open_scripts_folder", L"Открыть папку scripts", L"Open scripts Folder" },
-    { Key::ButtonMore, L"button.more", L"Дополнительно", L"More" },
-    { Key::StatusReady, L"status.ready", L"Готово.", L"Ready." },
-    { Key::TooltipReload, L"tooltip.reload", L"Заново читает *.tmscript из папки scripts", L"Reloads *.tmscript from scripts folder" },
-    { Key::TooltipScriptList, L"tooltip.script_list", L"Двойной клик: запуск. Правый клик: управление скриптами.", L"Double click: run. Right click: script actions." },
-    { Key::TooltipOpenScriptsFolder, L"tooltip.open_scripts_folder", L"Открывает каталог scripts рядом с .exe", L"Opens scripts folder near .exe" },
-    { Key::TooltipMore, L"tooltip.more", L"О программе, языках, обновлениях и логах", L"About, language, updates and logs" },
-    { Key::StatusLanguageUpdated, L"status.language_updated", L"Язык приложения обновлен.", L"Application language updated." },
-    { Key::StatusNoScriptsFound, L"status.no_scripts_found", L"Скрипты не найдены. Добавьте *.tmscript в папку scripts.", L"No scripts found. Add *.tmscript files to scripts folder." },
-    { Key::ScriptListHotkeyUnavailablePrefix, L"script_list.hotkey_unavailable_prefix", L" (hotkey off: ", L" (hotkey unavailable: " },
-    { Key::StatusLogsCleared, L"status.logs_cleared", L"Логи очищены.", L"Logs cleared." },
-    { Key::AboutLoadedScriptsPrefix, L"about.loaded_scripts_prefix", L"Загружено скриптов: ", L"Loaded scripts: " },
-    { Key::AboutScriptsDirectoryPrefix, L"about.scripts_directory_prefix", L"Каталог scripts:\r\n", L"Scripts directory:\r\n" },
-    { Key::AboutCheckUpdatesHint, L"about.check_updates_hint", L"Проверьте обновления кнопкой ниже.", L"Use the button below to check for updates." },
-    { Key::LogIsEmpty, L"log.is_empty", L"Лог пуст.", L"Log is empty." },
-    { Key::InfoButtonClose, L"info.button.close", L"Закрыть", L"Close" },
-    { Key::InfoButtonCheckUpdates, L"info.button.check_updates", L"Проверить обновления", L"Check Updates" }
+    { Key::MenuMoreLogs, L"menu.more.logs" },
+    { Key::MenuMoreAbout, L"menu.more.about" },
+    { Key::MenuCopy, L"menu.copy" },
+    { Key::MenuSaveAs, L"menu.save_as" },
+    { Key::MenuClearLogs, L"menu.clear_logs" },
+    { Key::MenuScriptsAdd, L"menu.scripts.add" },
+    { Key::MenuScriptsImportZip, L"menu.scripts.import_zip" },
+    { Key::MenuScriptsExportZip, L"menu.scripts.export_zip" },
+    { Key::MenuScriptsEnable, L"menu.scripts.enable" },
+    { Key::MenuScriptsDisable, L"menu.scripts.disable" },
+    { Key::MenuScriptsDelete, L"menu.scripts.delete" },
+    { Key::MenuTrayExit, L"menu.tray.exit" },
+    { Key::MenuLanguageTitle, L"menu.language.title" },
+    { Key::MenuLanguageRussian, L"menu.language.russian" },
+    { Key::MenuLanguageEnglish, L"menu.language.english" },
+    { Key::HintLabel, L"hint.label" },
+    { Key::ButtonReloadScripts, L"button.reload_scripts" },
+    { Key::ButtonOpenScriptsFolder, L"button.open_scripts_folder" },
+    { Key::ButtonMore, L"button.more" },
+    { Key::StatusReady, L"status.ready" },
+    { Key::TooltipReload, L"tooltip.reload" },
+    { Key::TooltipScriptList, L"tooltip.script_list" },
+    { Key::TooltipOpenScriptsFolder, L"tooltip.open_scripts_folder" },
+    { Key::TooltipMore, L"tooltip.more" },
+    { Key::StatusLanguageUpdated, L"status.language_updated" },
+    { Key::StatusNoScriptsFound, L"status.no_scripts_found" },
+    { Key::ScriptListHotkeyUnavailablePrefix, L"script_list.hotkey_unavailable_prefix" },
+    { Key::StatusLogsCleared, L"status.logs_cleared" },
+    { Key::AboutLoadedScriptsPrefix, L"about.loaded_scripts_prefix" },
+    { Key::AboutScriptsDirectoryPrefix, L"about.scripts_directory_prefix" },
+    { Key::AboutCheckUpdatesHint, L"about.check_updates_hint" },
+    { Key::LogIsEmpty, L"log.is_empty" },
+    { Key::InfoButtonClose, L"info.button.close" },
+    { Key::InfoButtonCheckUpdates, L"info.button.check_updates" }
 };
 
-std::array<std::wstring, kKeyCount> g_ruTexts;
-std::array<std::wstring, kKeyCount> g_enTexts;
 bool g_isInitialized = false;
+std::wstring g_currentLanguageCode = L"ru";
+std::unordered_map<std::wstring, std::unordered_map<std::wstring, std::wstring>> g_embeddedLanguageTexts;
+std::unordered_map<std::wstring, std::unordered_map<std::wstring, std::wstring>> g_allLanguageTexts;
+std::unordered_map<std::wstring, const EmbeddedLanguageFiles::File*> g_embeddedLanguageFiles;
 
-size_t ToIndex(Key key) {
-    return static_cast<size_t>(key);
-}
-
-const Entry* FindEntryByIniName(const std::wstring& iniName) {
-    for (const Entry& entry : kEntries) {
-        if (_wcsicmp(entry.iniName, iniName.c_str()) == 0) {
-            return &entry;
-        }
-    }
-    return nullptr;
-}
-
-void LoadBuiltInTexts() {
-    for (const Entry& entry : kEntries) {
-        const size_t index = ToIndex(entry.key);
-        if (index < kKeyCount) {
-            g_ruTexts[index] = entry.ru;
-            g_enTexts[index] = entry.en;
-        }
-    }
+std::wstring ToLower(std::wstring value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(towlower(ch));
+    });
+    return value;
 }
 
 std::wstring Trim(const std::wstring& value) {
@@ -126,77 +110,94 @@ std::wstring UnescapeIniValue(const std::wstring& value) {
     return result;
 }
 
-std::wstring Utf8ToWide(const std::string& utf8) {
-    if (utf8.empty()) {
-        return std::wstring();
+const Entry* FindEntryByKey(Key key) {
+    for (const Entry& entry : kEntries) {
+        if (entry.key == key) {
+            return &entry;
+        }
     }
-
-    const int requiredSize = MultiByteToWideChar(
-        CP_UTF8,
-        MB_ERR_INVALID_CHARS,
-        utf8.data(),
-        static_cast<int>(utf8.size()),
-        nullptr,
-        0
-    );
-    if (requiredSize <= 0) {
-        return std::wstring();
-    }
-
-    std::wstring wide(static_cast<size_t>(requiredSize), L'\0');
-    const int converted = MultiByteToWideChar(
-        CP_UTF8,
-        MB_ERR_INVALID_CHARS,
-        utf8.data(),
-        static_cast<int>(utf8.size()),
-        wide.data(),
-        requiredSize
-    );
-    if (converted <= 0) {
-        return std::wstring();
-    }
-    return wide;
+    return nullptr;
 }
 
 bool ReadUtf8TextFile(const fs::path& path, std::wstring* text) {
     if (!text) {
         return false;
     }
-    text->clear();
 
     std::ifstream stream(path, std::ios::binary);
     if (!stream) {
+        text->clear();
         return false;
     }
 
-    std::string data(
+    const std::string data(
         (std::istreambuf_iterator<char>(stream)),
         std::istreambuf_iterator<char>()
     );
+
+    std::wstring wide;
     if (data.size() >= 3
         && static_cast<unsigned char>(data[0]) == 0xEF
         && static_cast<unsigned char>(data[1]) == 0xBB
         && static_cast<unsigned char>(data[2]) == 0xBF) {
-        data.erase(0, 3);
+        wide = EncodingUtils::Utf8ToWide(data.substr(3), true, false);
+    } else {
+        wide = EncodingUtils::Utf8ToWide(data, true, false);
     }
 
-    const std::wstring wide = Utf8ToWide(data);
     if (wide.empty() && !data.empty()) {
+        text->clear();
         return false;
     }
+
+    *text = std::move(wide);
+    return true;
+}
+
+bool ReadUtf8Bytes(const unsigned char* data, size_t size, std::wstring* text) {
+    if (!data || !text) {
+        return false;
+    }
+
+    std::string bytes(reinterpret_cast<const char*>(data), size);
+    if (bytes.size() >= 3
+        && static_cast<unsigned char>(bytes[0]) == 0xEF
+        && static_cast<unsigned char>(bytes[1]) == 0xBB
+        && static_cast<unsigned char>(bytes[2]) == 0xBF) {
+        bytes.erase(0, 3);
+    }
+
+    const std::wstring wide = EncodingUtils::Utf8ToWide(bytes, true, false);
+    if (wide.empty() && !bytes.empty()) {
+        text->clear();
+        return false;
+    }
+
     *text = wide;
     return true;
 }
 
-void LoadLanguageOverrides(const fs::path& filePath, std::array<std::wstring, kKeyCount>* targetTexts) {
+bool WriteUtf8BytesFile(const fs::path& path, const unsigned char* data, size_t size) {
+    if (!data || size == 0) {
+        return false;
+    }
+
+    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+    if (!stream) {
+        return false;
+    }
+
+    stream.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(size));
+    return stream.good();
+}
+
+void LoadLanguageMapFromContent(const std::wstring& content,
+                                std::unordered_map<std::wstring, std::wstring>* targetTexts) {
     if (!targetTexts) {
         return;
     }
 
-    std::wstring content;
-    if (!ReadUtf8TextFile(filePath, &content)) {
-        return;
-    }
+    targetTexts->clear();
 
     size_t start = 0;
     while (start <= content.size()) {
@@ -207,19 +208,14 @@ void LoadLanguageOverrides(const fs::path& filePath, std::array<std::wstring, kK
         if (!line.empty() && line.back() == L'\r') {
             line.pop_back();
         }
-        line = Trim(line);
-        if (!line.empty() && line[0] != L';' && line[0] != L'#') {
+
+        const std::wstring trimmedLine = Trim(line);
+        if (!trimmedLine.empty() && trimmedLine[0] != L';' && trimmedLine[0] != L'#') {
             const size_t separator = line.find(L'=');
             if (separator != std::wstring::npos) {
                 const std::wstring key = Trim(line.substr(0, separator));
-                const std::wstring value = UnescapeIniValue(Trim(line.substr(separator + 1)));
-                const Entry* entry = FindEntryByIniName(key);
-                if (entry) {
-                    const size_t index = ToIndex(entry->key);
-                    if (index < kKeyCount) {
-                        (*targetTexts)[index] = value;
-                    }
-                }
+                const std::wstring value = UnescapeIniValue(line.substr(separator + 1));
+                (*targetTexts)[key] = value;
             }
         }
 
@@ -230,17 +226,157 @@ void LoadLanguageOverrides(const fs::path& filePath, std::array<std::wstring, kK
     }
 }
 
+void LoadLanguageFile(const fs::path& filePath,
+                      std::unordered_map<std::wstring, std::wstring>* targetTexts) {
+    std::wstring content;
+    if (!ReadUtf8TextFile(filePath, &content)) {
+        if (targetTexts) {
+            targetTexts->clear();
+        }
+        return;
+    }
+    LoadLanguageMapFromContent(content, targetTexts);
+}
+
+void LoadEmbeddedLanguageTexts() {
+    g_embeddedLanguageTexts.clear();
+    g_allLanguageTexts.clear();
+    g_embeddedLanguageFiles.clear();
+
+    for (size_t index = 0; index < EmbeddedLanguageFiles::kFileCount; ++index) {
+        const EmbeddedLanguageFiles::File& file = EmbeddedLanguageFiles::kFiles[index];
+        const std::wstring languageCode = ToLower(Trim(file.languageCode ? file.languageCode : L""));
+        if (languageCode.empty()) {
+            continue;
+        }
+
+        std::wstring content;
+        if (!ReadUtf8Bytes(file.utf8Data, file.utf8Size, &content)) {
+            continue;
+        }
+
+        std::unordered_map<std::wstring, std::wstring> texts;
+        LoadLanguageMapFromContent(content, &texts);
+        if (texts.empty()) {
+            continue;
+        }
+
+        g_embeddedLanguageTexts[languageCode] = texts;
+        g_allLanguageTexts[languageCode] = std::move(texts);
+        g_embeddedLanguageFiles[languageCode] = &file;
+    }
+}
+
+std::unordered_map<std::wstring, std::wstring> BuildFallbackTexts(const std::wstring& languageCode) {
+    const auto exactIt = g_embeddedLanguageTexts.find(languageCode);
+    if (exactIt != g_embeddedLanguageTexts.end()) {
+        return exactIt->second;
+    }
+
+    const auto englishIt = g_embeddedLanguageTexts.find(L"en");
+    if (languageCode == L"en" && englishIt != g_embeddedLanguageTexts.end()) {
+        return englishIt->second;
+    }
+
+    const auto russianIt = g_embeddedLanguageTexts.find(L"ru");
+    if (russianIt != g_embeddedLanguageTexts.end()) {
+        return russianIt->second;
+    }
+
+    if (englishIt != g_embeddedLanguageTexts.end()) {
+        return englishIt->second;
+    }
+
+    if (!g_embeddedLanguageTexts.empty()) {
+        return g_embeddedLanguageTexts.begin()->second;
+    }
+
+    return {};
+}
+
+void EnsureEmbeddedLanguageFileExists(const fs::path& languageDirectory, const std::wstring& languageCode) {
+    const auto fileIt = g_embeddedLanguageFiles.find(languageCode);
+    if (fileIt == g_embeddedLanguageFiles.end() || !fileIt->second) {
+        return;
+    }
+
+    const fs::path languageFilePath = languageDirectory / (languageCode + L".ini");
+    std::error_code statusError;
+    if (fs::exists(languageFilePath, statusError) && !statusError) {
+        return;
+    }
+
+    WriteUtf8BytesFile(languageFilePath, fileIt->second->utf8Data, fileIt->second->utf8Size);
+}
+
+const wchar_t* FindTextInMap(const std::unordered_map<std::wstring, std::wstring>& texts,
+                             const std::wstring& key) {
+    const auto textIt = texts.find(key);
+    if (textIt == texts.end() || textIt->second.empty()) {
+        return nullptr;
+    }
+    return textIt->second.c_str();
+}
+
+const wchar_t* FindTextInLanguage(const std::wstring& key, const std::wstring& languageCode) {
+    const std::wstring normalizedKey = Trim(key);
+    if (normalizedKey.empty()) {
+        return L"";
+    }
+
+    const std::wstring normalizedLanguageCode = ToLower(Trim(languageCode));
+    if (!normalizedLanguageCode.empty()) {
+        const auto languageIt = g_allLanguageTexts.find(normalizedLanguageCode);
+        if (languageIt != g_allLanguageTexts.end()) {
+            const wchar_t* exactText = FindTextInMap(languageIt->second, normalizedKey);
+            if (exactText) {
+                return exactText;
+            }
+        }
+    }
+
+    if (normalizedLanguageCode != L"ru") {
+        const auto russianIt = g_allLanguageTexts.find(L"ru");
+        if (russianIt != g_allLanguageTexts.end()) {
+            const wchar_t* russianText = FindTextInMap(russianIt->second, normalizedKey);
+            if (russianText) {
+                return russianText;
+            }
+        }
+    }
+
+    if (normalizedLanguageCode != L"en") {
+        const auto englishIt = g_allLanguageTexts.find(L"en");
+        if (englishIt != g_allLanguageTexts.end()) {
+            const wchar_t* englishText = FindTextInMap(englishIt->second, normalizedKey);
+            if (englishText) {
+                return englishText;
+            }
+        }
+    }
+
+    for (const auto& pair : g_allLanguageTexts) {
+        const wchar_t* text = FindTextInMap(pair.second, normalizedKey);
+        if (text) {
+            return text;
+        }
+    }
+
+    return L"";
+}
+
 void EnsureInitialized() {
     if (g_isInitialized) {
         return;
     }
-    LoadBuiltInTexts();
+
+    LoadEmbeddedLanguageTexts();
     g_isInitialized = true;
 }
 } // namespace
 
 void Initialize(const std::wstring& langDirectory) {
-    LoadBuiltInTexts();
+    LoadEmbeddedLanguageTexts();
     g_isInitialized = true;
 
     if (langDirectory.empty()) {
@@ -249,26 +385,129 @@ void Initialize(const std::wstring& langDirectory) {
 
     const fs::path languageDirectory(langDirectory);
     std::error_code statusError;
-    if (!fs::exists(languageDirectory, statusError) || statusError) {
-        return;
-    }
-    if (!fs::is_directory(languageDirectory, statusError) || statusError) {
+    fs::create_directories(languageDirectory, statusError);
+    if (statusError) {
         return;
     }
 
-    LoadLanguageOverrides(languageDirectory / L"ru.ini", &g_ruTexts);
-    LoadLanguageOverrides(languageDirectory / L"en.ini", &g_enTexts);
+    EnsureEmbeddedLanguageFileExists(languageDirectory, L"ru");
+    EnsureEmbeddedLanguageFileExists(languageDirectory, L"en");
+
+    std::error_code iterateError;
+    for (const auto& entry : fs::directory_iterator(languageDirectory, iterateError)) {
+        if (iterateError) {
+            break;
+        }
+        if (!entry.is_regular_file()) {
+            continue;
+        }
+
+        const fs::path filePath = entry.path();
+        if (_wcsicmp(filePath.extension().wstring().c_str(), L".ini") != 0) {
+            continue;
+        }
+
+        const std::wstring languageCode = ToLower(Trim(filePath.stem().wstring()));
+        if (languageCode.empty()) {
+            continue;
+        }
+
+        std::unordered_map<std::wstring, std::wstring> loadedTexts;
+        LoadLanguageFile(filePath, &loadedTexts);
+        if (loadedTexts.empty()) {
+            continue;
+        }
+
+        std::unordered_map<std::wstring, std::wstring> merged = BuildFallbackTexts(languageCode);
+        for (const auto& pair : loadedTexts) {
+            merged[pair.first] = pair.second;
+        }
+        if (merged.find(L"meta.language_name") == merged.end()) {
+            merged[L"meta.language_name"] = languageCode;
+        }
+        g_allLanguageTexts[languageCode] = std::move(merged);
+    }
 }
 
-const wchar_t* GetText(Key key, Language language) {
+void SetCurrentLanguageCode(const std::wstring& languageCode) {
+    std::wstring normalized = ToLower(Trim(languageCode));
+    if (normalized.empty()) {
+        normalized = L"ru";
+    }
+    g_currentLanguageCode = normalized;
+}
+
+const std::wstring& GetCurrentLanguageCode() {
+    return g_currentLanguageCode;
+}
+
+const wchar_t* GetTextByName(const std::wstring& key) {
+    EnsureInitialized();
+    return FindTextInLanguage(key, g_currentLanguageCode);
+}
+
+const wchar_t* GetTextByName(const std::wstring& key, const std::wstring& languageCode) {
+    EnsureInitialized();
+    return FindTextInLanguage(key, languageCode);
+}
+
+std::vector<std::wstring> GetAvailableLanguageCodes() {
     EnsureInitialized();
 
-    const size_t index = ToIndex(key);
-    if (index >= kKeyCount) {
+    std::vector<std::wstring> codes;
+    codes.reserve(g_allLanguageTexts.size());
+    for (const auto& pair : g_allLanguageTexts) {
+        if (!pair.first.empty()) {
+            codes.push_back(pair.first);
+        }
+    }
+
+    std::sort(codes.begin(), codes.end(), [](const std::wstring& left, const std::wstring& right) {
+        if (left == right) {
+            return false;
+        }
+        if (left == L"ru") {
+            return true;
+        }
+        if (right == L"ru") {
+            return false;
+        }
+        if (left == L"en") {
+            return true;
+        }
+        if (right == L"en") {
+            return false;
+        }
+        return left < right;
+    });
+    codes.erase(std::unique(codes.begin(), codes.end()), codes.end());
+    return codes;
+}
+
+std::wstring GetLanguageDisplayName(const std::wstring& languageCode) {
+    EnsureInitialized();
+
+    const std::wstring normalizedCode = ToLower(Trim(languageCode));
+    if (normalizedCode.empty()) {
         return L"";
     }
 
-    const std::wstring& result = language == Language::English ? g_enTexts[index] : g_ruTexts[index];
-    return result.c_str();
+    const wchar_t* localizedName = FindTextInLanguage(L"meta.language_name", normalizedCode);
+    if (localizedName && localizedName[0] != L'\0') {
+        return localizedName;
+    }
+
+    return normalizedCode;
+}
+
+const wchar_t* GetText(Key key) {
+    EnsureInitialized();
+
+    const Entry* entry = FindEntryByKey(key);
+    if (!entry) {
+        return L"";
+    }
+
+    return GetTextByName(entry->iniName);
 }
 } // namespace Localization

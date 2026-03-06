@@ -1,8 +1,10 @@
 #include "Application.h"
 
+#include "AppUiHelpers.h"
 #include "Localization.h"
 #include "ToolTip.h"
 #include "UiRenderer.h"
+#include "PowerShellUtils.h"
 #include "resource.h"
 
 #include <windowsx.h>
@@ -11,24 +13,24 @@
 #include <gdiplus.h>
 #include <objbase.h>
 #include <shellapi.h>
+#include <uxtheme.h>
 
 #include <algorithm>
+#include <cstring>
+#include <cwctype>
 #include <filesystem>
+#include <initializer_list>
+#include <mutex>
+#include <thread>
 #include <sstream>
-
-#pragma comment(lib, "comctl32.lib")
-#pragma comment(lib, "gdiplus.lib")
-#pragma comment(lib, "ole32.lib")
-#pragma comment(lib, "oleaut32.lib")
-#pragma comment(lib, "shell32.lib")
-#pragma comment(lib, "comdlg32.lib")
 
 namespace fs = std::filesystem;
 
 namespace {
-const wchar_t* WINDOW_CLASS_NAME = L"TextMagicWinApiClass";
-const wchar_t* INFO_WINDOW_CLASS_NAME = L"TextMagicInfoWindowClass";
-const wchar_t* MESSAGE_WINDOW_CLASS_NAME = L"TextMagicMessageWindowClass";
+const wchar_t* WINDOW_CLASS_NAME = TM_APP_NAME_W L"WinApiClass";
+const wchar_t* INFO_WINDOW_CLASS_NAME = TM_APP_NAME_W L"InfoWindowClass";
+const wchar_t* MESSAGE_WINDOW_CLASS_NAME = TM_APP_NAME_W L"MessageWindowClass";
+const wchar_t* SINGLE_INSTANCE_MUTEX_NAME = L"Local\\" TM_APP_NAME_W L".SingleInstance";
 
 enum ControlId {
     ID_SCRIPTS_LIST = 1001,
@@ -53,11 +55,15 @@ enum MenuId {
     ID_MENU_SCRIPTS_IMPORT_ZIP = 2010,
     ID_MENU_SCRIPTS_EXPORT_ZIP = 2011,
     ID_MENU_CONTEXT_CLEAR_LOGS = 2012,
-    ID_MENU_LANGUAGE_RU = 2013,
-    ID_MENU_LANGUAGE_EN = 2014,
     ID_MENU_TRAY_EXIT = 2015,
-    ID_MENU_LANGUAGE_LABEL = 2016
+    ID_MENU_LANGUAGE_LABEL = 2016,
+    ID_MENU_INPUT_MODE_PREVIOUS_WORD = 2017,
+    ID_MENU_INPUT_MODE_ALL_TEXT = 2018,
+    ID_MENU_INPUT_MODE_LABEL = 2019
 };
+
+constexpr UINT ID_MENU_LANGUAGE_DYNAMIC_FIRST = 2300;
+constexpr UINT ID_MENU_LANGUAGE_DYNAMIC_LAST = 2399;
 
 enum InfoControlId {
     ID_INFO_TEXT = 2101,
@@ -98,6 +104,7 @@ struct MessageWindowState {
     std::wstring secondaryButtonText;
     bool hasSecondaryButton = false;
     bool useMonoFont = false;
+    bool usesListBox = false;
     int result = IDCANCEL;
     int* resultOut = nullptr;
     HBRUSH editBrush = nullptr;
@@ -105,16 +112,829 @@ struct MessageWindowState {
 
 constexpr int HOTKEY_BASE = 5000;
 constexpr UINT WM_TRAYICON = WM_APP + 1;
+constexpr UINT WM_SCRIPT_EXECUTION_COMPLETE = WM_APP + 2;
+constexpr UINT WM_UPDATE_CHECK_COMPLETE = WM_APP + 3;
+constexpr UINT WM_UPDATE_INSTALL_COMPLETE = WM_APP + 4;
+constexpr UINT WM_IMPORT_ZIP_COMPLETE = WM_APP + 5;
+constexpr UINT WM_EXPORT_ZIP_COMPLETE = WM_APP + 6;
 constexpr UINT TRAY_ICON_ID = 1;
 constexpr int LOGS_MIN_WIDTH = 640;
 constexpr int LOGS_MIN_HEIGHT = 420;
 constexpr int INFO_MIN_WIDTH = 500;
 constexpr int INFO_MIN_HEIGHT = 300;
+constexpr const wchar_t* LANGUAGE_SETTINGS_FILE_NAME = TM_APP_NAME_W L".settings.ini";
+constexpr const wchar_t* LANGUAGE_SETTINGS_SECTION = L"ui";
+constexpr const wchar_t* LANGUAGE_SETTINGS_KEY = L"language";
+constexpr const wchar_t* SCRIPT_INPUT_SETTINGS_KEY = L"script_input_mode";
+constexpr const wchar_t* SCRIPT_INPUT_MODE_PREVIOUS_WORD = L"previous_word";
+constexpr const wchar_t* SCRIPT_INPUT_MODE_ALL_TEXT = L"all_text";
 
-Localization::Language g_currentLanguage = Localization::Language::Russian;
+struct ScriptExecutionTaskResult {
+    std::wstring scriptName;
+    std::wstring sourceText;
+    std::wstring previousWordTrailing;
+    bool hasSelection = false;
+    bool previousWordMode = false;
+    bool noTextAvailable = false;
+    bool executeOk = false;
+    std::wstring outputText;
+    std::wstring executionError;
+};
+
+struct UpdateCheckTaskResult {
+    UpdateCheckResult check;
+};
+
+struct UpdateInstallTaskResult {
+    bool success = false;
+    std::wstring error;
+};
+
+struct ImportZipTaskResult {
+    bool success = false;
+    std::wstring errorMessage;
+    std::vector<std::wstring> importedPaths;
+    int importedCount = 0;
+    int skippedCount = 0;
+};
+
+struct ExportZipTaskResult {
+    bool success = false;
+    std::wstring errorMessage;
+    std::wstring archivePath;
+    int scriptFileCount = 0;
+};
 
 const wchar_t* L(Localization::Key key) {
-    return Localization::GetText(key, g_currentLanguage);
+    return Localization::GetText(key);
+}
+
+const wchar_t* T(const wchar_t* key) {
+    return Localization::GetTextByName(key);
+}
+
+template <typename TResult>
+void PostOwnedMessage(HWND windowHandle, UINT message, TResult* result) {
+    if (!result) {
+        return;
+    }
+    if (!PostMessageW(windowHandle, message, reinterpret_cast<WPARAM>(result), 0)) {
+        delete result;
+    }
+}
+
+std::map<UINT, std::wstring> g_languageMenuTextById;
+std::map<UINT, std::wstring> g_languageMenuCodeById;
+std::mutex g_inputBufferMutex;
+std::wstring g_inputBuffer;
+std::mutex g_registeredHotkeysMutex;
+struct TrackedHotkey {
+    UINT modifiers = 0;
+    UINT virtualKey = 0;
+};
+std::vector<TrackedHotkey> g_trackedHotkeys;
+std::mutex g_hookHotkeysMutex;
+struct HookHotkey {
+    int hotkeyId = 0;
+    UINT modifiers = 0;
+    UINT virtualKey = 0;
+    bool armed = true;
+};
+std::vector<HookHotkey> g_hookHotkeys;
+HWND g_hotkeyDispatchWindow = nullptr;
+HHOOK g_keyboardHook = nullptr;
+HHOOK g_mouseHook = nullptr;
+constexpr size_t MAX_INPUT_BUFFER_CHARS = 2048;
+constexpr UINT HOTKEY_MODIFIER_MASK = MOD_ALT | MOD_CONTROL | MOD_SHIFT | MOD_WIN;
+
+bool IsWordSeparatorChar(wchar_t ch) {
+    return iswspace(ch);
+}
+
+void TrimInputBufferToLimit() {
+    if (g_inputBuffer.size() <= MAX_INPUT_BUFFER_CHARS) {
+        return;
+    }
+    const size_t keepFrom = g_inputBuffer.size() - MAX_INPUT_BUFFER_CHARS;
+    g_inputBuffer.erase(0, keepFrom);
+}
+
+void ClearInputBuffer() {
+    std::lock_guard<std::mutex> lock(g_inputBufferMutex);
+    g_inputBuffer.clear();
+}
+
+void PopInputBufferCharacter() {
+    std::lock_guard<std::mutex> lock(g_inputBufferMutex);
+    if (!g_inputBuffer.empty()) {
+        g_inputBuffer.pop_back();
+    }
+}
+
+void AppendInputBufferText(const std::wstring& text) {
+    if (text.empty()) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_inputBufferMutex);
+    g_inputBuffer += text;
+    TrimInputBufferToLimit();
+}
+
+void ClearTrackedHotkeys() {
+    std::lock_guard<std::mutex> lock(g_registeredHotkeysMutex);
+    g_trackedHotkeys.clear();
+}
+
+void AddTrackedHotkey(UINT modifiers, UINT virtualKey) {
+    std::lock_guard<std::mutex> lock(g_registeredHotkeysMutex);
+    g_trackedHotkeys.push_back({ modifiers & HOTKEY_MODIFIER_MASK, virtualKey });
+}
+
+void ClearHookHotkeys() {
+    std::lock_guard<std::mutex> lock(g_hookHotkeysMutex);
+    g_hookHotkeys.clear();
+}
+
+void SetHotkeyDispatchWindow(HWND window) {
+    std::lock_guard<std::mutex> lock(g_hookHotkeysMutex);
+    g_hotkeyDispatchWindow = window;
+}
+
+void AddHookHotkey(int hotkeyId, UINT modifiers, UINT virtualKey) {
+    std::lock_guard<std::mutex> lock(g_hookHotkeysMutex);
+    g_hookHotkeys.push_back({ hotkeyId, modifiers & HOTKEY_MODIFIER_MASK, virtualKey, true });
+}
+
+bool IsModifierVirtualKey(UINT virtualKey) {
+    return virtualKey == VK_SHIFT
+        || virtualKey == VK_CONTROL
+        || virtualKey == VK_MENU
+        || virtualKey == VK_LWIN
+        || virtualKey == VK_RWIN;
+}
+
+bool IsVirtualKeyPressed(int virtualKey) {
+    return (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
+}
+
+bool MatchesVirtualKey(DWORD inputVkCode, UINT hotkeyVirtualKey) {
+    if (hotkeyVirtualKey == VK_SHIFT) {
+        return inputVkCode == VK_SHIFT || inputVkCode == VK_LSHIFT || inputVkCode == VK_RSHIFT;
+    }
+    if (hotkeyVirtualKey == VK_CONTROL) {
+        return inputVkCode == VK_CONTROL || inputVkCode == VK_LCONTROL || inputVkCode == VK_RCONTROL;
+    }
+    if (hotkeyVirtualKey == VK_MENU) {
+        return inputVkCode == VK_MENU || inputVkCode == VK_LMENU || inputVkCode == VK_RMENU;
+    }
+    if (hotkeyVirtualKey == VK_LWIN || hotkeyVirtualKey == VK_RWIN) {
+        return inputVkCode == VK_LWIN || inputVkCode == VK_RWIN;
+    }
+    return hotkeyVirtualKey == static_cast<UINT>(inputVkCode);
+}
+
+UINT GetCurrentHotkeyModifiers() {
+    const bool controlDown = IsVirtualKeyPressed(VK_CONTROL);
+    const bool altDown = IsVirtualKeyPressed(VK_MENU);
+    const bool shiftDown = IsVirtualKeyPressed(VK_SHIFT);
+    const bool winDown = IsVirtualKeyPressed(VK_LWIN) || IsVirtualKeyPressed(VK_RWIN);
+    return (controlDown ? MOD_CONTROL : 0)
+        | (altDown ? MOD_ALT : 0)
+        | (shiftDown ? MOD_SHIFT : 0)
+        | (winDown ? MOD_WIN : 0);
+}
+
+bool IsDualModifierPressed(UINT hotkeyVirtualKey, DWORD inputVkCode) {
+    if (hotkeyVirtualKey == VK_SHIFT) {
+        if (inputVkCode == VK_LSHIFT) {
+            return IsVirtualKeyPressed(VK_RSHIFT);
+        }
+        if (inputVkCode == VK_RSHIFT) {
+            return IsVirtualKeyPressed(VK_LSHIFT);
+        }
+        return IsVirtualKeyPressed(VK_LSHIFT) && IsVirtualKeyPressed(VK_RSHIFT);
+    }
+    if (hotkeyVirtualKey == VK_CONTROL) {
+        if (inputVkCode == VK_LCONTROL) {
+            return IsVirtualKeyPressed(VK_RCONTROL);
+        }
+        if (inputVkCode == VK_RCONTROL) {
+            return IsVirtualKeyPressed(VK_LCONTROL);
+        }
+        return IsVirtualKeyPressed(VK_LCONTROL) && IsVirtualKeyPressed(VK_RCONTROL);
+    }
+    if (hotkeyVirtualKey == VK_MENU) {
+        if (inputVkCode == VK_LMENU) {
+            return IsVirtualKeyPressed(VK_RMENU);
+        }
+        if (inputVkCode == VK_RMENU) {
+            return IsVirtualKeyPressed(VK_LMENU);
+        }
+        return IsVirtualKeyPressed(VK_LMENU) && IsVirtualKeyPressed(VK_RMENU);
+    }
+    if (hotkeyVirtualKey == VK_LWIN || hotkeyVirtualKey == VK_RWIN) {
+        if (inputVkCode == VK_LWIN) {
+            return IsVirtualKeyPressed(VK_RWIN);
+        }
+        if (inputVkCode == VK_RWIN) {
+            return IsVirtualKeyPressed(VK_LWIN);
+        }
+        return IsVirtualKeyPressed(VK_LWIN) && IsVirtualKeyPressed(VK_RWIN);
+    }
+    return true;
+}
+
+bool IsHotkeyMatchedByKeyEvent(UINT modifiers, UINT virtualKey, DWORD inputVkCode, UINT currentModifiers) {
+    if ((modifiers & HOTKEY_MODIFIER_MASK) != currentModifiers) {
+        return false;
+    }
+    if (!MatchesVirtualKey(inputVkCode, virtualKey)) {
+        return false;
+    }
+    const bool duplicatesModifierKey =
+        (virtualKey == VK_SHIFT && (modifiers & MOD_SHIFT) != 0)
+        || (virtualKey == VK_CONTROL && (modifiers & MOD_CONTROL) != 0)
+        || (virtualKey == VK_MENU && (modifiers & MOD_ALT) != 0)
+        || ((virtualKey == VK_LWIN || virtualKey == VK_RWIN) && (modifiers & MOD_WIN) != 0);
+    if (duplicatesModifierKey) {
+        return IsDualModifierPressed(virtualKey, inputVkCode);
+    }
+    return true;
+}
+
+bool IsHotkeyStillHeld(UINT modifiers, UINT virtualKey, UINT currentModifiers) {
+    if ((modifiers & HOTKEY_MODIFIER_MASK) != currentModifiers) {
+        return false;
+    }
+    if (virtualKey == VK_SHIFT) {
+        return (modifiers & MOD_SHIFT) != 0
+            ? (IsVirtualKeyPressed(VK_LSHIFT) && IsVirtualKeyPressed(VK_RSHIFT))
+            : IsVirtualKeyPressed(VK_SHIFT);
+    }
+    if (virtualKey == VK_CONTROL) {
+        return (modifiers & MOD_CONTROL) != 0
+            ? (IsVirtualKeyPressed(VK_LCONTROL) && IsVirtualKeyPressed(VK_RCONTROL))
+            : IsVirtualKeyPressed(VK_CONTROL);
+    }
+    if (virtualKey == VK_MENU) {
+        return (modifiers & MOD_ALT) != 0
+            ? (IsVirtualKeyPressed(VK_LMENU) && IsVirtualKeyPressed(VK_RMENU))
+            : IsVirtualKeyPressed(VK_MENU);
+    }
+    if (virtualKey == VK_LWIN || virtualKey == VK_RWIN) {
+        return (modifiers & MOD_WIN) != 0
+            ? (IsVirtualKeyPressed(VK_LWIN) && IsVirtualKeyPressed(VK_RWIN))
+            : (IsVirtualKeyPressed(VK_LWIN) || IsVirtualKeyPressed(VK_RWIN));
+    }
+    return IsVirtualKeyPressed(static_cast<int>(virtualKey));
+}
+
+void DispatchHookHotkeysOnKeyDown(DWORD inputVkCode) {
+    const UINT currentModifiers = GetCurrentHotkeyModifiers();
+    std::lock_guard<std::mutex> lock(g_hookHotkeysMutex);
+    if (!g_hotkeyDispatchWindow || !IsWindow(g_hotkeyDispatchWindow)) {
+        return;
+    }
+    for (auto& hotkey : g_hookHotkeys) {
+        if (!hotkey.armed) {
+            continue;
+        }
+        if (!IsHotkeyMatchedByKeyEvent(hotkey.modifiers, hotkey.virtualKey, inputVkCode, currentModifiers)) {
+            continue;
+        }
+        if (PostMessageW(g_hotkeyDispatchWindow, WM_HOTKEY, static_cast<WPARAM>(hotkey.hotkeyId), 0)) {
+            hotkey.armed = false;
+        }
+    }
+}
+
+void RearmHookHotkeysIfReleased() {
+    const UINT currentModifiers = GetCurrentHotkeyModifiers();
+    std::lock_guard<std::mutex> lock(g_hookHotkeysMutex);
+    for (auto& hotkey : g_hookHotkeys) {
+        if (hotkey.armed) {
+            continue;
+        }
+        if (!IsHotkeyStillHeld(hotkey.modifiers, hotkey.virtualKey, currentModifiers)) {
+            hotkey.armed = true;
+        }
+    }
+}
+
+bool IsTrackedHotkeyPressed(DWORD vkCode, bool controlDown, bool altDown, bool shiftDown, bool winDown) {
+    const UINT currentModifiers =
+        (controlDown ? MOD_CONTROL : 0)
+        | (altDown ? MOD_ALT : 0)
+        | (shiftDown ? MOD_SHIFT : 0)
+        | (winDown ? MOD_WIN : 0);
+
+    std::lock_guard<std::mutex> lock(g_registeredHotkeysMutex);
+    for (const TrackedHotkey& hotkey : g_trackedHotkeys) {
+        if (IsHotkeyMatchedByKeyEvent(hotkey.modifiers, hotkey.virtualKey, vkCode, currentModifiers)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void AppendKeyToInputBuffer(DWORD vkCode, DWORD scanCode) {
+    BYTE keyboardState[256] = {};
+    if (!GetKeyboardState(keyboardState)) {
+        return;
+    }
+
+    if (vkCode < 256) {
+        keyboardState[vkCode] |= 0x80;
+    }
+
+    HKL keyboardLayout = GetKeyboardLayout(0);
+    const HWND foreground = GetForegroundWindow();
+    if (foreground) {
+        const DWORD threadId = GetWindowThreadProcessId(foreground, nullptr);
+        if (threadId != 0) {
+            keyboardLayout = GetKeyboardLayout(threadId);
+        }
+    }
+
+    wchar_t text[8] = {};
+    const int converted = ToUnicodeEx(
+        static_cast<UINT>(vkCode),
+        static_cast<UINT>(scanCode),
+        keyboardState,
+        text,
+        static_cast<int>(_countof(text) - 1),
+        0,
+        keyboardLayout
+    );
+
+    if (converted > 0) {
+        AppendInputBufferText(std::wstring(text, text + converted));
+    } else if (converted < 0) {
+        ToUnicodeEx(
+            static_cast<UINT>(vkCode),
+            static_cast<UINT>(scanCode),
+            keyboardState,
+            text,
+            static_cast<int>(_countof(text) - 1),
+            0,
+            keyboardLayout
+        );
+    }
+}
+
+void HandleInputBufferKeyDown(DWORD vkCode, DWORD scanCode) {
+    switch (vkCode) {
+    case VK_LEFT:
+    case VK_RIGHT:
+    case VK_DELETE:
+        ClearInputBuffer();
+        return;
+    case VK_BACK:
+        PopInputBufferCharacter();
+        return;
+    default:
+        break;
+    }
+
+    if (vkCode == VK_SHIFT || vkCode == VK_CONTROL || vkCode == VK_MENU
+        || vkCode == VK_LWIN || vkCode == VK_RWIN
+        || vkCode == VK_CAPITAL || vkCode == VK_ESCAPE) {
+        return;
+    }
+    if (vkCode >= VK_F1 && vkCode <= VK_F24) {
+        return;
+    }
+
+    const bool controlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool altDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+    const bool shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+    const bool lwinDown = (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0;
+    const bool rwinDown = (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
+    const bool winDown = lwinDown || rwinDown;
+    if (IsTrackedHotkeyPressed(vkCode, controlDown, altDown, shiftDown, winDown)) {
+        return;
+    }
+    if (controlDown || altDown || lwinDown || rwinDown) {
+        return;
+    }
+
+    AppendKeyToInputBuffer(vkCode, scanCode);
+}
+
+LRESULT CALLBACK InputKeyboardHookProc(int code, WPARAM wParam, LPARAM lParam) {
+    if (code == HC_ACTION) {
+        const auto* keyInfo = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
+        if (keyInfo && (keyInfo->flags & LLKHF_INJECTED) == 0) {
+            if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
+                DispatchHookHotkeysOnKeyDown(keyInfo->vkCode);
+                HandleInputBufferKeyDown(keyInfo->vkCode, keyInfo->scanCode);
+            } else if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
+                RearmHookHotkeysIfReleased();
+            }
+        }
+    }
+    return CallNextHookEx(g_keyboardHook, code, wParam, lParam);
+}
+
+LRESULT CALLBACK InputMouseHookProc(int code, WPARAM wParam, LPARAM lParam) {
+    if (code == HC_ACTION && (wParam == WM_LBUTTONDOWN || wParam == WM_RBUTTONDOWN)) {
+        const auto* mouseInfo = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
+        if (!mouseInfo || (mouseInfo->flags & LLMHF_INJECTED) == 0) {
+            ClearInputBuffer();
+        }
+    }
+    return CallNextHookEx(g_mouseHook, code, wParam, lParam);
+}
+
+void InstallInputHooks(HINSTANCE hInstance) {
+    if (!g_keyboardHook) {
+        g_keyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, InputKeyboardHookProc, hInstance, 0);
+    }
+    if (!g_mouseHook) {
+        g_mouseHook = SetWindowsHookExW(WH_MOUSE_LL, InputMouseHookProc, hInstance, 0);
+    }
+}
+
+void UninstallInputHooks() {
+    if (g_keyboardHook) {
+        UnhookWindowsHookEx(g_keyboardHook);
+        g_keyboardHook = nullptr;
+    }
+    if (g_mouseHook) {
+        UnhookWindowsHookEx(g_mouseHook);
+        g_mouseHook = nullptr;
+    }
+}
+
+bool ConsumePreviousWordFromInputBuffer(std::wstring* word, std::wstring* trailing, size_t* deleteChars) {
+    if (word) {
+        word->clear();
+    }
+    if (trailing) {
+        trailing->clear();
+    }
+    if (deleteChars) {
+        *deleteChars = 0;
+    }
+
+    std::lock_guard<std::mutex> lock(g_inputBufferMutex);
+    if (g_inputBuffer.empty()) {
+        return false;
+    }
+
+    size_t wordEnd = g_inputBuffer.size();
+    while (wordEnd > 0 && IsWordSeparatorChar(g_inputBuffer[wordEnd - 1])) {
+        --wordEnd;
+    }
+    if (wordEnd == 0) {
+        return false;
+    }
+
+    size_t wordStart = wordEnd;
+    while (wordStart > 0 && !IsWordSeparatorChar(g_inputBuffer[wordStart - 1])) {
+        --wordStart;
+    }
+    if (wordStart >= wordEnd) {
+        return false;
+    }
+
+    const std::wstring capturedWord = g_inputBuffer.substr(wordStart, wordEnd - wordStart);
+    const std::wstring capturedTrailing = g_inputBuffer.substr(wordEnd);
+    g_inputBuffer.erase(wordStart);
+
+    if (word) {
+        *word = capturedWord;
+    }
+    if (trailing) {
+        *trailing = capturedTrailing;
+    }
+    if (deleteChars) {
+        *deleteChars = capturedWord.size() + capturedTrailing.size();
+    }
+    return true;
+}
+
+bool ImportScriptFileToDirectory(const std::wstring& scriptsDirectory,
+                                 const std::wstring& sourcePath,
+                                 std::wstring* copiedPath) {
+    if (copiedPath) {
+        copiedPath->clear();
+    }
+
+    const fs::path sourceFile(sourcePath);
+    std::error_code statError;
+    if (!fs::is_regular_file(sourceFile, statError) || statError) {
+        return false;
+    }
+    if (!IsTmscriptFilePath(sourceFile)) {
+        return false;
+    }
+
+    std::error_code createDirError;
+    fs::create_directories(fs::path(scriptsDirectory), createDirError);
+    if (createDirError) {
+        return false;
+    }
+
+    fs::path destination = fs::path(scriptsDirectory) / sourceFile.filename();
+    std::error_code equivalentError;
+    if (fs::exists(destination) && fs::equivalent(sourceFile, destination, equivalentError) && !equivalentError) {
+        return false;
+    }
+
+    if (fs::exists(destination)) {
+        const std::wstring stem = destination.stem().wstring();
+        const std::wstring ext = destination.extension().wstring();
+        int suffix = 1;
+        while (fs::exists(destination)) {
+            destination = fs::path(scriptsDirectory) / (stem + L"_" + std::to_wstring(suffix) + ext);
+            ++suffix;
+        }
+    }
+
+    std::error_code copyError;
+    fs::copy_file(sourceFile, destination, fs::copy_options::none, copyError);
+    if (copyError) {
+        return false;
+    }
+
+    if (copiedPath) {
+        *copiedPath = destination.wstring();
+    }
+    return true;
+}
+
+bool IsDynamicLanguageMenuId(UINT itemId) {
+    return itemId >= ID_MENU_LANGUAGE_DYNAMIC_FIRST && itemId <= ID_MENU_LANGUAGE_DYNAMIC_LAST;
+}
+
+void ClearDynamicLanguageMenuItems() {
+    g_languageMenuTextById.clear();
+    g_languageMenuCodeById.clear();
+}
+
+bool TryGetLanguageCodeByMenuId(UINT itemId, std::wstring* languageCode) {
+    if (languageCode) {
+        languageCode->clear();
+    }
+    const auto it = g_languageMenuCodeById.find(itemId);
+    if (it == g_languageMenuCodeById.end()) {
+        return false;
+    }
+    if (languageCode) {
+        *languageCode = it->second;
+    }
+    return true;
+}
+
+struct DialogFilterEntry {
+    const wchar_t* labelKey;
+    const wchar_t* pattern;
+};
+
+std::wstring BuildDialogFilter(std::initializer_list<DialogFilterEntry> entries) {
+    std::wstring filter;
+    for (const DialogFilterEntry& entry : entries) {
+        filter += T(entry.labelKey);
+        filter.push_back(L'\0');
+        filter += entry.pattern ? entry.pattern : L"*.*";
+        filter.push_back(L'\0');
+    }
+    filter.push_back(L'\0');
+    return filter;
+}
+
+bool AppendStyledPopupSubMenu(HMENU parentMenu, HMENU childMenu, UINT styleId, const wchar_t* text) {
+    if (!parentMenu || !childMenu) {
+        return false;
+    }
+    if (!AppendMenuW(parentMenu, MF_OWNERDRAW | MF_POPUP, reinterpret_cast<UINT_PTR>(childMenu), text)) {
+        return false;
+    }
+
+    const int itemCount = GetMenuItemCount(parentMenu);
+    if (itemCount <= 0) {
+        return false;
+    }
+
+    MENUITEMINFOW itemInfo = {};
+    itemInfo.cbSize = sizeof(itemInfo);
+    itemInfo.fMask = MIIM_DATA;
+    itemInfo.dwItemData = static_cast<ULONG_PTR>(styleId);
+    return SetMenuItemInfoW(parentMenu, static_cast<UINT>(itemCount - 1), TRUE, &itemInfo) != FALSE;
+}
+
+std::wstring GetLanguageSettingsPath(const std::wstring& executableDirectory) {
+    return executableDirectory + L"\\" + LANGUAGE_SETTINGS_FILE_NAME;
+}
+
+std::wstring ParseLanguageCodeSetting(const wchar_t* value) {
+    if (!value || value[0] == L'\0') {
+        return L"ru";
+    }
+    std::wstring code = value;
+    std::transform(code.begin(), code.end(), code.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(towlower(ch));
+    });
+    return code;
+}
+
+bool ParseScriptInputFallbackToAllTextSetting(const wchar_t* value) {
+    if (!value || value[0] == L'\0') {
+        return false;
+    }
+    std::wstring mode = value;
+    std::transform(mode.begin(), mode.end(), mode.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(towlower(ch));
+    });
+    return mode == SCRIPT_INPUT_MODE_ALL_TEXT;
+}
+
+using fnOpenNcThemeData = HTHEME(WINAPI *)(HWND hWnd, LPCWSTR classList);
+using fnAllowDarkModeForWindow = bool (WINAPI *)(HWND hWnd, bool allow);
+using fnAllowDarkModeForApp = bool (WINAPI *)(bool allow);
+using fnRefreshImmersiveColorPolicyState = void (WINAPI *)();
+
+enum PreferredAppMode {
+    AppModeDefault,
+    AppModeAllowDark,
+    AppModeForceDark,
+    AppModeForceLight,
+    AppModeMax
+};
+using fnSetPreferredAppMode = PreferredAppMode (WINAPI *)(PreferredAppMode appMode);
+
+fnOpenNcThemeData g_openNcThemeData = nullptr;
+fnAllowDarkModeForWindow g_allowDarkModeForWindow = nullptr;
+fnAllowDarkModeForApp g_allowDarkModeForApp = nullptr;
+fnRefreshImmersiveColorPolicyState g_refreshImmersiveColorPolicyState = nullptr;
+fnSetPreferredAppMode g_setPreferredAppMode = nullptr;
+
+template <typename T, typename T1, typename T2>
+constexpr T RvaToVa(T1 base, T2 rva) {
+    return reinterpret_cast<T>(reinterpret_cast<ULONG_PTR>(base) + rva);
+}
+
+template <typename T>
+constexpr T DataDirectoryFromModuleBase(void* moduleBase, size_t entryId) {
+    auto* dosHeader = reinterpret_cast<PIMAGE_DOS_HEADER>(moduleBase);
+    auto* ntHeader = RvaToVa<PIMAGE_NT_HEADERS>(moduleBase, dosHeader->e_lfanew);
+    auto dataDirectory = ntHeader->OptionalHeader.DataDirectory;
+    return RvaToVa<T>(moduleBase, dataDirectory[entryId].VirtualAddress);
+}
+
+PIMAGE_THUNK_DATA FindAddressByOrdinal(PIMAGE_THUNK_DATA importNames, PIMAGE_THUNK_DATA importAddresses, uint16_t ordinal) {
+    for (; importNames->u1.Ordinal; ++importNames, ++importAddresses) {
+        if (IMAGE_SNAP_BY_ORDINAL(importNames->u1.Ordinal) && IMAGE_ORDINAL(importNames->u1.Ordinal) == ordinal) {
+            return importAddresses;
+        }
+    }
+    return nullptr;
+}
+
+PIMAGE_THUNK_DATA FindDelayLoadThunkInModule(void* moduleBase, const char* dllName, uint16_t ordinal) {
+    auto* imports = DataDirectoryFromModuleBase<PIMAGE_DELAYLOAD_DESCRIPTOR>(moduleBase, IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT);
+    for (; imports->DllNameRVA; ++imports) {
+        if (_stricmp(RvaToVa<LPCSTR>(moduleBase, imports->DllNameRVA), dllName) != 0) {
+            continue;
+        }
+        auto* importNames = RvaToVa<PIMAGE_THUNK_DATA>(moduleBase, imports->ImportNameTableRVA);
+        auto* importAddresses = RvaToVa<PIMAGE_THUNK_DATA>(moduleBase, imports->ImportAddressTableRVA);
+        return FindAddressByOrdinal(importNames, importAddresses, ordinal);
+    }
+    return nullptr;
+}
+
+HTHEME WINAPI OpenNcThemeDataDarkScrollBarHook(HWND hWnd, LPCWSTR classList) {
+    if (classList && wcscmp(classList, L"ScrollBar") == 0) {
+        hWnd = nullptr;
+        classList = L"Explorer::ScrollBar";
+    }
+    return g_openNcThemeData ? g_openNcThemeData(hWnd, classList) : nullptr;
+}
+
+void EnsureDarkScrollBarHookInstalled() {
+    static bool initialized = false;
+    if (initialized) {
+        return;
+    }
+    initialized = true;
+
+    HMODULE hUxtheme = LoadLibraryExW(L"uxtheme.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (!hUxtheme) {
+        return;
+    }
+    g_refreshImmersiveColorPolicyState = reinterpret_cast<fnRefreshImmersiveColorPolicyState>(GetProcAddress(hUxtheme, MAKEINTRESOURCEA(104)));
+    g_allowDarkModeForWindow = reinterpret_cast<fnAllowDarkModeForWindow>(GetProcAddress(hUxtheme, MAKEINTRESOURCEA(133)));
+    auto ord135 = GetProcAddress(hUxtheme, MAKEINTRESOURCEA(135));
+    g_setPreferredAppMode = reinterpret_cast<fnSetPreferredAppMode>(ord135);
+    if (!g_setPreferredAppMode) {
+        g_allowDarkModeForApp = reinterpret_cast<fnAllowDarkModeForApp>(ord135);
+    }
+
+    if (g_setPreferredAppMode) {
+        g_setPreferredAppMode(AppModeAllowDark);
+    } else if (g_allowDarkModeForApp) {
+        g_allowDarkModeForApp(true);
+    }
+    if (g_refreshImmersiveColorPolicyState) {
+        g_refreshImmersiveColorPolicyState();
+    }
+
+    g_openNcThemeData = reinterpret_cast<fnOpenNcThemeData>(GetProcAddress(hUxtheme, MAKEINTRESOURCEA(49)));
+    if (!g_openNcThemeData) {
+        return;
+    }
+
+    HMODULE hComctl = LoadLibraryExW(L"comctl32.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (!hComctl) {
+        return;
+    }
+
+    auto* address = FindDelayLoadThunkInModule(hComctl, "uxtheme.dll", 49);
+    if (!address) {
+        return;
+    }
+
+    DWORD oldProtect = 0;
+    if (!VirtualProtect(address, sizeof(IMAGE_THUNK_DATA), PAGE_READWRITE, &oldProtect)) {
+        return;
+    }
+
+    address->u1.Function = reinterpret_cast<ULONG_PTR>(OpenNcThemeDataDarkScrollBarHook);
+    VirtualProtect(address, sizeof(IMAGE_THUNK_DATA), oldProtect, &oldProtect);
+}
+
+void ApplyDarkScrollBar(HWND control) {
+    if (!control) {
+        return;
+    }
+    EnsureDarkScrollBarHookInstalled();
+    if (g_allowDarkModeForWindow) {
+        g_allowDarkModeForWindow(control, true);
+    }
+    SetWindowTheme(control, L"Explorer", nullptr);
+    SendMessageW(control, WM_THEMECHANGED, 0, 0);
+    SetWindowPos(
+        control,
+        nullptr,
+        0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
+    );
+    RedrawWindow(control, nullptr, nullptr, RDW_INVALIDATE | RDW_FRAME | RDW_UPDATENOW);
+}
+
+void LoadLanguageSetting(const std::wstring& settingsPath) {
+    wchar_t value[32] = {};
+    GetPrivateProfileStringW(
+        LANGUAGE_SETTINGS_SECTION,
+        LANGUAGE_SETTINGS_KEY,
+        L"",
+        value,
+        static_cast<DWORD>(_countof(value)),
+        settingsPath.c_str()
+    );
+    if (value[0] == L'\0') {
+        return;
+    }
+    Localization::SetCurrentLanguageCode(ParseLanguageCodeSetting(value));
+}
+
+void LoadScriptInputModeSetting(const std::wstring& settingsPath, bool* fallbackToAllText) {
+    if (!fallbackToAllText) {
+        return;
+    }
+    wchar_t value[64] = {};
+    GetPrivateProfileStringW(
+        LANGUAGE_SETTINGS_SECTION,
+        SCRIPT_INPUT_SETTINGS_KEY,
+        L"",
+        value,
+        static_cast<DWORD>(_countof(value)),
+        settingsPath.c_str()
+    );
+    *fallbackToAllText = ParseScriptInputFallbackToAllTextSetting(value);
+}
+
+bool SaveLanguageSetting(const std::wstring& settingsPath) {
+    const std::wstring value = Localization::GetCurrentLanguageCode().empty()
+        ? L"ru"
+        : Localization::GetCurrentLanguageCode();
+    return WritePrivateProfileStringW(
+        LANGUAGE_SETTINGS_SECTION,
+        LANGUAGE_SETTINGS_KEY,
+        value.c_str(),
+        settingsPath.c_str()
+    ) != FALSE;
+}
+
+bool SaveScriptInputModeSetting(const std::wstring& settingsPath, bool fallbackToAllText) {
+    return WritePrivateProfileStringW(
+        LANGUAGE_SETTINGS_SECTION,
+        SCRIPT_INPUT_SETTINGS_KEY,
+        fallbackToAllText ? SCRIPT_INPUT_MODE_ALL_TEXT : SCRIPT_INPUT_MODE_PREVIOUS_WORD,
+        settingsPath.c_str()
+    ) != FALSE;
 }
 
 bool IsStyledMenuItem(UINT itemId);
@@ -173,19 +993,28 @@ const wchar_t* GetMenuItemText(UINT itemId) {
         return L(Localization::Key::MenuScriptsDisable);
     case ID_MENU_SCRIPTS_DELETE:
         return L(Localization::Key::MenuScriptsDelete);
-    case ID_MENU_LANGUAGE_RU:
-        return L"Русский";
-    case ID_MENU_LANGUAGE_EN:
-        return L"English";
     case ID_MENU_TRAY_EXIT:
         return L(Localization::Key::MenuTrayExit);
     case ID_MENU_LANGUAGE_LABEL:
         return L(Localization::Key::MenuLanguageTitle);
+    case ID_MENU_INPUT_MODE_LABEL:
+        return T(L"menu.input_mode.title");
+    case ID_MENU_INPUT_MODE_PREVIOUS_WORD:
+        return T(L"menu.input_mode.previous_word");
+    case ID_MENU_INPUT_MODE_ALL_TEXT:
+        return T(L"menu.input_mode.all_text");
     case ID_MENU_MORE_SEPARATOR:
         return L"";
     default:
-        return L"";
+        {
+            const auto it = g_languageMenuTextById.find(itemId);
+            return it != g_languageMenuTextById.end() ? it->second.c_str() : L"";
+        }
     }
+}
+
+bool IsSubmenuHeaderMenuItem(UINT itemId) {
+    return itemId == ID_MENU_LANGUAGE_LABEL || itemId == ID_MENU_INPUT_MODE_LABEL;
 }
 
 bool IsStyledMenuItem(UINT itemId) {
@@ -195,10 +1024,13 @@ bool IsStyledMenuItem(UINT itemId) {
         || itemId == ID_MENU_SCRIPTS_ADD || itemId == ID_MENU_SCRIPTS_IMPORT_ZIP
         || itemId == ID_MENU_SCRIPTS_EXPORT_ZIP || itemId == ID_MENU_SCRIPTS_ENABLE
         || itemId == ID_MENU_SCRIPTS_DISABLE || itemId == ID_MENU_SCRIPTS_DELETE
-        || itemId == ID_MENU_LANGUAGE_RU || itemId == ID_MENU_LANGUAGE_EN
         || itemId == ID_MENU_LANGUAGE_LABEL
+        || itemId == ID_MENU_INPUT_MODE_LABEL
+        || itemId == ID_MENU_INPUT_MODE_PREVIOUS_WORD
+        || itemId == ID_MENU_INPUT_MODE_ALL_TEXT
         || itemId == ID_MENU_TRAY_EXIT
-        || itemId == ID_MENU_MORE_SEPARATOR;
+        || itemId == ID_MENU_MORE_SEPARATOR
+        || IsDynamicLanguageMenuId(itemId);
 }
 
 const wchar_t* GetInfoWindowTitleByKind(int kind) {
@@ -234,7 +1066,7 @@ void MeasureStyledMenuItem(MEASUREITEMSTRUCT* mis) {
         ReleaseDC(nullptr, hdc);
     }
     const UINT minWidth = itemId == ID_MENU_TRAY_EXIT ? 130 : 170;
-    const UINT extraWidth = itemId == ID_MENU_LANGUAGE_LABEL ? 48 : 34;
+    const UINT extraWidth = IsSubmenuHeaderMenuItem(itemId) ? 48 : 34;
     mis->itemHeight = itemId == ID_MENU_TRAY_EXIT ? 30 : 34;
     mis->itemWidth = std::max<UINT>(minWidth, static_cast<UINT>((textRect.right - textRect.left) + extraWidth));
 }
@@ -290,7 +1122,7 @@ void DrawStyledMenuItem(const DRAWITEMSTRUCT* dis) {
 
         RECT textRect = dis->rcItem;
         textRect.left += checked ? 28 : 14;
-        textRect.right -= itemId == ID_MENU_LANGUAGE_LABEL ? 28 : 10;
+        textRect.right -= IsSubmenuHeaderMenuItem(itemId) ? 28 : 10;
         SetBkMode(dis->hDC, TRANSPARENT);
         SetTextColor(dis->hDC, disabled ? RGB(120, 120, 120) : RGB(235, 235, 235));
 
@@ -306,11 +1138,19 @@ void DrawStyledMenuItem(const DRAWITEMSTRUCT* dis) {
         HFONT menuFont = GetMenuFontForItem(itemId);
         HFONT oldFont = static_cast<HFONT>(SelectObject(dis->hDC, menuFont));
         DrawTextW(dis->hDC, GetMenuItemText(itemId), -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        if (itemId == ID_MENU_LANGUAGE_LABEL) {
-            RECT arrowRect = dis->rcItem;
-            arrowRect.right -= 12;
-            arrowRect.left = arrowRect.right - 10;
-            DrawTextW(dis->hDC, L">", -1, &arrowRect, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+        if (IsSubmenuHeaderMenuItem(itemId)) {
+            const COLORREF arrowColor = disabled
+                ? RGB(95, 95, 95)
+                : (selected ? RGB(175, 175, 175) : RGB(128, 128, 128));
+            HPEN arrowPen = CreatePen(PS_SOLID, 2, arrowColor);
+            HPEN oldArrowPen = static_cast<HPEN>(SelectObject(dis->hDC, arrowPen));
+            const int cx = dis->rcItem.right - 18;
+            const int cy = (dis->rcItem.top + dis->rcItem.bottom) / 2;
+            MoveToEx(dis->hDC, cx - 3, cy - 4, nullptr);
+            LineTo(dis->hDC, cx + 1, cy);
+            LineTo(dis->hDC, cx - 3, cy + 4);
+            SelectObject(dis->hDC, oldArrowPen);
+            DeleteObject(arrowPen);
         }
         SelectObject(dis->hDC, oldFont);
     }
@@ -380,271 +1220,6 @@ void ShowStyledContextMenu(HWND ownerWindow, POINT screenPoint, bool includeSave
     DestroyMenu(contextMenu);
 }
 
-bool CopyTextToClipboard(HWND ownerWindow, const std::wstring& text) {
-    if (!OpenClipboard(ownerWindow)) {
-        return false;
-    }
-
-    EmptyClipboard();
-    const size_t bytes = (text.size() + 1) * sizeof(wchar_t);
-    HGLOBAL memoryHandle = GlobalAlloc(GMEM_MOVEABLE, bytes);
-    if (!memoryHandle) {
-        CloseClipboard();
-        return false;
-    }
-
-    void* memory = GlobalLock(memoryHandle);
-    if (!memory) {
-        GlobalFree(memoryHandle);
-        CloseClipboard();
-        return false;
-    }
-
-    CopyMemory(memory, text.c_str(), bytes);
-    GlobalUnlock(memoryHandle);
-
-    if (!SetClipboardData(CF_UNICODETEXT, memoryHandle)) {
-        GlobalFree(memoryHandle);
-        CloseClipboard();
-        return false;
-    }
-
-    CloseClipboard();
-    return true;
-}
-
-void CopyEditSelectionOrAll(HWND editControl) {
-    if (!editControl || !IsWindow(editControl)) {
-        return;
-    }
-
-    SetFocus(editControl);
-    const LRESULT selection = SendMessageW(editControl, EM_GETSEL, 0, 0);
-    const int start = static_cast<int>(LOWORD(selection));
-    const int end = static_cast<int>(HIWORD(selection));
-    const bool noSelection = start == end;
-
-    if (noSelection) {
-        SendMessageW(editControl, EM_SETSEL, 0, -1);
-    }
-    SendMessageW(editControl, WM_COPY, 0, 0);
-    if (noSelection) {
-        SendMessageW(editControl, EM_SETSEL, start, start);
-    }
-}
-
-std::string WideToUtf8(const std::wstring& text) {
-    if (text.empty()) {
-        return std::string();
-    }
-
-    const int requiredSize = WideCharToMultiByte(
-        CP_UTF8,
-        0,
-        text.data(),
-        static_cast<int>(text.size()),
-        nullptr,
-        0,
-        nullptr,
-        nullptr
-    );
-    if (requiredSize <= 0) {
-        return std::string();
-    }
-
-    std::string result(static_cast<size_t>(requiredSize), '\0');
-    WideCharToMultiByte(
-        CP_UTF8,
-        0,
-        text.data(),
-        static_cast<int>(text.size()),
-        result.data(),
-        requiredSize,
-        nullptr,
-        nullptr
-    );
-    return result;
-}
-
-bool SaveUtf8TextFile(const std::wstring& filePath, const std::wstring& text, std::wstring* error) {
-    HANDLE fileHandle = CreateFileW(
-        filePath.c_str(),
-        GENERIC_WRITE,
-        0,
-        nullptr,
-        CREATE_ALWAYS,
-        FILE_ATTRIBUTE_NORMAL,
-        nullptr
-    );
-    if (fileHandle == INVALID_HANDLE_VALUE) {
-        if (error) {
-            *error = L"Не удалось открыть файл: " + std::to_wstring(GetLastError());
-        }
-        return false;
-    }
-
-    const std::string utf8 = WideToUtf8(text);
-    const unsigned char bom[3] = { 0xEF, 0xBB, 0xBF };
-    DWORD written = 0;
-    if (!WriteFile(fileHandle, bom, sizeof(bom), &written, nullptr)) {
-        CloseHandle(fileHandle);
-        if (error) {
-            *error = L"Не удалось записать BOM: " + std::to_wstring(GetLastError());
-        }
-        return false;
-    }
-
-    if (!utf8.empty()) {
-        written = 0;
-        if (!WriteFile(fileHandle, utf8.data(), static_cast<DWORD>(utf8.size()), &written, nullptr)) {
-            CloseHandle(fileHandle);
-            if (error) {
-                *error = L"Не удалось записать файл: " + std::to_wstring(GetLastError());
-            }
-            return false;
-        }
-    }
-
-    CloseHandle(fileHandle);
-    return true;
-}
-
-bool SaveTextWithDialog(HWND ownerWindow, const std::wstring& text, std::wstring* savedPath, std::wstring* error) {
-    if (savedPath) {
-        savedPath->clear();
-    }
-    if (error) {
-        error->clear();
-    }
-
-    SYSTEMTIME st = {};
-    GetLocalTime(&st);
-    wchar_t defaultName[128] = {};
-    swprintf_s(defaultName, L"TextMagic-logs-%04u%02u%02u-%02u%02u%02u.txt",
-        st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
-
-    wchar_t filePath[MAX_PATH] = {};
-    wcscpy_s(filePath, defaultName);
-
-    OPENFILENAMEW ofn = {};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = ownerWindow;
-    ofn.lpstrFilter = L"Текстовые файлы (*.txt)\0*.txt\0Все файлы (*.*)\0*.*\0";
-    ofn.lpstrDefExt = L"txt";
-    ofn.lpstrFile = filePath;
-    ofn.nMaxFile = MAX_PATH;
-    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_EXPLORER;
-
-    if (!GetSaveFileNameW(&ofn)) {
-        const DWORD dialogError = CommDlgExtendedError();
-        if (dialogError != 0 && error) {
-            *error = L"Ошибка диалога сохранения: " + std::to_wstring(dialogError);
-        }
-        return false;
-    }
-
-    if (!SaveUtf8TextFile(filePath, text, error)) {
-        return false;
-    }
-
-    if (savedPath) {
-        *savedPath = filePath;
-    }
-    return true;
-}
-
-void FillListBoxWithText(HWND listBox, const std::wstring& text) {
-    if (!listBox || !IsWindow(listBox)) {
-        return;
-    }
-
-    SendMessageW(listBox, WM_SETREDRAW, FALSE, 0);
-    SendMessageW(listBox, LB_RESETCONTENT, 0, 0);
-
-    size_t start = 0;
-    while (start <= text.size()) {
-        size_t end = text.find(L"\r\n", start);
-        std::wstring line = (end == std::wstring::npos) ? text.substr(start) : text.substr(start, end - start);
-        if (!line.empty()) {
-            SendMessageW(listBox, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(line.c_str()));
-        }
-        if (end == std::wstring::npos) {
-            break;
-        }
-        start = end + 2;
-    }
-
-    const LRESULT count = SendMessageW(listBox, LB_GETCOUNT, 0, 0);
-    if (count > 0) {
-        SendMessageW(listBox, LB_SETTOPINDEX, static_cast<WPARAM>(count - 1), 0);
-    }
-    SendMessageW(listBox, WM_SETREDRAW, TRUE, 0);
-    InvalidateRect(listBox, nullptr, TRUE);
-}
-
-POINT ResolveContextMenuPoint(HWND control, LPARAM lParam) {
-    POINT point = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-    if (point.x == -1 && point.y == -1 && control && IsWindow(control)) {
-        RECT rect = {};
-        GetWindowRect(control, &rect);
-        point.x = rect.left + 10;
-        point.y = rect.top + 10;
-    }
-    return point;
-}
-
-std::wstring GetSelectedListBoxText(HWND listBox) {
-    const LRESULT selectedIndex = SendMessageW(listBox, LB_GETCURSEL, 0, 0);
-    if (selectedIndex == LB_ERR) {
-        return std::wstring();
-    }
-    const LRESULT textLen = SendMessageW(listBox, LB_GETTEXTLEN, static_cast<WPARAM>(selectedIndex), 0);
-    if (textLen <= 0) {
-        return std::wstring();
-    }
-    std::wstring result(static_cast<size_t>(textLen) + 1, L'\0');
-    SendMessageW(listBox, LB_GETTEXT, static_cast<WPARAM>(selectedIndex), reinterpret_cast<LPARAM>(result.data()));
-    result.resize(static_cast<size_t>(textLen));
-    return result;
-}
-
-std::wstring ReadTextFromClipboard(HWND ownerWindow) {
-    std::wstring result;
-    if (!OpenClipboard(ownerWindow)) {
-        return result;
-    }
-
-    HANDLE data = GetClipboardData(CF_UNICODETEXT);
-    if (!data) {
-        CloseClipboard();
-        return result;
-    }
-
-    const wchar_t* ptr = static_cast<const wchar_t*>(GlobalLock(data));
-    if (ptr) {
-        result = ptr;
-        GlobalUnlock(data);
-    }
-
-    CloseClipboard();
-    return result;
-}
-
-bool IsTmscriptFilePath(const fs::path& path) {
-    const std::wstring extension = path.extension().wstring();
-    return _wcsicmp(extension.c_str(), L".tmscript") == 0;
-}
-
-std::wstring EscapePowerShellSingleQuoted(const std::wstring& text) {
-    std::wstring escaped = text;
-    size_t pos = 0;
-    while ((pos = escaped.find(L"'", pos)) != std::wstring::npos) {
-        escaped.replace(pos, 1, L"''");
-        pos += 2;
-    }
-    return escaped;
-}
-
 LRESULT CALLBACK CopyOnlyContextSubclassProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR refData) {
     if (message == WM_CONTEXTMENU) {
         HWND ownerWindow = reinterpret_cast<HWND>(refData);
@@ -666,10 +1241,27 @@ Application::~Application() {
 bool Application::Initialize(HINSTANCE hInstance) {
     m_hInstance = hInstance;
     m_initializationError.clear();
+    const std::wstring executableDirectory = GetExecutableDirectory();
+
+    Localization::Initialize(executableDirectory + L"\\lang");
+    const std::wstring settingsPath = GetLanguageSettingsPath(executableDirectory);
+    LoadLanguageSetting(settingsPath);
+    LoadScriptInputModeSetting(settingsPath, &m_scriptInputFallbackToAllText);
+
+    m_singleInstanceMutex = CreateMutexW(nullptr, FALSE, SINGLE_INSTANCE_MUTEX_NAME);
+    if (m_singleInstanceMutex && GetLastError() == ERROR_ALREADY_EXISTS) {
+        HWND existingWindow = FindWindowW(WINDOW_CLASS_NAME, nullptr);
+        if (existingWindow && IsWindow(existingWindow)) {
+            ShowWindow(existingWindow, SW_SHOWNORMAL);
+            SetForegroundWindow(existingWindow);
+        }
+        m_initializationError = INIT_ERROR_ALREADY_RUNNING;
+        return false;
+    }
 
     Gdiplus::GdiplusStartupInput gdiplusStartupInput;
     if (Gdiplus::GdiplusStartup(&m_gdiplusToken, &gdiplusStartupInput, nullptr) != Gdiplus::Ok) {
-        m_initializationError = L"Не удалось инициализировать GDI+";
+        m_initializationError = T(L"app.error.init.gdiplus");
         return false;
     }
 
@@ -699,16 +1291,16 @@ bool Application::Initialize(HINSTANCE hInstance) {
     wcex.hIconSm = LoadIconW(m_hInstance, MAKEINTRESOURCEW(IDI_MAIN_ICON));
 
     if (!RegisterClassExW(&wcex) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
-        m_initializationError = L"Не удалось зарегистрировать класс главного окна";
+        m_initializationError = T(L"app.error.init.main_class");
         return false;
     }
 
     if (!RegisterInfoWindowClass()) {
-        m_initializationError = L"Не удалось зарегистрировать класс информационных окон";
+        m_initializationError = T(L"app.error.init.info_class");
         return false;
     }
     if (!RegisterMessageWindowClass()) {
-        m_initializationError = L"Не удалось зарегистрировать класс styled message";
+        m_initializationError = T(L"app.error.init.message_class");
         return false;
     }
 
@@ -733,14 +1325,16 @@ bool Application::Initialize(HINSTANCE hInstance) {
     );
 
     if (!m_hWnd) {
-        m_initializationError = L"Не удалось создать главное окно";
+        m_initializationError = T(L"app.error.init.main_window");
         return false;
     }
     SetWindowTextW(m_hWnd, WINDOW_TITLE);
     DragAcceptFiles(m_hWnd, TRUE);
     InitializeTrayIcon();
+    SetHotkeyDispatchWindow(m_hWnd);
+    InstallInputHooks(m_hInstance);
+    ClearInputBuffer();
 
-    Localization::Initialize(GetExecutableDirectory() + L"\\lang");
     CreateControls();
     ApplyLocalization();
     m_updateService = std::make_unique<UpdateService>();
@@ -749,12 +1343,12 @@ bool Application::Initialize(HINSTANCE hInstance) {
     GetClientRect(m_hWnd, &clientRect);
     OnResize(clientRect.right - clientRect.left, clientRect.bottom - clientRect.top);
 
-    m_scriptsDirectory = GetExecutableDirectory() + L"\\scripts";
+    m_scriptsDirectory = executableDirectory + L"\\scripts";
     std::error_code createDirError;
     fs::create_directories(fs::path(m_scriptsDirectory), createDirError);
 
-    AppendLog(L"[App] Запуск TextMagic " + std::wstring(APP_VERSION) + L".");
-    AppendLog(L"[App] Каталог scripts: " + m_scriptsDirectory);
+    AppendLog(std::wstring(T(L"app.log.starting_prefix")) + WINDOW_TITLE + L" " + APP_VERSION + L".");
+    AppendLog(std::wstring(T(L"app.log.scripts_dir_prefix")) + m_scriptsDirectory);
     ReloadScripts(true);
     return true;
 }
@@ -772,6 +1366,9 @@ int Application::Run() {
 }
 
 void Application::Shutdown() {
+    SetHotkeyDispatchWindow(nullptr);
+    UninstallInputHooks();
+    ClearInputBuffer();
     UnregisterHotkeys();
     RemoveTrayIcon();
     if (m_hWnd && IsWindow(m_hWnd)) {
@@ -794,6 +1391,7 @@ void Application::Shutdown() {
         DestroyMenu(m_hMoreMenu);
         m_hMoreMenu = nullptr;
         m_hLanguageMenu = nullptr;
+        m_hInputModeMenu = nullptr;
     }
 
     if (m_hTitleFont) {
@@ -831,6 +1429,11 @@ void Application::Shutdown() {
         CoUninitialize();
         m_comInitialized = false;
     }
+
+    if (m_singleInstanceMutex) {
+        CloseHandle(m_singleInstanceMutex);
+        m_singleInstanceMutex = nullptr;
+    }
 }
 
 LRESULT CALLBACK Application::WindowProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -862,67 +1465,6 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             OnCommand(LOWORD(wParam), HIWORD(wParam));
         }
         return 0;
-
-    case WM_MENUSELECT:
-        if (m_moreMenuTracking && m_hMoreMenu && m_hLanguageMenu) {
-            HMENU selectedMenu = reinterpret_cast<HMENU>(lParam);
-            const DWORD now = GetTickCount();
-
-            if (m_languageMenuPopupOpen && selectedMenu == m_hLanguageMenu) {
-                RECT languageRect = {};
-                const int itemCount = GetMenuItemCount(m_hMoreMenu);
-                int languageIndex = -1;
-                for (int i = 0; i < itemCount; ++i) {
-                    if (GetMenuItemID(m_hMoreMenu, i) == ID_MENU_LANGUAGE_LABEL) {
-                        languageIndex = i;
-                        break;
-                    }
-                }
-                if (languageIndex >= 0 && GetMenuItemRect(nullptr, m_hMoreMenu, static_cast<UINT>(languageIndex), &languageRect)) {
-                    POINT cursor = {};
-                    GetCursorPos(&cursor);
-                    if (cursor.x < languageRect.right - 6 && now - m_languageMenuLastOpenTick > 80) {
-                        m_languageMenuLastOpenTick = now;
-                        PostMessageW(m_hWnd, WM_KEYDOWN, VK_LEFT, 0);
-                    }
-                }
-            }
-
-            if (m_languageMenuPopupOpen) {
-                break;
-            }
-
-            if (HIWORD(wParam) == 0xFFFF && lParam == 0) {
-                break;
-            }
-
-            const UINT selectedId = LOWORD(wParam);
-            const UINT flags = HIWORD(wParam);
-            if (selectedMenu == m_hMoreMenu
-                && selectedId == ID_MENU_LANGUAGE_LABEL
-                && (flags & (MF_GRAYED | MF_DISABLED)) == 0
-                && now - m_languageMenuLastOpenTick > 120) {
-                RECT itemRect = {};
-                POINT openPoint = {};
-                const int itemCount = GetMenuItemCount(m_hMoreMenu);
-                int languageIndex = -1;
-                for (int i = 0; i < itemCount; ++i) {
-                    if (GetMenuItemID(m_hMoreMenu, i) == ID_MENU_LANGUAGE_LABEL) {
-                        languageIndex = i;
-                        break;
-                    }
-                }
-                if (languageIndex >= 0 && GetMenuItemRect(nullptr, m_hMoreMenu, static_cast<UINT>(languageIndex), &itemRect)) {
-                    openPoint.x = itemRect.right - 2;
-                    openPoint.y = itemRect.top - 2;
-                } else {
-                    GetCursorPos(&openPoint);
-                }
-                ShowLanguageMenuPopup(openPoint, true);
-                break;
-            }
-        }
-        break;
 
     case WM_TRAYICON:
         {
@@ -957,6 +1499,208 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
 
     case WM_HOTKEY:
         ExecuteScriptByHotkeyId(static_cast<int>(wParam));
+        return 0;
+
+    case WM_SCRIPT_EXECUTION_COMPLETE:
+        {
+            std::unique_ptr<ScriptExecutionTaskResult> result(reinterpret_cast<ScriptExecutionTaskResult*>(wParam));
+            m_scriptExecutionInProgress = false;
+            if (!result) {
+                return 0;
+            }
+
+            std::wstring sourceName = result->hasSelection
+                ? T(L"app.status.selection")
+                : (result->previousWordMode ? T(L"app.status.previous_word") : T(L"app.status.full_text"));
+            AppendLog(std::wstring(T(L"app.log.script.source_prefix")) + sourceName
+                + T(L"app.log.script.source_chars_prefix") + std::to_wstring(result->sourceText.size()) + L".");
+
+            if (!result->executeOk) {
+                if (result->noTextAvailable) {
+                    const std::wstring msg = T(L"app.status.no_text_available");
+                    SetStatusText(msg);
+                    AppendLog(std::wstring(T(L"app.log.script.error_prefix2")) + msg);
+                    return 0;
+                }
+                if (result->previousWordMode) {
+                    const std::wstring restoreText = result->sourceText + result->previousWordTrailing;
+                    m_textBridge.SetSelectedText(restoreText);
+                    AppendInputBufferText(restoreText);
+                }
+                const std::wstring statusMessage = std::wstring(T(L"app.status.script_error_prefix")) + result->scriptName;
+                const std::wstring dialogMessage = std::wstring(T(L"app.status.script_label")) + result->scriptName
+                    + T(L"app.status.error_label_block") + result->executionError;
+                SetStatusText(statusMessage);
+                AppendLog(std::wstring(T(L"app.log.script.error_prefix")) + result->scriptName + L"\": " + result->executionError);
+                if (result->hasSelection) {
+                    m_textBridge.CollapseSelection();
+                }
+                ShowStyledMessage(T(L"app.title.execution_error"), dialogMessage);
+                return 0;
+            }
+
+            bool replaceOk = false;
+            if (result->previousWordMode) {
+                const std::wstring mergedText = result->outputText + result->previousWordTrailing;
+                replaceOk = m_textBridge.SetSelectedText(mergedText);
+            } else {
+                replaceOk = result->hasSelection
+                    ? m_textBridge.SetSelectedText(result->outputText)
+                    : m_textBridge.SetAllText(result->outputText);
+            }
+            if (!replaceOk) {
+                if (result->previousWordMode) {
+                    const std::wstring restoreText = result->sourceText + result->previousWordTrailing;
+                    m_textBridge.SetSelectedText(restoreText);
+                    AppendInputBufferText(restoreText);
+                }
+                const std::wstring msg = T(L"app.status.active_control_paste_failed");
+                SetStatusText(msg);
+                AppendLog(std::wstring(T(L"app.log.script.error_prefix")) + result->scriptName + L"\": " + msg);
+                ShowStyledMessage(T(L"app.title.paste_error"), msg);
+                return 0;
+            }
+            if (result->previousWordMode) {
+                const std::wstring mergedText = result->outputText + result->previousWordTrailing;
+                AppendInputBufferText(mergedText);
+            }
+
+            std::wstring status = std::wstring(T(L"app.status.script_applied_prefix")) + result->scriptName + T(L"app.status.script_applied_middle");
+            if (result->previousWordMode) {
+                status += T(L"app.status.previous_word_text");
+            } else {
+                status += result->hasSelection
+                    ? T(L"app.status.selected_text")
+                    : T(L"app.status.all_text");
+            }
+            SetStatusText(status);
+            AppendLog(std::wstring(T(L"app.log.script.done_prefix")) + result->scriptName + T(L"app.log.script.result_prefix")
+                + std::to_wstring(result->outputText.size()) + T(L"app.log.script.result_suffix"));
+            AppendLog(std::wstring(T(L"app.log.script.prefix")) + status);
+        }
+        return 0;
+
+    case WM_UPDATE_CHECK_COMPLETE:
+        {
+            std::unique_ptr<UpdateCheckTaskResult> result(reinterpret_cast<UpdateCheckTaskResult*>(wParam));
+            m_updateInProgress = false;
+            if (!result) {
+                return 0;
+            }
+
+            if (!result->check.success) {
+                AppendLog(std::wstring(T(L"app.log.update.error_prefix")) + result->check.errorMessage);
+                ShowStyledMessage(T(L"app.title.update"), std::wstring(T(L"app.status.update_check_error_prefix")) + result->check.errorMessage);
+                return 0;
+            }
+
+            if (!result->check.updateAvailable) {
+                AppendLog(T(L"app.log.update.no_new"));
+                ShowStyledMessage(T(L"app.title.update"), std::wstring(T(L"app.status.latest_version_prefix")) + APP_VERSION);
+                return 0;
+            }
+
+            const std::wstring prompt =
+                std::wstring(T(L"app.status.update_available_prefix")) + result->check.latestVersion + L" (" + result->check.latestTag
+                + T(L"app.status.update_available_suffix");
+            const int decision = ShowStyledMessageDialog(T(L"app.title.update"), prompt, T(L"app.button.update"), T(L"app.button.later"));
+            if (decision != IDYES) {
+                AppendLog(T(L"app.log.update.postponed"));
+                return 0;
+            }
+
+            const std::wstring latestTag = result->check.latestTag;
+            const std::wstring targetPath = GetExecutablePath();
+            const std::wstring tmpPath = GetExecutableDirectory() + L"\\" + TM_APP_NAME_W + L".update.tmp.exe";
+
+            m_updateInProgress = true;
+            const HWND windowHandle = m_hWnd;
+            const UpdateService updateService = *m_updateService;
+            std::thread([windowHandle, updateService, latestTag, targetPath, tmpPath]() {
+                auto* installResult = new UpdateInstallTaskResult();
+                std::wstring error;
+                if (!updateService.DownloadReleaseExecutable(latestTag, tmpPath, error)) {
+                    installResult->success = false;
+                    installResult->error = error;
+                    PostOwnedMessage(windowHandle, WM_UPDATE_INSTALL_COMPLETE, installResult);
+                    return;
+                }
+                if (!updateService.LaunchUpdaterProcess(GetCurrentProcessId(), tmpPath, targetPath, error)) {
+                    installResult->success = false;
+                    installResult->error = error;
+                    PostOwnedMessage(windowHandle, WM_UPDATE_INSTALL_COMPLETE, installResult);
+                    return;
+                }
+                installResult->success = true;
+                PostOwnedMessage(windowHandle, WM_UPDATE_INSTALL_COMPLETE, installResult);
+            }).detach();
+        }
+        return 0;
+
+    case WM_UPDATE_INSTALL_COMPLETE:
+        {
+            std::unique_ptr<UpdateInstallTaskResult> result(reinterpret_cast<UpdateInstallTaskResult*>(wParam));
+            m_updateInProgress = false;
+            if (!result) {
+                return 0;
+            }
+            if (!result->success) {
+                AppendLog(std::wstring(T(L"app.log.update.error_prefix")) + result->error);
+                ShowStyledMessage(T(L"app.title.update"), std::wstring(T(L"app.status.update_finish_failed_prefix")) + result->error);
+                return 0;
+            }
+            AppendLog(T(L"app.log.update.started"));
+            ShowStyledMessage(T(L"app.title.update"), T(L"app.status.update_downloaded_restart"));
+            m_isExiting = true;
+            PostMessageW(m_hWnd, WM_CLOSE, 0, 0);
+        }
+        return 0;
+
+    case WM_IMPORT_ZIP_COMPLETE:
+        {
+            std::unique_ptr<ImportZipTaskResult> result(reinterpret_cast<ImportZipTaskResult*>(wParam));
+            m_archiveTaskInProgress = false;
+            if (!result) {
+                return 0;
+            }
+            if (!result->success) {
+                ShowStyledMessage(T(L"app.title.import_error"), result->errorMessage);
+                return 0;
+            }
+            for (const auto& copiedPath : result->importedPaths) {
+                AppendLog(std::wstring(T(L"app.log.scripts.imported_prefix")) + copiedPath);
+            }
+            if (result->importedCount > 0) {
+                ReloadScripts(false);
+                const std::wstring status =
+                    std::wstring(T(L"app.status.scripts_added_prefix")) + std::to_wstring(result->importedCount)
+                    + T(L"app.status.skipped_prefix") + std::to_wstring(result->skippedCount) + L".";
+                SetStatusText(status);
+                AppendLog(std::wstring(T(L"app.log.scripts.prefix")) + status);
+            } else {
+                const std::wstring status = T(L"app.status.no_suitable_import");
+                SetStatusText(status);
+                AppendLog(std::wstring(T(L"app.log.scripts.prefix")) + status);
+            }
+        }
+        return 0;
+
+    case WM_EXPORT_ZIP_COMPLETE:
+        {
+            std::unique_ptr<ExportZipTaskResult> result(reinterpret_cast<ExportZipTaskResult*>(wParam));
+            m_archiveTaskInProgress = false;
+            if (!result) {
+                return 0;
+            }
+            if (!result->success) {
+                ShowStyledMessage(T(L"app.title.export_error"), std::wstring(T(L"app.status.zip_create_failed_prefix")) + result->errorMessage);
+                return 0;
+            }
+            const std::wstring status = std::wstring(T(L"app.status.exported_prefix")) + std::to_wstring(result->scriptFileCount)
+                + T(L"app.status.exported_suffix") + result->archivePath;
+            SetStatusText(status);
+            AppendLog(std::wstring(T(L"app.log.scripts.prefix")) + status);
+        }
         return 0;
 
     case WM_DROPFILES:
@@ -1153,7 +1897,7 @@ void Application::CreateControls() {
     m_hMonoFont = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
 
-    m_hTitleLabel = CreateWindowExW(0, L"STATIC", L"TextMagic", WS_CHILD | WS_VISIBLE | SS_LEFT,
+    m_hTitleLabel = CreateWindowExW(0, L"STATIC", WINDOW_TITLE, WS_CHILD | WS_VISIBLE | SS_LEFT,
         0, 0, 100, 30, m_hWnd, reinterpret_cast<HMENU>(ID_TITLE_LABEL), m_hInstance, nullptr);
 
     m_hHintLabel = CreateWindowExW(0, L"STATIC",
@@ -1164,6 +1908,7 @@ void Application::CreateControls() {
     m_hScriptList = CreateWindowExW(0, L"LISTBOX", nullptr,
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | LBS_EXTENDEDSEL,
         0, 0, 100, 100, m_hWnd, reinterpret_cast<HMENU>(ID_SCRIPTS_LIST), m_hInstance, nullptr);
+    ApplyDarkScrollBar(m_hScriptList);
 
     m_hReloadButton = CreateWindowExW(0, L"BUTTON", L(Localization::Key::ButtonReloadScripts),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
@@ -1204,7 +1949,9 @@ void Application::CreateMoreMenu() {
         DestroyMenu(m_hMoreMenu);
         m_hMoreMenu = nullptr;
         m_hLanguageMenu = nullptr;
+        m_hInputModeMenu = nullptr;
     }
+    ClearDynamicLanguageMenuItems();
     m_hMoreMenu = CreatePopupMenu();
     if (!m_hMoreMenu) {
         return;
@@ -1215,9 +1962,38 @@ void Application::CreateMoreMenu() {
         m_hMoreMenu = nullptr;
         return;
     }
+    m_hInputModeMenu = CreatePopupMenu();
+    if (!m_hInputModeMenu) {
+        DestroyMenu(m_hMoreMenu);
+        m_hMoreMenu = nullptr;
+        m_hLanguageMenu = nullptr;
+        return;
+    }
 
-    AppendMenuW(m_hLanguageMenu, MF_OWNERDRAW, ID_MENU_LANGUAGE_RU, GetMenuItemText(ID_MENU_LANGUAGE_RU));
-    AppendMenuW(m_hLanguageMenu, MF_OWNERDRAW, ID_MENU_LANGUAGE_EN, GetMenuItemText(ID_MENU_LANGUAGE_EN));
+    const std::vector<std::wstring> languageCodes = Localization::GetAvailableLanguageCodes();
+    UINT nextLanguageMenuId = ID_MENU_LANGUAGE_DYNAMIC_FIRST;
+    for (const std::wstring& languageCode : languageCodes) {
+        if (nextLanguageMenuId > ID_MENU_LANGUAGE_DYNAMIC_LAST) {
+            break;
+        }
+
+        std::wstring displayName = Localization::GetLanguageDisplayName(languageCode);
+        if (displayName.empty()) {
+            displayName = languageCode;
+        }
+        g_languageMenuTextById[nextLanguageMenuId] = displayName;
+        g_languageMenuCodeById[nextLanguageMenuId] = languageCode;
+        AppendMenuW(m_hLanguageMenu, MF_OWNERDRAW, nextLanguageMenuId, g_languageMenuTextById[nextLanguageMenuId].c_str());
+        ++nextLanguageMenuId;
+    }
+
+    if (GetMenuItemCount(m_hLanguageMenu) <= 0) {
+        const UINT fallbackId = ID_MENU_LANGUAGE_DYNAMIC_FIRST;
+        const std::wstring fallbackCode = L"ru";
+        g_languageMenuTextById[fallbackId] = Localization::GetLanguageDisplayName(fallbackCode);
+        g_languageMenuCodeById[fallbackId] = fallbackCode;
+        AppendMenuW(m_hLanguageMenu, MF_OWNERDRAW, fallbackId, g_languageMenuTextById[fallbackId].c_str());
+    }
 
     MENUINFO menuInfo = {};
     menuInfo.cbSize = sizeof(MENUINFO);
@@ -1225,13 +2001,20 @@ void Application::CreateMoreMenu() {
     menuInfo.hbrBack = m_hCardBrush;
     SetMenuInfo(m_hMoreMenu, &menuInfo);
     SetMenuInfo(m_hLanguageMenu, &menuInfo);
+    SetMenuInfo(m_hInputModeMenu, &menuInfo);
+
+    AppendMenuW(m_hInputModeMenu, MF_OWNERDRAW, ID_MENU_INPUT_MODE_PREVIOUS_WORD, GetMenuItemText(ID_MENU_INPUT_MODE_PREVIOUS_WORD));
+    AppendMenuW(m_hInputModeMenu, MF_OWNERDRAW, ID_MENU_INPUT_MODE_ALL_TEXT, GetMenuItemText(ID_MENU_INPUT_MODE_ALL_TEXT));
 
     AppendMenuW(m_hMoreMenu, MF_OWNERDRAW, ID_MENU_MORE_LOGS, GetMenuItemText(ID_MENU_MORE_LOGS));
     AppendMenuW(m_hMoreMenu, MF_OWNERDRAW, ID_MENU_MORE_SEPARATOR, L"");
-    AppendMenuW(m_hMoreMenu, MF_OWNERDRAW, ID_MENU_LANGUAGE_LABEL, GetMenuItemText(ID_MENU_LANGUAGE_LABEL));
+    AppendStyledPopupSubMenu(m_hMoreMenu, m_hLanguageMenu, ID_MENU_LANGUAGE_LABEL, GetMenuItemText(ID_MENU_LANGUAGE_LABEL));
+    AppendMenuW(m_hMoreMenu, MF_OWNERDRAW, ID_MENU_MORE_SEPARATOR, L"");
+    AppendStyledPopupSubMenu(m_hMoreMenu, m_hInputModeMenu, ID_MENU_INPUT_MODE_LABEL, GetMenuItemText(ID_MENU_INPUT_MODE_LABEL));
     AppendMenuW(m_hMoreMenu, MF_OWNERDRAW, ID_MENU_MORE_SEPARATOR, L"");
     AppendMenuW(m_hMoreMenu, MF_OWNERDRAW, ID_MENU_MORE_ABOUT, GetMenuItemText(ID_MENU_MORE_ABOUT));
     UpdateLanguageMenuChecks();
+    UpdateScriptInputModeMenuChecks();
 }
 
 void Application::OnResize(int width, int height) {
@@ -1320,6 +2103,12 @@ void Application::OnCommand(UINT controlId, UINT notifyCode) {
 }
 
 void Application::OnMenuCommand(UINT menuId) {
+    std::wstring selectedLanguageCode;
+    if (TryGetLanguageCodeByMenuId(menuId, &selectedLanguageCode)) {
+        SetLanguage(selectedLanguageCode);
+        return;
+    }
+
     switch (menuId) {
     case ID_MENU_MORE_ABOUT:
         ShowAboutWindow();
@@ -1345,20 +2134,11 @@ void Application::OnMenuCommand(UINT menuId) {
     case ID_MENU_SCRIPTS_EXPORT_ZIP:
         ExportScriptsToZip();
         break;
-    case ID_MENU_LANGUAGE_LABEL:
-        {
-            POINT cursor = {};
-            GetCursorPos(&cursor);
-            cursor.x += 14;
-            cursor.y -= 10;
-            ShowLanguageMenuPopup(cursor, false);
-        }
+    case ID_MENU_INPUT_MODE_PREVIOUS_WORD:
+        SetScriptInputMode(false);
         break;
-    case ID_MENU_LANGUAGE_RU:
-        SetLanguage(false);
-        break;
-    case ID_MENU_LANGUAGE_EN:
-        SetLanguage(true);
+    case ID_MENU_INPUT_MODE_ALL_TEXT:
+        SetScriptInputMode(true);
         break;
     case ID_MENU_TRAY_EXIT:
         ExitApplication();
@@ -1368,57 +2148,16 @@ void Application::OnMenuCommand(UINT menuId) {
     }
 }
 
-void Application::ShowLanguageMenuPopup(POINT screenPoint, bool recurse) {
-    if (!m_hLanguageMenu || m_languageMenuPopupOpen) {
-        return;
-    }
-
-    m_languageMenuPopupOpen = true;
-    m_languageMenuLastOpenTick = GetTickCount();
-    UpdateLanguageMenuChecks();
-    if (!recurse) {
-        SetForegroundWindow(m_hWnd);
-    }
-
-    if (recurse) {
-        TrackPopupMenuEx(
-            m_hLanguageMenu,
-            TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON | TPM_RECURSE,
-            screenPoint.x,
-            screenPoint.y,
-            m_hWnd,
-            nullptr
-        );
-        m_languageMenuPopupOpen = false;
-        return;
-    }
-
-    const UINT languageCommand = TrackPopupMenuEx(
-        m_hLanguageMenu,
-        TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY,
-        screenPoint.x,
-        screenPoint.y,
-        m_hWnd,
-        nullptr
-    );
-
-    m_languageMenuPopupOpen = false;
-    if (languageCommand != 0) {
-        SendMessageW(m_hWnd, WM_COMMAND, MAKEWPARAM(languageCommand, 0), 0);
-    }
-}
-
 void Application::ShowMoreMenu() {
     if (!m_hMoreMenu) {
         return;
     }
-    m_moreMenuTracking = true;
     UpdateLanguageMenuChecks();
+    UpdateScriptInputModeMenuChecks();
     RECT rect = {};
     GetWindowRect(m_hMoreButton, &rect);
     TrackPopupMenu(m_hMoreMenu, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON,
         rect.left, rect.bottom + 2, 0, m_hWnd, nullptr);
-    m_moreMenuTracking = false;
 }
 
 void Application::ApplyLocalization() {
@@ -1439,7 +2178,19 @@ void Application::ApplyLocalization() {
     if (m_hStatusLabel) {
         GetWindowTextW(m_hStatusLabel, statusText, static_cast<int>(_countof(statusText)));
     }
-    if (statusText[0] == L'\0' || wcscmp(statusText, L"Готово.") == 0 || wcscmp(statusText, L"Ready.") == 0) {
+    bool shouldSetReadyStatus = statusText[0] == L'\0';
+    if (!shouldSetReadyStatus) {
+        const std::vector<std::wstring> languageCodes = Localization::GetAvailableLanguageCodes();
+        for (const std::wstring& languageCode : languageCodes) {
+            const wchar_t* readyTextForLanguage = Localization::GetTextByName(L"status.ready", languageCode);
+            if (readyTextForLanguage && readyTextForLanguage[0] != L'\0'
+                && wcscmp(statusText, readyTextForLanguage) == 0) {
+                shouldSetReadyStatus = true;
+                break;
+            }
+        }
+    }
+    if (shouldSetReadyStatus) {
         SetStatusText(L(Localization::Key::StatusReady));
     }
 
@@ -1461,12 +2212,13 @@ void Application::ApplyLocalization() {
     }
 }
 
-void Application::SetLanguage(bool useEnglish) {
-    const Localization::Language newLanguage = useEnglish ? Localization::Language::English : Localization::Language::Russian;
-    if (g_currentLanguage == newLanguage) {
+void Application::SetLanguage(const std::wstring& languageCode) {
+    const std::wstring oldLanguageCode = Localization::GetCurrentLanguageCode();
+    Localization::SetCurrentLanguageCode(languageCode);
+    if (_wcsicmp(oldLanguageCode.c_str(), Localization::GetCurrentLanguageCode().c_str()) == 0) {
         return;
     }
-    g_currentLanguage = newLanguage;
+    SaveLanguageSetting(GetLanguageSettingsPath(GetExecutableDirectory()));
     ApplyLocalization();
     RefreshScriptList();
     SetStatusText(L(Localization::Key::StatusLanguageUpdated));
@@ -1476,13 +2228,41 @@ void Application::UpdateLanguageMenuChecks() {
     if (!m_hLanguageMenu) {
         return;
     }
-    CheckMenuRadioItem(
-        m_hLanguageMenu,
-        ID_MENU_LANGUAGE_RU,
-        ID_MENU_LANGUAGE_EN,
-        g_currentLanguage == Localization::Language::English ? ID_MENU_LANGUAGE_EN : ID_MENU_LANGUAGE_RU,
-        MF_BYCOMMAND
+    const std::wstring currentLanguageCode = Localization::GetCurrentLanguageCode();
+    for (const auto& pair : g_languageMenuCodeById) {
+        const bool checked = _wcsicmp(pair.second.c_str(), currentLanguageCode.c_str()) == 0;
+        CheckMenuItem(
+            m_hLanguageMenu,
+            pair.first,
+            MF_BYCOMMAND | (checked ? MF_CHECKED : MF_UNCHECKED)
+        );
+    }
+}
+
+void Application::UpdateScriptInputModeMenuChecks() {
+    if (!m_hInputModeMenu) {
+        return;
+    }
+    CheckMenuItem(
+        m_hInputModeMenu,
+        ID_MENU_INPUT_MODE_PREVIOUS_WORD,
+        MF_BYCOMMAND | (!m_scriptInputFallbackToAllText ? MF_CHECKED : MF_UNCHECKED)
     );
+    CheckMenuItem(
+        m_hInputModeMenu,
+        ID_MENU_INPUT_MODE_ALL_TEXT,
+        MF_BYCOMMAND | (m_scriptInputFallbackToAllText ? MF_CHECKED : MF_UNCHECKED)
+    );
+}
+
+void Application::SetScriptInputMode(bool fallbackToAllText) {
+    if (m_scriptInputFallbackToAllText == fallbackToAllText) {
+        return;
+    }
+    m_scriptInputFallbackToAllText = fallbackToAllText;
+    SaveScriptInputModeSetting(GetLanguageSettingsPath(GetExecutableDirectory()), m_scriptInputFallbackToAllText);
+    UpdateScriptInputModeMenuChecks();
+    SetStatusText(fallbackToAllText ? T(L"app.status.input_mode_all_text") : T(L"app.status.input_mode_previous_word"));
 }
 
 bool Application::InitializeTrayIcon() {
@@ -1554,7 +2334,6 @@ void Application::HideToTray() {
         return;
     }
     ShowWindow(m_hWnd, SW_HIDE);
-    m_hiddenToTray = true;
 }
 
 void Application::RestoreFromTray() {
@@ -1563,7 +2342,6 @@ void Application::RestoreFromTray() {
     }
     ShowWindow(m_hWnd, SW_SHOWNORMAL);
     SetForegroundWindow(m_hWnd);
-    m_hiddenToTray = false;
 }
 
 void Application::ExitApplication() {
@@ -1617,7 +2395,7 @@ void Application::ShowScriptListContextMenu(POINT screenPoint) {
 }
 
 void Application::ReloadScripts(bool announceResult) {
-    AppendLog(L"[Scripts] Перезагрузка манифестов из " + m_scriptsDirectory + L".");
+    AppendLog(std::wstring(T(L"app.log.scripts.reload_prefix")) + m_scriptsDirectory + L".");
 
     UnregisterHotkeys();
     m_scripts.clear();
@@ -1638,7 +2416,7 @@ void Application::ReloadScripts(bool announceResult) {
     RefreshScriptList();
 
     if (!loadResult.warning.empty()) {
-        AppendLog(L"[Scripts][Warning] " + loadResult.warning);
+        AppendLog(std::wstring(T(L"app.log.scripts.warning_prefix")) + loadResult.warning);
         OutputDebugStringW(loadResult.warning.c_str());
     }
 
@@ -1647,7 +2425,7 @@ void Application::ReloadScripts(bool announceResult) {
     }
     if (m_scripts.empty()) {
         SetStatusText(L(Localization::Key::StatusNoScriptsFound));
-        AppendLog(L"[Scripts] Скрипты не найдены.");
+        AppendLog(T(L"app.log.scripts.none"));
         return;
     }
 
@@ -1658,34 +2436,75 @@ void Application::ReloadScripts(bool announceResult) {
         }
     }
 
-    const std::wstring status = L"Скриптов: " + std::to_wstring(m_scripts.size())
-        + L". Горячих клавиш активно: " + std::to_wstring(registeredCount) + L".";
+    const std::wstring status = std::wstring(T(L"app.status.scripts_count_prefix"))
+        + std::to_wstring(m_scripts.size())
+        + T(L"app.status.hotkeys_active_prefix")
+        + std::to_wstring(registeredCount)
+        + L".";
     SetStatusText(status);
-    AppendLog(L"[Scripts] " + status);
+    AppendLog(std::wstring(T(L"app.log.scripts.prefix")) + status);
 }
 
 void Application::RegisterHotkeys() {
+    ClearTrackedHotkeys();
+    ClearHookHotkeys();
+    std::vector<TrackedHotkey> assignedHotkeys;
     for (auto& script : m_scripts) {
         script.hotkeyRegistered = false;
         script.hotkeyError.clear();
         if (!script.manifest.enabled) {
-            script.hotkeyError = L"Отключен пользователем";
+            script.hotkeyError = T(L"app.status.disabled_by_user");
             continue;
         }
         if (script.manifest.virtualKey == 0) {
-            script.hotkeyError = L"Неверный хоткей";
+            script.hotkeyError = T(L"app.status.invalid_hotkey");
             continue;
         }
 
-        const UINT modifiers = script.manifest.modifiers | MOD_NOREPEAT;
-        if (!RegisterHotKey(m_hWnd, script.hotkeyId, modifiers, script.manifest.virtualKey)) {
-            script.hotkeyError = L"RegisterHotKey: " + std::to_wstring(GetLastError());
-            AppendLog(L"[Hotkey][Ошибка] " + script.manifest.name + L" [" + script.manifest.hotkeyText + L"]: " + script.hotkeyError);
+        const TrackedHotkey currentHotkey{
+            script.manifest.modifiers & HOTKEY_MODIFIER_MASK,
+            script.manifest.virtualKey
+        };
+        const auto duplicateIt = std::find_if(assignedHotkeys.begin(), assignedHotkeys.end(),
+            [&currentHotkey](const TrackedHotkey& assigned) {
+                return assigned.modifiers == currentHotkey.modifiers
+                    && assigned.virtualKey == currentHotkey.virtualKey;
+            });
+        if (duplicateIt != assignedHotkeys.end()) {
+            script.hotkeyError = T(L"app.status.hotkey_taken");
+            AppendLog(std::wstring(T(L"app.log.hotkey.error_prefix")) + script.manifest.name + L" [" + script.manifest.hotkeyText + L"]: "
+                + script.hotkeyError);
             continue;
+        }
+
+        bool useHookFallback = IsModifierVirtualKey(script.manifest.virtualKey);
+        if (!useHookFallback) {
+            const UINT modifiers = currentHotkey.modifiers | MOD_NOREPEAT;
+            if (!RegisterHotKey(m_hWnd, script.hotkeyId, modifiers, script.manifest.virtualKey)) {
+                const DWORD errorCode = GetLastError();
+                if (errorCode == 1422 /* ERROR_INVALID_HOTKEY */) {
+                    useHookFallback = true;
+                } else {
+                    if (errorCode == ERROR_HOTKEY_ALREADY_REGISTERED) {
+                        script.hotkeyError = T(L"app.status.hotkey_taken");
+                    } else {
+                        script.hotkeyError = std::wstring(T(L"app.error.register_hotkey_prefix")) + std::to_wstring(errorCode);
+                    }
+                    AppendLog(std::wstring(T(L"app.log.hotkey.error_prefix")) + script.manifest.name + L" [" + script.manifest.hotkeyText + L"]: "
+                        + script.hotkeyError + T(L"app.log.code_prefix") + std::to_wstring(errorCode) + L")");
+                    continue;
+                }
+            }
+        }
+
+        if (useHookFallback) {
+            AddHookHotkey(script.hotkeyId, currentHotkey.modifiers, currentHotkey.virtualKey);
         }
 
         script.hotkeyRegistered = true;
         m_scriptIndexByHotkeyId[script.hotkeyId] = &script - m_scripts.data();
+        AddTrackedHotkey(currentHotkey.modifiers, currentHotkey.virtualKey);
+        assignedHotkeys.push_back(currentHotkey);
     }
 }
 
@@ -1696,12 +2515,14 @@ void Application::UnregisterHotkeys() {
         }
     }
     m_scriptIndexByHotkeyId.clear();
+    ClearTrackedHotkeys();
+    ClearHookHotkeys();
 }
 
 void Application::RefreshScriptList() {
     SendMessageW(m_hScriptList, LB_RESETCONTENT, 0, 0);
     for (const auto& script : m_scripts) {
-        std::wstring line = script.manifest.enabled ? L"[ON] " : L"[OFF] ";
+        std::wstring line = script.manifest.enabled ? T(L"app.script_list.enabled_prefix") : T(L"app.script_list.disabled_prefix");
         line += script.manifest.name + L" [" + script.manifest.hotkeyText + L"]";
         if (!script.manifest.description.empty()) {
             line += L" - " + script.manifest.description;
@@ -1771,7 +2592,7 @@ bool Application::GetPrimarySelectedScriptIndex(size_t* selectedIndex) const {
 void Application::SetSelectedScriptsEnabled(bool enabled) {
     const std::vector<size_t> selectedIndices = GetSelectedScriptIndices();
     if (selectedIndices.empty()) {
-        SetStatusText(L"Выберите один или несколько скриптов.");
+        SetStatusText(T(L"app.status.select_scripts"));
         return;
     }
 
@@ -1794,7 +2615,8 @@ void Application::SetSelectedScriptsEnabled(bool enabled) {
         std::wstring updateError;
         if (!ScriptManifest::SetEnabledInFile(script.manifest.manifestPath, enabled, &updateError)) {
             ++failedCount;
-            AppendLog(L"[Scripts][Ошибка] Не удалось обновить enabled для \"" + script.manifest.name + L"\": " + updateError);
+            AppendLog(std::wstring(T(L"app.log.scripts.enable_update_failed_prefix"))
+                + script.manifest.name + L"\": " + updateError);
             continue;
         }
         ++updatedCount;
@@ -1814,11 +2636,11 @@ void Application::SetSelectedScriptsEnabled(bool enabled) {
         }
     }
 
-    const std::wstring actionText = enabled ? L"включено" : L"отключено";
-    const std::wstring status = L"Скриптов " + actionText + L": " + std::to_wstring(updatedCount)
-        + L". Ошибок: " + std::to_wstring(failedCount) + L".";
+    const std::wstring actionText = enabled ? T(L"app.status.enabled_word") : T(L"app.status.disabled_word");
+    const std::wstring status = std::wstring(T(L"app.status.scripts_word_prefix")) + actionText + L": " + std::to_wstring(updatedCount)
+        + T(L"app.status.errors_prefix") + std::to_wstring(failedCount) + L".";
     SetStatusText(status);
-    AppendLog(L"[Scripts] " + status);
+    AppendLog(std::wstring(T(L"app.log.scripts.prefix")) + status);
 }
 
 void Application::AddScriptViaDialog() {
@@ -1827,7 +2649,11 @@ void Application::AddScriptViaDialog() {
     OPENFILENAMEW ofn = {};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = m_hWnd;
-    ofn.lpstrFilter = L"TextMagic scripts (*.tmscript)\0*.tmscript\0Все файлы (*.*)\0*.*\0";
+    const std::wstring filter = BuildDialogFilter({
+        { L"app.dialog.filter.scripts", L"*.tmscript" },
+        { L"app.dialog.filter.all_files", L"*.*" }
+    });
+    ofn.lpstrFilter = filter.c_str();
     ofn.lpstrFile = filePath;
     ofn.nMaxFile = MAX_PATH;
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
@@ -1835,9 +2661,9 @@ void Application::AddScriptViaDialog() {
     if (!GetOpenFileNameW(&ofn)) {
         const DWORD dialogError = CommDlgExtendedError();
         if (dialogError != 0) {
-            const std::wstring error = L"Ошибка диалога выбора файла: " + std::to_wstring(dialogError);
+            const std::wstring error = std::wstring(T(L"app.dialog.file_dialog_error_prefix")) + std::to_wstring(dialogError);
             SetStatusText(error);
-            AppendLog(L"[Scripts][Ошибка] " + error);
+            AppendLog(std::wstring(T(L"app.log.scripts.error_prefix")) + error);
         }
         return;
     }
@@ -1848,11 +2674,12 @@ void Application::AddScriptViaDialog() {
 void Application::RemoveSelectedScripts() {
     const std::vector<size_t> selectedIndices = GetSelectedScriptIndices();
     if (selectedIndices.empty()) {
-        SetStatusText(L"Выберите один или несколько скриптов.");
+        SetStatusText(T(L"app.status.select_scripts"));
         return;
     }
 
-    std::wstring prompt = L"Удалить выбранные скрипты: " + std::to_wstring(selectedIndices.size()) + L" шт.?\r\n\r\n";
+    std::wstring prompt = std::wstring(T(L"app.status.delete_selected_prefix"))
+        + std::to_wstring(selectedIndices.size()) + T(L"app.status.delete_selected_suffix");
     const size_t previewCount = std::min<size_t>(selectedIndices.size(), 5);
     for (size_t i = 0; i < previewCount; ++i) {
         const size_t index = selectedIndices[i];
@@ -1863,7 +2690,7 @@ void Application::RemoveSelectedScripts() {
     if (selectedIndices.size() > previewCount) {
         prompt += L"...";
     }
-    const int answer = ShowStyledMessageDialog(L"Удаление скрипта", prompt, L"Удалить", L"Отмена");
+    const int answer = ShowStyledMessageDialog(T(L"app.title.delete_scripts"), prompt, T(L"app.button.delete"), T(L"app.button.cancel"));
     if (answer != IDYES) {
         return;
     }
@@ -1883,7 +2710,8 @@ void Application::RemoveSelectedScripts() {
             if (firstErrorPath.empty()) {
                 firstErrorPath = path;
             }
-            AppendLog(L"[Scripts][Ошибка] Не удалось удалить файл: " + path + L". Код: " + std::to_wstring(removeError.value()));
+            AppendLog(std::wstring(T(L"app.log.scripts.delete_failed_prefix"))
+                + path + T(L"app.log.scripts.delete_failed_code_prefix") + std::to_wstring(removeError.value()));
             continue;
         }
         ++removedCount;
@@ -1893,21 +2721,30 @@ void Application::RemoveSelectedScripts() {
         ReloadScripts(false);
     }
 
-    const std::wstring status = L"Удалено скриптов: " + std::to_wstring(removedCount)
-        + L". Ошибок: " + std::to_wstring(failedCount) + L".";
+    const std::wstring status = std::wstring(T(L"app.status.deleted_prefix")) + std::to_wstring(removedCount)
+        + T(L"app.status.errors_prefix") + std::to_wstring(failedCount) + L".";
     SetStatusText(status);
-    AppendLog(L"[Scripts] " + status);
+    AppendLog(std::wstring(T(L"app.log.scripts.prefix")) + status);
     if (failedCount > 0 && !firstErrorPath.empty()) {
-        ShowStyledMessage(L"Ошибка удаления", L"Не все файлы удалось удалить.\r\n\r\n" + firstErrorPath);
+        ShowStyledMessage(T(L"app.title.delete_error"), std::wstring(T(L"app.status.not_all_deleted")) + firstErrorPath);
     }
 }
 
 void Application::ImportScriptsFromZip() {
+    if (m_archiveTaskInProgress) {
+        SetStatusText(T(L"app.status.archive_busy"));
+        return;
+    }
+
     wchar_t archivePath[MAX_PATH] = {};
     OPENFILENAMEW ofn = {};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = m_hWnd;
-    ofn.lpstrFilter = L"ZIP архивы (*.zip)\0*.zip\0Все файлы (*.*)\0*.*\0";
+    const std::wstring filter = BuildDialogFilter({
+        { L"app.dialog.filter.zip_archives", L"*.zip" },
+        { L"app.dialog.filter.all_files", L"*.*" }
+    });
+    ofn.lpstrFilter = filter.c_str();
     ofn.lpstrFile = archivePath;
     ofn.nMaxFile = MAX_PATH;
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
@@ -1915,62 +2752,94 @@ void Application::ImportScriptsFromZip() {
         return;
     }
 
-    wchar_t tempDirectory[MAX_PATH] = {};
-    if (!GetTempPathW(MAX_PATH, tempDirectory)) {
-        ShowStyledMessage(L"Ошибка импорта", L"Не удалось получить путь к временной папке.");
-        return;
-    }
+    m_archiveTaskInProgress = true;
+    const std::wstring archivePathString = archivePath;
+    const std::wstring scriptsDirectory = m_scriptsDirectory;
+    const ScriptRunner scriptRunner = m_scriptRunner;
+    const HWND windowHandle = m_hWnd;
+    std::thread([archivePathString, scriptsDirectory, scriptRunner, windowHandle]() {
+        auto* result = new ImportZipTaskResult();
 
-    wchar_t tempName[MAX_PATH] = {};
-    if (!GetTempFileNameW(tempDirectory, L"tmz", 0, tempName)) {
-        ShowStyledMessage(L"Ошибка импорта", L"Не удалось создать временный путь.");
-        return;
-    }
-    DeleteFileW(tempName);
+        wchar_t tempDirectory[MAX_PATH] = {};
+        if (!GetTempPathW(MAX_PATH, tempDirectory)) {
+            result->success = false;
+            result->errorMessage = T(L"app.error.tmp_dir_path");
+            PostOwnedMessage(windowHandle, WM_IMPORT_ZIP_COMPLETE, result);
+            return;
+        }
 
-    if (!CreateDirectoryW(tempName, nullptr)) {
-        ShowStyledMessage(L"Ошибка импорта", L"Не удалось создать временную папку.");
-        return;
-    }
+        wchar_t tempName[MAX_PATH] = {};
+        if (!GetTempFileNameW(tempDirectory, L"tmz", 0, tempName)) {
+            result->success = false;
+            result->errorMessage = T(L"app.error.tmp_path_create");
+            PostOwnedMessage(windowHandle, WM_IMPORT_ZIP_COMPLETE, result);
+            return;
+        }
+        DeleteFileW(tempName);
 
-    const std::wstring escapedArchive = EscapePowerShellSingleQuoted(archivePath);
-    const std::wstring escapedTempDir = EscapePowerShellSingleQuoted(tempName);
-    const std::wstring extractScript =
-        L"$ErrorActionPreference='Stop'\n"
-        L"$archivePath='" + escapedArchive + L"'\n"
-        L"$destinationPath='" + escapedTempDir + L"'\n"
-        L"Expand-Archive -LiteralPath $archivePath -DestinationPath $destinationPath -Force\n";
+        if (!CreateDirectoryW(tempName, nullptr)) {
+            result->success = false;
+            result->errorMessage = T(L"app.error.tmp_folder_create");
+            PostOwnedMessage(windowHandle, WM_IMPORT_ZIP_COMPLETE, result);
+            return;
+        }
 
-    std::wstring ignoredOutput;
-    std::wstring executeError;
-    if (!m_scriptRunner.ExecutePowerShellScript(extractScript, L"", &ignoredOutput, &executeError)) {
+        const std::wstring escapedArchive = PowerShellUtils::EscapeSingleQuoted(archivePathString);
+        const std::wstring escapedTempDir = PowerShellUtils::EscapeSingleQuoted(tempName);
+        const std::wstring extractScript =
+            L"$ErrorActionPreference='Stop'\n"
+            L"$archivePath='" + escapedArchive + L"'\n"
+            L"$destinationPath='" + escapedTempDir + L"'\n"
+            L"Expand-Archive -LiteralPath $archivePath -DestinationPath $destinationPath -Force\n";
+
+        std::wstring ignoredOutput;
+        std::wstring executeError;
+        if (!scriptRunner.ExecutePowerShellScript(extractScript, L"", &ignoredOutput, &executeError)) {
+            std::error_code cleanupError;
+            fs::remove_all(fs::path(tempName), cleanupError);
+            result->success = false;
+            result->errorMessage = std::wstring(T(L"app.error.zip_extract_prefix")) + executeError;
+            PostOwnedMessage(windowHandle, WM_IMPORT_ZIP_COMPLETE, result);
+            return;
+        }
+
+        std::vector<std::wstring> scriptFiles;
+        std::error_code walkError;
+        for (const auto& entry : fs::recursive_directory_iterator(fs::path(tempName), walkError)) {
+            if (walkError) {
+                break;
+            }
+            if (!entry.is_regular_file()) {
+                continue;
+            }
+            if (IsTmscriptFilePath(entry.path())) {
+                scriptFiles.push_back(entry.path().wstring());
+            }
+        }
+
+        for (const auto& filePath : scriptFiles) {
+            std::wstring copiedPath;
+            if (ImportScriptFileToDirectory(scriptsDirectory, filePath, &copiedPath)) {
+                ++result->importedCount;
+                result->importedPaths.push_back(copiedPath);
+            } else {
+                ++result->skippedCount;
+            }
+        }
+
         std::error_code cleanupError;
         fs::remove_all(fs::path(tempName), cleanupError);
-        ShowStyledMessage(L"Ошибка импорта", L"Не удалось распаковать ZIP архив.\r\n\r\n" + executeError);
-        return;
-    }
-
-    std::vector<std::wstring> scriptFiles;
-    std::error_code walkError;
-    for (const auto& entry : fs::recursive_directory_iterator(fs::path(tempName), walkError)) {
-        if (walkError) {
-            break;
-        }
-        if (!entry.is_regular_file()) {
-            continue;
-        }
-        if (IsTmscriptFilePath(entry.path())) {
-            scriptFiles.push_back(entry.path().wstring());
-        }
-    }
-
-    ImportScriptFiles(scriptFiles);
-
-    std::error_code cleanupError;
-    fs::remove_all(fs::path(tempName), cleanupError);
+        result->success = true;
+        PostOwnedMessage(windowHandle, WM_IMPORT_ZIP_COMPLETE, result);
+    }).detach();
 }
 
 void Application::ExportScriptsToZip() {
+    if (m_archiveTaskInProgress) {
+        SetStatusText(T(L"app.status.archive_busy"));
+        return;
+    }
+
     std::error_code walkError;
     int scriptFileCount = 0;
     for (const auto& entry : fs::directory_iterator(fs::path(m_scriptsDirectory), walkError)) {
@@ -1982,7 +2851,7 @@ void Application::ExportScriptsToZip() {
         }
     }
     if (scriptFileCount == 0) {
-        SetStatusText(L"Нет скриптов для экспорта.");
+        SetStatusText(T(L"app.status.no_scripts_export"));
         return;
     }
 
@@ -1990,14 +2859,18 @@ void Application::ExportScriptsToZip() {
     SYSTEMTIME st = {};
     GetLocalTime(&st);
     wchar_t defaultName[128] = {};
-    swprintf_s(defaultName, L"TextMagic-scripts-%04u%02u%02u-%02u%02u%02u.zip",
+    swprintf_s(defaultName, TM_APP_NAME_W L"-scripts-%04u%02u%02u-%02u%02u%02u.zip",
         st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
     wcscpy_s(archivePath, defaultName);
 
     OPENFILENAMEW ofn = {};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = m_hWnd;
-    ofn.lpstrFilter = L"ZIP архивы (*.zip)\0*.zip\0Все файлы (*.*)\0*.*\0";
+    const std::wstring filter = BuildDialogFilter({
+        { L"app.dialog.filter.zip_archives", L"*.zip" },
+        { L"app.dialog.filter.all_files", L"*.*" }
+    });
+    ofn.lpstrFilter = filter.c_str();
     ofn.lpstrDefExt = L"zip";
     ofn.lpstrFile = archivePath;
     ofn.nMaxFile = MAX_PATH;
@@ -2006,26 +2879,32 @@ void Application::ExportScriptsToZip() {
         return;
     }
 
-    const std::wstring escapedScriptsDir = EscapePowerShellSingleQuoted(m_scriptsDirectory);
-    const std::wstring escapedArchive = EscapePowerShellSingleQuoted(archivePath);
-    const std::wstring exportScript =
-        L"$ErrorActionPreference='Stop'\n"
-        L"$scriptsDir='" + escapedScriptsDir + L"'\n"
-        L"$destinationPath='" + escapedArchive + L"'\n"
-        L"$files=Get-ChildItem -LiteralPath $scriptsDir -Filter '*.tmscript' -File\n"
-        L"if(-not $files){ throw 'Нет .tmscript файлов для экспорта.' }\n"
-        L"Compress-Archive -LiteralPath $files.FullName -DestinationPath $destinationPath -Force\n";
+    m_archiveTaskInProgress = true;
+    const std::wstring archivePathString = archivePath;
+    const std::wstring scriptsDirectory = m_scriptsDirectory;
+    const ScriptRunner scriptRunner = m_scriptRunner;
+    const HWND windowHandle = m_hWnd;
+    std::thread([archivePathString, scriptsDirectory, scriptFileCount, scriptRunner, windowHandle]() {
+        auto* result = new ExportZipTaskResult();
+        result->archivePath = archivePathString;
+        result->scriptFileCount = scriptFileCount;
 
-    std::wstring ignoredOutput;
-    std::wstring executeError;
-    if (!m_scriptRunner.ExecutePowerShellScript(exportScript, L"", &ignoredOutput, &executeError)) {
-        ShowStyledMessage(L"Ошибка экспорта", L"Не удалось создать ZIP архив.\r\n\r\n" + executeError);
-        return;
-    }
+        const std::wstring escapedScriptsDir = PowerShellUtils::EscapeSingleQuoted(scriptsDirectory);
+        const std::wstring escapedArchive = PowerShellUtils::EscapeSingleQuoted(archivePathString);
+        const std::wstring exportScript =
+            L"$ErrorActionPreference='Stop'\n"
+            L"$scriptsDir='" + escapedScriptsDir + L"'\n"
+            L"$destinationPath='" + escapedArchive + L"'\n"
+            L"$files=Get-ChildItem -LiteralPath $scriptsDir -Filter '*.tmscript' -File\n"
+            + std::wstring(L"if(-not $files){ throw '")
+            + T(L"app.error.no_scripts_to_export_ps")
+            + L"' }\n"
+            L"Compress-Archive -LiteralPath $files.FullName -DestinationPath $destinationPath -Force\n";
 
-    const std::wstring status = L"Экспортировано " + std::to_wstring(scriptFileCount) + L" скриптов в: " + std::wstring(archivePath);
-    SetStatusText(status);
-    AppendLog(L"[Scripts] " + status);
+        std::wstring ignoredOutput;
+        result->success = scriptRunner.ExecutePowerShellScript(exportScript, L"", &ignoredOutput, &result->errorMessage);
+        PostOwnedMessage(windowHandle, WM_EXPORT_ZIP_COMPLETE, result);
+    }).detach();
 }
 
 void Application::ImportScriptFiles(const std::vector<std::wstring>& filePaths) {
@@ -2039,7 +2918,7 @@ void Application::ImportScriptFiles(const std::vector<std::wstring>& filePaths) 
         std::wstring copiedPath;
         if (ImportScriptFile(filePath, &copiedPath)) {
             ++importedCount;
-            AppendLog(L"[Scripts] Импортирован файл: " + copiedPath);
+            AppendLog(std::wstring(T(L"app.log.scripts.imported_prefix")) + copiedPath);
         } else {
             ++skippedCount;
         }
@@ -2048,73 +2927,30 @@ void Application::ImportScriptFiles(const std::vector<std::wstring>& filePaths) 
     if (importedCount > 0) {
         ReloadScripts(false);
         const std::wstring status =
-            L"Добавлено скриптов: " + std::to_wstring(importedCount) + L". Пропущено: " + std::to_wstring(skippedCount) + L".";
+            std::wstring(T(L"app.status.scripts_added_prefix")) + std::to_wstring(importedCount)
+            + T(L"app.status.skipped_prefix") + std::to_wstring(skippedCount) + L".";
         SetStatusText(status);
-        AppendLog(L"[Scripts] " + status);
+        AppendLog(std::wstring(T(L"app.log.scripts.prefix")) + status);
         return;
     }
 
-    const std::wstring status = L"Подходящие .tmscript не найдены для добавления.";
+    const std::wstring status = T(L"app.status.no_suitable_add");
     SetStatusText(status);
-    AppendLog(L"[Scripts] " + status);
+    AppendLog(std::wstring(T(L"app.log.scripts.prefix")) + status);
 }
 
 bool Application::ImportScriptFile(const std::wstring& sourcePath, std::wstring* copiedPath) const {
-    if (copiedPath) {
-        copiedPath->clear();
-    }
-
-    const fs::path sourceFile(sourcePath);
-    std::error_code statError;
-    if (!fs::is_regular_file(sourceFile, statError) || statError) {
-        return false;
-    }
-    if (!IsTmscriptFilePath(sourceFile)) {
-        return false;
-    }
-
-    std::error_code createDirError;
-    fs::create_directories(fs::path(m_scriptsDirectory), createDirError);
-    if (createDirError) {
-        return false;
-    }
-
-    fs::path destination = fs::path(m_scriptsDirectory) / sourceFile.filename();
-    std::error_code equivalentError;
-    if (fs::exists(destination) && fs::equivalent(sourceFile, destination, equivalentError) && !equivalentError) {
-        return false;
-    }
-
-    if (fs::exists(destination)) {
-        const std::wstring stem = destination.stem().wstring();
-        const std::wstring ext = destination.extension().wstring();
-        int suffix = 1;
-        while (fs::exists(destination)) {
-            destination = fs::path(m_scriptsDirectory) / (stem + L"_" + std::to_wstring(suffix) + ext);
-            ++suffix;
-        }
-    }
-
-    std::error_code copyError;
-    fs::copy_file(sourceFile, destination, fs::copy_options::none, copyError);
-    if (copyError) {
-        return false;
-    }
-
-    if (copiedPath) {
-        *copiedPath = destination.wstring();
-    }
-    return true;
+    return ImportScriptFileToDirectory(m_scriptsDirectory, sourcePath, copiedPath);
 }
 
 void Application::ExecuteSelectedScript() {
     size_t selectedIndex = 0;
     if (!GetPrimarySelectedScriptIndex(&selectedIndex)) {
-        SetStatusText(L"Выберите скрипт из списка.");
+        SetStatusText(T(L"app.status.select_script"));
         return;
     }
     if (!m_scripts[selectedIndex].manifest.enabled) {
-        SetStatusText(L"Скрипт отключен. Включите его перед запуском.");
+        SetStatusText(T(L"app.status.script_disabled"));
         return;
     }
     ExecuteScript(m_scripts[selectedIndex]);
@@ -2135,102 +2971,92 @@ void Application::ExecuteScriptByHotkeyId(int hotkeyId) {
 }
 
 void Application::ExecuteScript(const RegisteredScript& script) {
-    SetStatusText(L"Выполняется: " + script.manifest.name);
-    AppendLog(L"[Script] Запуск: \"" + script.manifest.name + L"\".");
+    if (m_scriptExecutionInProgress) {
+        SetStatusText(T(L"app.status.script_already_running"));
+        return;
+    }
+
+    SetStatusText(std::wstring(T(L"app.status.running_prefix")) + script.manifest.name);
+    AppendLog(std::wstring(T(L"app.log.script.start_prefix")) + script.manifest.name + L"\".");
     if (!script.manifest.scriptBody.empty()) {
-        AppendLog(L"[Script] Режим запуска: inline PowerShell из .tmscript.");
+        AppendLog(T(L"app.log.script.launch_mode_inline"));
     } else {
-        AppendLog(L"[Script] Команда: " + script.manifest.commandLine);
+        AppendLog(std::wstring(T(L"app.log.script.command_prefix")) + script.manifest.commandLine);
     }
 
-    std::wstring selectedText = m_textBridge.GetSelectedText();
-    bool hasSelection = !selectedText.empty();
-    bool fallbackSelectionMode = false;
-    bool clipboardFallbackMode = false;
-    std::wstring sourceText = hasSelection ? selectedText : m_textBridge.GetAllText();
+    m_scriptExecutionInProgress = true;
+    const std::wstring scriptName = script.manifest.name;
+    const std::wstring scriptBody = script.manifest.scriptBody;
+    const std::wstring commandLine = script.manifest.commandLine;
+    const bool fallbackToAllText = m_scriptInputFallbackToAllText;
+    const TextBridge textBridge = m_textBridge;
+    const ScriptRunner scriptRunner = m_scriptRunner;
+    const HWND windowHandle = m_hWnd;
 
-    if (!hasSelection && sourceText.empty()) {
-        std::wstring fallbackSelectedText = m_textBridge.GetSelectedText();
-        if (!fallbackSelectedText.empty()) {
-            sourceText = fallbackSelectedText;
-            hasSelection = true;
-            fallbackSelectionMode = true;
-            AppendLog(L"[Script] Фолбэк: текст получен повторным чтением выделения.");
-        }
-    }
+    std::thread([scriptName,
+                 scriptBody,
+                 commandLine,
+                 fallbackToAllText,
+                 textBridge,
+                 scriptRunner,
+                 windowHandle]() {
+        auto* result = new ScriptExecutionTaskResult();
+        result->scriptName = scriptName;
 
-    if (sourceText.empty()) {
-        for (int attempt = 0; attempt < 5 && sourceText.empty(); ++attempt) {
-            const std::wstring clipboardText = ReadTextFromClipboard(m_hWnd);
-            if (!clipboardText.empty()) {
-                sourceText = clipboardText;
-                clipboardFallbackMode = true;
-                AppendLog(L"[Script] Фолбэк: текст получен из буфера обмена.");
-                break;
+        std::wstring selectedText = textBridge.GetSelectedText();
+        bool hasSelection = !selectedText.empty();
+        bool previousWordMode = false;
+        std::wstring previousWordTrailing;
+        std::wstring sourceText = hasSelection ? selectedText : L"";
+
+        if (!hasSelection) {
+            if (fallbackToAllText) {
+                sourceText = textBridge.GetAllText();
+            } else {
+                std::wstring previousWord;
+                size_t deleteChars = 0;
+                if (ConsumePreviousWordFromInputBuffer(&previousWord, &previousWordTrailing, &deleteChars) && !previousWord.empty()) {
+                    if (textBridge.DeleteCharacters(deleteChars)) {
+                        sourceText = previousWord;
+                        previousWordMode = true;
+                    } else {
+                        AppendInputBufferText(previousWord + previousWordTrailing);
+                    }
+                }
             }
-            Sleep(15);
         }
-    }
 
-    std::wstring sourceName = hasSelection ? L"выделение" : L"весь текст";
-    if (clipboardFallbackMode) {
-        sourceName = L"буфер обмена";
-    }
-    AppendLog(L"[Script] Источник: " + sourceName + L", символов: " + std::to_wstring(sourceText.size()) + L".");
-    if (sourceText.empty()) {
-        const std::wstring msg = L"Ни активное поле, ни буфер обмена не дали текст для обработки.";
-        SetStatusText(msg);
-        AppendLog(L"[Script][Ошибка] " + msg);
-        return;
-    }
+        result->sourceText = sourceText;
+        result->hasSelection = hasSelection;
+        result->previousWordMode = previousWordMode;
+        result->previousWordTrailing = previousWordTrailing;
 
-    std::wstring outputText;
-    std::wstring executionError;
-    bool executeOk = false;
-    if (!script.manifest.scriptBody.empty()) {
-        executeOk = m_scriptRunner.ExecutePowerShellScript(script.manifest.scriptBody, sourceText, &outputText, &executionError);
-    } else {
-        executeOk = m_scriptRunner.Execute(script.manifest.commandLine, sourceText, &outputText, &executionError);
-    }
-    if (!executeOk) {
-        const std::wstring statusMessage = L"Ошибка скрипта: " + script.manifest.name;
-        const std::wstring dialogMessage = L"Скрипт: " + script.manifest.name
-            + L"\r\n\r\nОшибка:\r\n" + executionError;
-        SetStatusText(statusMessage);
-        AppendLog(L"[Script][Ошибка] \"" + script.manifest.name + L"\": " + executionError);
-        if (hasSelection || fallbackSelectionMode) {
-            m_textBridge.CollapseSelection();
+        if (sourceText.empty()) {
+            result->noTextAvailable = true;
+            result->executeOk = false;
+            result->executionError = T(L"app.status.no_text_available");
+            PostOwnedMessage(windowHandle, WM_SCRIPT_EXECUTION_COMPLETE, result);
+            return;
         }
-        ShowStyledMessage(L"Ошибка выполнения", dialogMessage);
-        return;
-    }
 
-    bool replaceOk = false;
-    if (clipboardFallbackMode) {
-        replaceOk = CopyTextToClipboard(m_hWnd, outputText);
-    } else {
-        replaceOk = hasSelection ? m_textBridge.SetSelectedText(outputText) : m_textBridge.SetAllText(outputText);
-    }
-    if (!replaceOk) {
-        const std::wstring msg = clipboardFallbackMode
-            ? L"Не удалось записать результат в буфер обмена."
-            : L"Не удалось вставить результат в активное поле.";
-        SetStatusText(msg);
-        AppendLog(L"[Script][Ошибка] \"" + script.manifest.name + L"\": " + msg);
-        ShowStyledMessage(L"Ошибка вставки", msg);
-        return;
-    }
+        if (!scriptBody.empty()) {
+            result->executeOk = scriptRunner.ExecutePowerShellScript(
+                scriptBody,
+                sourceText,
+                &result->outputText,
+                &result->executionError
+            );
+        } else {
+            result->executeOk = scriptRunner.Execute(
+                commandLine,
+                sourceText,
+                &result->outputText,
+                &result->executionError
+            );
+        }
 
-    std::wstring status = L"Скрипт \"" + script.manifest.name + L"\" применен к ";
-    if (clipboardFallbackMode) {
-        status += L"тексту из буфера обмена.";
-    } else {
-        status += hasSelection ? L"выделенному тексту." : L"всему тексту.";
-    }
-    SetStatusText(status);
-    AppendLog(L"[Script] Готово: \"" + script.manifest.name + L"\". Результат: "
-        + std::to_wstring(outputText.size()) + L" символов.");
-    AppendLog(L"[Script] " + status);
+        PostOwnedMessage(windowHandle, WM_SCRIPT_EXECUTION_COMPLETE, result);
+    }).detach();
 }
 
 void Application::SetStatusText(const std::wstring& text) {
@@ -2253,7 +3079,7 @@ std::wstring Application::GetExecutableDirectory() const {
 std::wstring Application::GetExecutablePath() const {
     wchar_t path[MAX_PATH] = {};
     if (GetModuleFileNameW(nullptr, path, MAX_PATH) == 0) {
-        return L".\\TextMagic.exe";
+        return std::wstring(L".\\") + TM_APP_NAME_W + L".exe";
     }
     return path;
 }
@@ -2436,7 +3262,12 @@ void Application::UpdateInfoWindowText(InfoWindowKind kind, const std::wstring& 
     }
     state->text = text;
     if (state->usesListBox) {
-        FillListBoxWithText(state->textControl, state->text);
+        const bool isLogs = state->kind == static_cast<int>(InfoWindowKind::Logs);
+        if (isLogs) {
+            FillListBoxWithWrappedText(state->textControl, state->text, true);
+        } else {
+            FillListBoxWithText(state->textControl, state->text);
+        }
     } else {
         SetWindowTextW(state->textControl, state->text.c_str());
     }
@@ -2453,12 +3284,13 @@ int Application::ShowStyledMessageDialog(const wchar_t* title,
     int result = IDCANCEL;
     MessageWindowState* state = new MessageWindowState();
     state->owner = this;
-    state->title = title ? title : L"Сообщение";
+    state->title = title ? title : T(L"app.title.message");
     state->text = bodyText;
-    state->primaryButtonText = primaryButtonText ? primaryButtonText : L"OK";
+    state->primaryButtonText = primaryButtonText ? primaryButtonText : T(L"app.button.ok");
     state->secondaryButtonText = secondaryButtonText ? secondaryButtonText : L"";
     state->hasSecondaryButton = secondaryButtonText != nullptr;
     state->useMonoFont = state->title.find(L"Ошибка") != std::wstring::npos
+        || state->title.find(L"Error") != std::wstring::npos
         || state->text.find(L"stderr:") != std::wstring::npos
         || state->text.find(L"stdout:") != std::wstring::npos;
     state->resultOut = &result;
@@ -2474,7 +3306,7 @@ int Application::ShowStyledMessageDialog(const wchar_t* title,
     HWND messageWindow = CreateWindowExW(
         0,
         MESSAGE_WINDOW_CLASS_NAME,
-        title ? title : L"Сообщение",
+        title ? title : T(L"app.title.message"),
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
         x, y, width, height,
         m_hWnd,
@@ -2512,54 +3344,28 @@ int Application::ShowStyledMessageDialog(const wchar_t* title,
 }
 
 void Application::ShowStyledMessage(const std::wstring& title, const std::wstring& message) {
-    ShowStyledMessageDialog(title.c_str(), message, L"OK", nullptr);
+    ShowStyledMessageDialog(title.c_str(), message, T(L"app.button.ok"), nullptr);
 }
 
 void Application::CheckForUpdates() {
+    if (m_updateInProgress) {
+        SetStatusText(T(L"app.status.update_already_running"));
+        return;
+    }
+
     if (!m_updateService) {
         m_updateService = std::make_unique<UpdateService>();
     }
 
-    AppendLog(L"Проверка обновлений...");
-    const UpdateCheckResult check = m_updateService->CheckForUpdates(APP_VERSION);
-    if (!check.success) {
-        AppendLog(L"[Update] Ошибка: " + check.errorMessage);
-        ShowStyledMessage(L"Обновление", L"Ошибка проверки обновлений:\r\n" + check.errorMessage);
-        return;
-    }
-
-    if (!check.updateAvailable) {
-        AppendLog(L"[Update] Новая версия не найдена.");
-        ShowStyledMessage(L"Обновление", L"У вас уже актуальная версия: " + std::wstring(APP_VERSION));
-        return;
-    }
-
-    const std::wstring prompt = L"Доступна версия " + check.latestVersion + L" (" + check.latestTag + L").\r\nСкачать и установить?";
-    const int decision = ShowStyledMessageDialog(L"Обновление", prompt, L"Обновить", L"Позже");
-    if (decision != IDYES) {
-        AppendLog(L"[Update] Обновление отложено.");
-        return;
-    }
-
-    const std::wstring targetPath = GetExecutablePath();
-    const std::wstring tmpPath = GetExecutableDirectory() + L"\\TextMagic.update.tmp.exe";
-
-    std::wstring error;
-    if (!m_updateService->DownloadReleaseExecutable(check.latestTag, tmpPath, error)) {
-        AppendLog(L"[Update] Ошибка загрузки: " + error);
-        ShowStyledMessage(L"Обновление", L"Не удалось загрузить обновление:\r\n" + error);
-        return;
-    }
-
-    if (!m_updateService->LaunchUpdaterProcess(GetCurrentProcessId(), tmpPath, targetPath, error)) {
-        AppendLog(L"[Update] Ошибка запуска: " + error);
-        ShowStyledMessage(L"Обновление", L"Не удалось запустить обновление:\r\n" + error);
-        return;
-    }
-
-    AppendLog(L"[Update] Обновление запущено.");
-    ShowStyledMessage(L"Обновление", L"Обновление загружено. Приложение будет перезапущено.");
-    PostMessageW(m_hWnd, WM_CLOSE, 0, 0);
+    AppendLog(T(L"app.log.update.checking"));
+    m_updateInProgress = true;
+    const UpdateService updateService = *m_updateService;
+    const HWND windowHandle = m_hWnd;
+    std::thread([updateService, windowHandle]() {
+        auto* result = new UpdateCheckTaskResult();
+        result->check = updateService.CheckForUpdates(APP_VERSION);
+        PostOwnedMessage(windowHandle, WM_UPDATE_CHECK_COMPLETE, result);
+    }).detach();
 }
 
 void Application::AppendLog(const std::wstring& line) {
@@ -2585,7 +3391,7 @@ void Application::ClearLogs() {
 
 std::wstring Application::BuildAboutText() const {
     std::wostringstream stream;
-    stream << L"TextMagic " << APP_VERSION << L"\r\n\r\n";
+    stream << WINDOW_TITLE << L" " << APP_VERSION << L"\r\n\r\n";
     stream << L(Localization::Key::AboutLoadedScriptsPrefix) << m_scripts.size() << L"\r\n";
     stream << L(Localization::Key::AboutScriptsDirectoryPrefix) << m_scriptsDirectory << L"\r\n\r\n";
     stream << L(Localization::Key::AboutCheckUpdatesHint);
@@ -2645,10 +3451,8 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                     0, 0, 100, 100,
                     hWnd, reinterpret_cast<HMENU>(ID_INFO_TEXT), GetModuleHandleW(nullptr), nullptr
                 );
-                InitializeFlatSB(state->textControl);
-                FlatSB_SetScrollProp(state->textControl, WSB_PROP_VSTYLE, FSB_FLAT_MODE, TRUE);
-                FlatSB_SetScrollProp(state->textControl, WSB_PROP_VBKGCOLOR, RGB(30, 30, 30), TRUE);
-                FillListBoxWithText(state->textControl, state->text);
+                ApplyDarkScrollBar(state->textControl);
+                FillListBoxWithWrappedText(state->textControl, state->text, true);
             } else {
                 state->textControl = CreateWindowExW(
                     0, L"EDIT", state->text.c_str(),
@@ -2705,6 +3509,9 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
 
             MoveWindow(state->titleLabel, m, m, w - 2 * m, titleH, TRUE);
             MoveWindow(state->textControl, m, textTop, w - 2 * m, textHeight, TRUE);
+            if (state->usesListBox && state->kind == static_cast<int>(Application::InfoWindowKind::Logs)) {
+                FillListBoxWithWrappedText(state->textControl, state->text, true);
+            }
             MoveWindow(state->closeButton, w - m - closeW, y, closeW, bh, TRUE);
             if (state->actionButton) {
                 MoveWindow(state->actionButton, w - m - closeW - gap - actionW, y, actionW, bh, TRUE);
@@ -2842,10 +3649,10 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                     std::wstring saveError;
                     if (SaveTextWithDialog(hWnd, state->text, &savedPath, &saveError)) {
                         if (state->owner) {
-                            state->owner->AppendLog(L"[Logs] Сохранено в файл: " + savedPath);
+                            state->owner->AppendLog(std::wstring(T(L"app.log.logs.saved_prefix")) + savedPath);
                         }
                     } else if (!saveError.empty() && state->owner) {
-                        state->owner->ShowStyledMessage(L"Ошибка сохранения", saveError);
+                        state->owner->ShowStyledMessage(T(L"app.title.save_error"), saveError);
                     }
                 }
                 return 0;
@@ -2873,9 +3680,6 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
 
     case WM_NCDESTROY:
         if (state) {
-            if (state->usesListBox && state->textControl && IsWindow(state->textControl)) {
-                UninitializeFlatSB(state->textControl);
-            }
             if (state->editBrush) {
                 DeleteObject(state->editBrush);
             }
@@ -2909,13 +3713,16 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
                 0, 0, 100, 24,
                 hWnd, nullptr, GetModuleHandleW(nullptr), nullptr
             );
+            state->usesListBox = true;
             state->textControl = CreateWindowExW(
-                0, L"EDIT", state->text.c_str(),
-                WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY,
+                0, L"LISTBOX", nullptr,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | LBS_NOINTEGRALHEIGHT | LBS_NOSEL,
                 0, 0, 100, 100,
                 hWnd, reinterpret_cast<HMENU>(ID_MESSAGE_TEXT), GetModuleHandleW(nullptr), nullptr
             );
             if (state->textControl) {
+                ApplyDarkScrollBar(state->textControl);
+                FillListBoxWithWrappedText(state->textControl, state->text);
                 SetWindowSubclass(state->textControl, CopyOnlyContextSubclassProc, 1, reinterpret_cast<DWORD_PTR>(hWnd));
             }
             state->primaryButton = CreateWindowExW(
@@ -2959,6 +3766,9 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
 
             MoveWindow(state->titleLabel, m, m, w - 2 * m, titleH, TRUE);
             MoveWindow(state->textControl, m, textTop, w - 2 * m, textHeight, TRUE);
+            if (state->usesListBox && state->textControl) {
+                FillListBoxWithWrappedText(state->textControl, state->text);
+            }
             if (state->hasSecondaryButton && state->secondaryButton) {
                 const int px = w - m - bw;
                 MoveWindow(state->primaryButton, px, y, bw, bh, TRUE);
@@ -3038,6 +3848,9 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
             RECT card = { 8, 8, r.right - 8, r.bottom - 8 };
             UiRenderer::DrawCard(hdc, card);
             EndPaint(hWnd, &ps);
+            if (state && state->usesListBox && state->textControl) {
+                UiRenderer::DrawEditBorder(hWnd, state->textControl);
+            }
         }
         return 0;
 
@@ -3064,12 +3877,21 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
         }
         break;
 
+    case WM_CTLCOLORLISTBOX:
+        if (state && state->usesListBox) {
+            HDC hdc = reinterpret_cast<HDC>(wParam);
+            SetBkColor(hdc, RGB(37, 37, 37));
+            SetTextColor(hdc, RGB(245, 245, 245));
+            return reinterpret_cast<INT_PTR>(state->owner->m_hListBrush);
+        }
+        break;
+
     case WM_COMMAND:
         if (state) {
             const UINT id = LOWORD(wParam);
             if (id == ID_MENU_CONTEXT_COPY) {
                 if (state->contextMenuTarget == state->textControl) {
-                    CopyEditSelectionOrAll(state->textControl);
+                    CopyTextToClipboard(hWnd, state->text);
                 }
                 return 0;
             }

@@ -12,6 +12,7 @@ public:
 
     std::wstring GetSelectedText() const;
     bool SetSelectedText(const std::wstring& text) const;
+    bool DeleteCharacters(size_t count) const;
     bool CollapseSelection() const;
 
 private:
@@ -33,9 +34,12 @@ private:
     std::wstring CopyFromActiveControl(bool selectAll) const;
     bool PasteIntoActiveControl(const std::wstring& text, bool selectAll) const;
     bool SendCtrlShortcut(WORD virtualKey) const;
+    bool SendCtrlShiftShortcut(WORD virtualKey) const;
+    bool SendKey(WORD virtualKey) const;
+    bool SendRepeatedKey(WORD virtualKey, size_t count) const;
     bool IsTerminalFocusedControl() const;
 
-    static bool WaitForClipboardChange(DWORD initialSequence);
+    static bool WaitForClipboardChange(DWORD initialSequence, int maxAttempts = 80, int sleepMs = 10);
     static bool SetClipboardUnicodeText(const std::wstring& text);
     static std::wstring GetClipboardUnicodeText();
 };

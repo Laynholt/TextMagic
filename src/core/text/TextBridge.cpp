@@ -2,6 +2,7 @@
 
 #include <cstring>
 #include <cwchar>
+#include <cwctype>
 
 namespace {
 bool OpenClipboardWithRetry(HWND owner) {
@@ -24,6 +25,10 @@ bool IsTerminalClassName(const wchar_t* className) {
     }
     return _wcsicmp(className, L"ConsoleWindowClass") == 0
         || _wcsicmp(className, L"CASCADIA_HOSTING_WINDOW_CLASS") == 0;
+}
+
+bool IsWordSeparator(wchar_t ch) {
+    return iswspace(ch);
 }
 
 void WaitForModifiersRelease() {
@@ -81,16 +86,18 @@ bool TextBridge::SetSelectedText(const std::wstring& text) const {
     return PasteIntoActiveControl(text, false);
 }
 
+bool TextBridge::DeleteCharacters(size_t count) const {
+    if (count == 0) {
+        return true;
+    }
+    WaitForModifiersRelease();
+    return SendRepeatedKey(VK_BACK, count);
+}
+
 bool TextBridge::CollapseSelection() const {
     WaitForModifiersRelease();
 
-    INPUT inputs[2] = {};
-    inputs[0].type = INPUT_KEYBOARD;
-    inputs[0].ki.wVk = VK_RIGHT;
-    inputs[1].type = INPUT_KEYBOARD;
-    inputs[1].ki.wVk = VK_RIGHT;
-    inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
-    return SendInput(2, inputs, sizeof(INPUT)) == 2;
+    return SendKey(VK_RIGHT);
 }
 
 std::wstring TextBridge::CopyFromActiveControl(bool selectAll) const {
@@ -98,6 +105,7 @@ std::wstring TextBridge::CopyFromActiveControl(bool selectAll) const {
 
     WaitForModifiersRelease();
     const DWORD sequenceBefore = GetClipboardSequenceNumber();
+    const std::wstring clipboardBefore = GetClipboardUnicodeText();
 
     if (selectAll) {
         SendCtrlShortcut('A');
@@ -108,11 +116,17 @@ std::wstring TextBridge::CopyFromActiveControl(bool selectAll) const {
         return L"";
     }
 
-    if (!WaitForClipboardChange(sequenceBefore)) {
+    const int waitAttempts = selectAll ? 80 : 12;
+    const int waitSleepMs = selectAll ? 10 : 5;
+    const bool changed = WaitForClipboardChange(sequenceBefore, waitAttempts, waitSleepMs);
+    const std::wstring copied = GetClipboardUnicodeText();
+    if (copied.empty()) {
         return L"";
     }
-
-    return GetClipboardUnicodeText();
+    if (!changed && GetClipboardSequenceNumber() == sequenceBefore && copied == clipboardBefore) {
+        return L"";
+    }
+    return copied;
 }
 
 bool TextBridge::PasteIntoActiveControl(const std::wstring& text, bool selectAll) const {
@@ -154,6 +168,52 @@ bool TextBridge::SendCtrlShortcut(WORD virtualKey) const {
     inputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
 
     return SendInput(4, inputs, sizeof(INPUT)) == 4;
+}
+
+bool TextBridge::SendCtrlShiftShortcut(WORD virtualKey) const {
+    INPUT inputs[6] = {};
+
+    inputs[0].type = INPUT_KEYBOARD;
+    inputs[0].ki.wVk = VK_CONTROL;
+
+    inputs[1].type = INPUT_KEYBOARD;
+    inputs[1].ki.wVk = VK_SHIFT;
+
+    inputs[2].type = INPUT_KEYBOARD;
+    inputs[2].ki.wVk = virtualKey;
+
+    inputs[3].type = INPUT_KEYBOARD;
+    inputs[3].ki.wVk = virtualKey;
+    inputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
+
+    inputs[4].type = INPUT_KEYBOARD;
+    inputs[4].ki.wVk = VK_SHIFT;
+    inputs[4].ki.dwFlags = KEYEVENTF_KEYUP;
+
+    inputs[5].type = INPUT_KEYBOARD;
+    inputs[5].ki.wVk = VK_CONTROL;
+    inputs[5].ki.dwFlags = KEYEVENTF_KEYUP;
+
+    return SendInput(6, inputs, sizeof(INPUT)) == 6;
+}
+
+bool TextBridge::SendKey(WORD virtualKey) const {
+    INPUT inputs[2] = {};
+    inputs[0].type = INPUT_KEYBOARD;
+    inputs[0].ki.wVk = virtualKey;
+    inputs[1].type = INPUT_KEYBOARD;
+    inputs[1].ki.wVk = virtualKey;
+    inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    return SendInput(2, inputs, sizeof(INPUT)) == 2;
+}
+
+bool TextBridge::SendRepeatedKey(WORD virtualKey, size_t count) const {
+    for (size_t i = 0; i < count; ++i) {
+        if (!SendKey(virtualKey)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 bool TextBridge::IsTerminalFocusedControl() const {
@@ -198,12 +258,18 @@ bool TextBridge::IsTerminalFocusedControl() const {
     return false;
 }
 
-bool TextBridge::WaitForClipboardChange(DWORD initialSequence) {
-    for (int attempt = 0; attempt < 30; ++attempt) {
+bool TextBridge::WaitForClipboardChange(DWORD initialSequence, int maxAttempts, int sleepMs) {
+    if (maxAttempts <= 0) {
+        return false;
+    }
+    if (sleepMs < 0) {
+        sleepMs = 0;
+    }
+    for (int attempt = 0; attempt < maxAttempts; ++attempt) {
         if (GetClipboardSequenceNumber() != initialSequence) {
             return true;
         }
-        Sleep(10);
+        Sleep(static_cast<DWORD>(sleepMs));
     }
     return false;
 }
@@ -251,19 +317,44 @@ std::wstring TextBridge::GetClipboardUnicodeText() {
     }
 
     HANDLE handle = GetClipboardData(CF_UNICODETEXT);
+    if (handle) {
+        const wchar_t* raw = static_cast<const wchar_t*>(GlobalLock(handle));
+        if (!raw) {
+            CloseClipboard();
+            return L"";
+        }
+
+        std::wstring text(raw);
+        GlobalUnlock(handle);
+        CloseClipboard();
+        return text;
+    }
+
+    handle = GetClipboardData(CF_TEXT);
     if (!handle) {
         CloseClipboard();
         return L"";
     }
 
-    const wchar_t* raw = static_cast<const wchar_t*>(GlobalLock(handle));
-    if (!raw) {
+    const char* rawAnsi = static_cast<const char*>(GlobalLock(handle));
+    if (!rawAnsi) {
         CloseClipboard();
         return L"";
     }
 
-    std::wstring text(raw);
+    const int requiredChars = MultiByteToWideChar(CP_ACP, 0, rawAnsi, -1, nullptr, 0);
+    if (requiredChars <= 0) {
+        GlobalUnlock(handle);
+        CloseClipboard();
+        return L"";
+    }
+
+    std::wstring wideText(static_cast<size_t>(requiredChars), L'\0');
+    MultiByteToWideChar(CP_ACP, 0, rawAnsi, -1, &wideText[0], requiredChars);
     GlobalUnlock(handle);
     CloseClipboard();
-    return text;
+    if (!wideText.empty() && wideText.back() == L'\0') {
+        wideText.pop_back();
+    }
+    return wideText;
 }

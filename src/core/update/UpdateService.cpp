@@ -1,5 +1,9 @@
 #include "UpdateService.h"
 
+#include "AppVersion.h"
+#include "Localization.h"
+#include "PowerShellUtils.h"
+
 #include <windows.h>
 #include <winhttp.h>
 
@@ -9,11 +13,15 @@
 #include <vector>
 
 namespace {
+const wchar_t* T(const wchar_t* key) {
+    return Localization::GetTextByName(key);
+}
+
 constexpr wchar_t kGitHubHost[] = L"github.com";
-constexpr wchar_t kLatestReleasePath[] = L"/Laynholt/TextMagic/releases/latest";
-constexpr wchar_t kReleaseDownloadPrefix[] = L"/Laynholt/TextMagic/releases/download/";
-constexpr wchar_t kReleaseExeName[] = L"TextMagic.exe";
-constexpr wchar_t kUserAgent[] = L"TextMagic-Updater/0.1";
+constexpr wchar_t kLatestReleasePath[] = L"/" TM_GITHUB_OWNER_W L"/" TM_GITHUB_REPO_W L"/releases/latest";
+constexpr wchar_t kReleaseDownloadPrefix[] = L"/" TM_GITHUB_OWNER_W L"/" TM_GITHUB_REPO_W L"/releases/download/";
+constexpr wchar_t kReleaseExeName[] = TM_APP_NAME_W L".exe";
+constexpr wchar_t kUserAgent[] = TM_APP_NAME_W L"-Updater/" TM_APP_VERSION_W;
 
 class WinHttpHandle {
 public:
@@ -74,7 +82,7 @@ std::wstring FormatWin32Error(DWORD errorCode) {
 
     if (chars == 0 || !buffer) {
         std::wstringstream stream;
-        stream << L"Код ошибки: " << errorCode;
+        stream << T(L"update.error.code_prefix") << errorCode;
         return stream.str();
     }
 
@@ -194,20 +202,6 @@ std::vector<int> ParseVersionParts(const std::wstring& version) {
     return parts;
 }
 
-std::wstring EscapePowerShellSingleQuoted(const std::wstring& value) {
-    std::wstring escaped;
-    escaped.reserve(value.size());
-
-    for (wchar_t ch : value) {
-        if (ch == L'\'') {
-            escaped += L"''";
-        } else {
-            escaped.push_back(ch);
-        }
-    }
-
-    return escaped;
-}
 } // namespace
 
 UpdateCheckResult UpdateService::CheckForUpdates(const std::wstring& currentVersion) const {
@@ -231,7 +225,7 @@ UpdateCheckResult UpdateService::CheckForUpdates(const std::wstring& currentVers
 
 bool UpdateService::DownloadReleaseExecutable(const std::wstring& tag, const std::wstring& destinationPath, std::wstring& errorMessage) const {
     if (tag.empty() || destinationPath.empty()) {
-        errorMessage = L"Неверные параметры загрузки обновления";
+        errorMessage = T(L"update.error.invalid_download_params");
         return false;
     }
 
@@ -245,13 +239,13 @@ bool UpdateService::DownloadReleaseExecutable(const std::wstring& tag, const std
         0
     ));
     if (!session) {
-        errorMessage = L"Не удалось инициализировать WinHTTP: " + FormatWin32Error(GetLastError());
+        errorMessage = std::wstring(T(L"update.error.winhttp_init_prefix")) + FormatWin32Error(GetLastError());
         return false;
     }
 
     WinHttpHandle connection(WinHttpConnect(session.get(), kGitHubHost, INTERNET_DEFAULT_HTTPS_PORT, 0));
     if (!connection) {
-        errorMessage = L"Не удалось подключиться к GitHub: " + FormatWin32Error(GetLastError());
+        errorMessage = std::wstring(T(L"update.error.github_connect_prefix")) + FormatWin32Error(GetLastError());
         return false;
     }
 
@@ -265,7 +259,7 @@ bool UpdateService::DownloadReleaseExecutable(const std::wstring& tag, const std
         WINHTTP_FLAG_SECURE
     ));
     if (!request) {
-        errorMessage = L"Не удалось создать HTTP-запрос: " + FormatWin32Error(GetLastError());
+        errorMessage = std::wstring(T(L"update.error.http_request_create_prefix")) + FormatWin32Error(GetLastError());
         return false;
     }
 
@@ -277,12 +271,12 @@ bool UpdateService::DownloadReleaseExecutable(const std::wstring& tag, const std
             0,
             0,
             0)) {
-        errorMessage = L"Не удалось отправить запрос на загрузку: " + FormatWin32Error(GetLastError());
+        errorMessage = std::wstring(T(L"update.error.send_download_prefix")) + FormatWin32Error(GetLastError());
         return false;
     }
 
     if (!WinHttpReceiveResponse(request.get(), nullptr)) {
-        errorMessage = L"Не удалось получить ответ сервера: " + FormatWin32Error(GetLastError());
+        errorMessage = std::wstring(T(L"update.error.receive_response_prefix")) + FormatWin32Error(GetLastError());
         return false;
     }
 
@@ -295,13 +289,15 @@ bool UpdateService::DownloadReleaseExecutable(const std::wstring& tag, const std
             &statusCode,
             &statusSize,
             WINHTTP_NO_HEADER_INDEX)) {
-        errorMessage = L"Не удалось получить HTTP-статус: " + FormatWin32Error(GetLastError());
+        errorMessage = std::wstring(T(L"update.error.http_status_prefix")) + FormatWin32Error(GetLastError());
         return false;
     }
 
     if (statusCode != 200) {
         std::wstringstream stream;
-        stream << L"Сервер вернул HTTP " << statusCode << L" при загрузке обновления";
+        stream << T(L"update.error.server_returned_http_prefix")
+               << statusCode
+               << T(L"update.error.server_returned_http_suffix");
         errorMessage = stream.str();
         return false;
     }
@@ -316,7 +312,7 @@ bool UpdateService::DownloadReleaseExecutable(const std::wstring& tag, const std
         nullptr
     );
     if (fileHandle == INVALID_HANDLE_VALUE) {
-        errorMessage = L"Не удалось создать файл обновления: " + FormatWin32Error(GetLastError());
+        errorMessage = std::wstring(T(L"update.error.update_file_create_prefix")) + FormatWin32Error(GetLastError());
         return false;
     }
 
@@ -324,7 +320,7 @@ bool UpdateService::DownloadReleaseExecutable(const std::wstring& tag, const std
     while (true) {
         DWORD bytesAvailable = 0;
         if (!WinHttpQueryDataAvailable(request.get(), &bytesAvailable)) {
-            errorMessage = L"Ошибка получения данных обновления: " + FormatWin32Error(GetLastError());
+            errorMessage = std::wstring(T(L"update.error.query_data_prefix")) + FormatWin32Error(GetLastError());
             readOk = false;
             break;
         }
@@ -336,14 +332,14 @@ bool UpdateService::DownloadReleaseExecutable(const std::wstring& tag, const std
         std::vector<BYTE> buffer(bytesAvailable);
         DWORD bytesRead = 0;
         if (!WinHttpReadData(request.get(), buffer.data(), bytesAvailable, &bytesRead)) {
-            errorMessage = L"Ошибка чтения данных обновления: " + FormatWin32Error(GetLastError());
+            errorMessage = std::wstring(T(L"update.error.read_data_prefix")) + FormatWin32Error(GetLastError());
             readOk = false;
             break;
         }
 
         DWORD bytesWritten = 0;
         if (!WriteFile(fileHandle, buffer.data(), bytesRead, &bytesWritten, nullptr) || bytesWritten != bytesRead) {
-            errorMessage = L"Ошибка записи файла обновления: " + FormatWin32Error(GetLastError());
+            errorMessage = std::wstring(T(L"update.error.write_data_prefix")) + FormatWin32Error(GetLastError());
             readOk = false;
             break;
         }
@@ -364,21 +360,21 @@ bool UpdateService::LaunchUpdaterProcess(DWORD currentProcessId,
                                          const std::wstring& targetExePath,
                                          std::wstring& errorMessage) const {
     if (downloadedExePath.empty() || targetExePath.empty()) {
-        errorMessage = L"Неверные параметры запуска установщика обновления";
+        errorMessage = T(L"update.error.invalid_launch_params");
         return false;
     }
 
     std::wstringstream script;
     script << L"$pidToWait=" << currentProcessId << L";";
-    script << L"$download='" << EscapePowerShellSingleQuoted(downloadedExePath) << L"';";
-    script << L"$target='" << EscapePowerShellSingleQuoted(targetExePath) << L"';";
+    script << L"$download='" << PowerShellUtils::EscapeSingleQuoted(downloadedExePath) << L"';";
+    script << L"$target='" << PowerShellUtils::EscapeSingleQuoted(targetExePath) << L"';";
     script << L"while (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 500 };";
     script << L"Copy-Item -LiteralPath $download -Destination $target -Force;";
     script << L"Start-Process -FilePath $target;";
     script << L"Remove-Item -LiteralPath $download -Force -ErrorAction SilentlyContinue;";
 
     std::wstring commandLine =
-        L"powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command \"" +
+        std::wstring(PowerShellUtils::GetExecutableName()) + L" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command \"" +
         script.str() + L"\"";
 
     STARTUPINFOW startupInfo = {};
@@ -398,7 +394,8 @@ bool UpdateService::LaunchUpdaterProcess(DWORD currentProcessId,
             nullptr,
             &startupInfo,
             &processInfo)) {
-        errorMessage = L"Не удалось запустить процесс установки обновления: " + FormatWin32Error(GetLastError());
+        errorMessage = std::wstring(T(L"update.error.updater_start_prefix"))
+            + FormatWin32Error(GetLastError());
         return false;
     }
 
@@ -418,13 +415,13 @@ bool UpdateService::ResolveLatestReleaseTag(std::wstring& latestTag, std::wstrin
         0
     ));
     if (!session) {
-        errorMessage = L"Не удалось инициализировать WinHTTP: " + FormatWin32Error(GetLastError());
+        errorMessage = std::wstring(T(L"update.error.winhttp_init_prefix")) + FormatWin32Error(GetLastError());
         return false;
     }
 
     WinHttpHandle connection(WinHttpConnect(session.get(), kGitHubHost, INTERNET_DEFAULT_HTTPS_PORT, 0));
     if (!connection) {
-        errorMessage = L"Не удалось подключиться к GitHub: " + FormatWin32Error(GetLastError());
+        errorMessage = std::wstring(T(L"update.error.github_connect_prefix")) + FormatWin32Error(GetLastError());
         return false;
     }
 
@@ -438,7 +435,7 @@ bool UpdateService::ResolveLatestReleaseTag(std::wstring& latestTag, std::wstrin
         WINHTTP_FLAG_SECURE
     ));
     if (!request) {
-        errorMessage = L"Не удалось создать HTTP-запрос: " + FormatWin32Error(GetLastError());
+        errorMessage = std::wstring(T(L"update.error.http_request_create_prefix")) + FormatWin32Error(GetLastError());
         return false;
     }
 
@@ -450,12 +447,12 @@ bool UpdateService::ResolveLatestReleaseTag(std::wstring& latestTag, std::wstrin
             0,
             0,
             0)) {
-        errorMessage = L"Не удалось отправить запрос проверки обновлений: " + FormatWin32Error(GetLastError());
+        errorMessage = std::wstring(T(L"update.error.send_check_prefix")) + FormatWin32Error(GetLastError());
         return false;
     }
 
     if (!WinHttpReceiveResponse(request.get(), nullptr)) {
-        errorMessage = L"Не удалось получить ответ сервера: " + FormatWin32Error(GetLastError());
+        errorMessage = std::wstring(T(L"update.error.receive_response_prefix")) + FormatWin32Error(GetLastError());
         return false;
     }
 
@@ -468,7 +465,7 @@ bool UpdateService::ResolveLatestReleaseTag(std::wstring& latestTag, std::wstrin
             &statusCode,
             &statusSize,
             WINHTTP_NO_HEADER_INDEX)) {
-        errorMessage = L"Не удалось получить HTTP-статус: " + FormatWin32Error(GetLastError());
+        errorMessage = std::wstring(T(L"update.error.http_status_prefix")) + FormatWin32Error(GetLastError());
         return false;
     }
 
@@ -479,7 +476,8 @@ bool UpdateService::ResolveLatestReleaseTag(std::wstring& latestTag, std::wstrin
 
     if (sourceUrl.empty()) {
         std::wstringstream stream;
-        stream << L"Не удалось определить URL последнего релиза (HTTP " << statusCode << L")";
+        stream << T(L"update.error.latest_url_prefix")
+               << statusCode << L")";
         errorMessage = stream.str();
         return false;
     }
@@ -487,7 +485,7 @@ bool UpdateService::ResolveLatestReleaseTag(std::wstring& latestTag, std::wstrin
     latestTag = ExtractTagFromUrl(sourceUrl);
     if (latestTag.empty()) {
         std::wstringstream stream;
-        stream << L"Не удалось извлечь тег релиза из URL: " << sourceUrl;
+        stream << T(L"update.error.extract_tag_prefix") << sourceUrl;
         errorMessage = stream.str();
         return false;
     }

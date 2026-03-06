@@ -1,13 +1,9 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace Localization {
-enum class Language {
-    Russian = 0,
-    English = 1
-};
-
 enum class Key {
     MenuMoreLogs,
     MenuMoreAbout,
@@ -22,6 +18,8 @@ enum class Key {
     MenuScriptsDelete,
     MenuTrayExit,
     MenuLanguageTitle,
+    MenuLanguageRussian,
+    MenuLanguageEnglish,
     HintLabel,
     ButtonReloadScripts,
     ButtonOpenScriptsFolder,
@@ -44,5 +42,11 @@ enum class Key {
 };
 
 void Initialize(const std::wstring& langDirectory);
-const wchar_t* GetText(Key key, Language language);
+void SetCurrentLanguageCode(const std::wstring& languageCode);
+const std::wstring& GetCurrentLanguageCode();
+const wchar_t* GetTextByName(const std::wstring& key);
+const wchar_t* GetTextByName(const std::wstring& key, const std::wstring& languageCode);
+std::vector<std::wstring> GetAvailableLanguageCodes();
+std::wstring GetLanguageDisplayName(const std::wstring& languageCode);
+const wchar_t* GetText(Key key);
 } // namespace Localization

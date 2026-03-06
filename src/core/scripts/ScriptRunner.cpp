@@ -1,5 +1,9 @@
 #include "ScriptRunner.h"
 
+#include "EncodingUtils.h"
+#include "Localization.h"
+#include "PowerShellUtils.h"
+
 #include <windows.h>
 
 #include <algorithm>
@@ -8,62 +12,8 @@
 #include <vector>
 
 namespace {
-std::string WideToUtf8(const std::wstring& text) {
-    if (text.empty()) {
-        return std::string();
-    }
-
-    const int requiredSize = WideCharToMultiByte(
-        CP_UTF8,
-        0,
-        text.data(),
-        static_cast<int>(text.size()),
-        nullptr,
-        0,
-        nullptr,
-        nullptr
-    );
-    if (requiredSize <= 0) {
-        const int acpSize = WideCharToMultiByte(
-            CP_ACP,
-            0,
-            text.data(),
-            static_cast<int>(text.size()),
-            nullptr,
-            0,
-            nullptr,
-            nullptr
-        );
-        if (acpSize <= 0) {
-            return std::string();
-        }
-
-        std::string fallback(static_cast<size_t>(acpSize), '\0');
-        WideCharToMultiByte(
-            CP_ACP,
-            0,
-            text.data(),
-            static_cast<int>(text.size()),
-            fallback.data(),
-            acpSize,
-            nullptr,
-            nullptr
-        );
-        return fallback;
-    }
-
-    std::string result(static_cast<size_t>(requiredSize), '\0');
-    WideCharToMultiByte(
-        CP_UTF8,
-        0,
-        text.data(),
-        static_cast<int>(text.size()),
-        result.data(),
-        requiredSize,
-        nullptr,
-        nullptr
-    );
-    return result;
+const wchar_t* T(const wchar_t* key) {
+    return Localization::GetTextByName(key);
 }
 
 std::wstring BytesToWide(const std::string& text) {
@@ -176,38 +126,37 @@ std::string ReadFileToString(const std::wstring& filePath) {
     return output;
 }
 
-bool WriteUtf8File(const std::wstring& filePath, const std::wstring& text) {
-    HANDLE fileHandle = CreateFileW(
-        filePath.c_str(),
-        GENERIC_WRITE,
-        0,
-        nullptr,
-        CREATE_ALWAYS,
-        FILE_ATTRIBUTE_TEMPORARY,
-        nullptr
-    );
-    if (fileHandle == INVALID_HANDLE_VALUE) {
-        return false;
+std::wstring Base64Encode(const unsigned char* data, size_t size) {
+    static const char kTable[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    if (!data || size == 0) {
+        return std::wstring();
     }
 
-    const unsigned char bom[3] = { 0xEF, 0xBB, 0xBF };
-    DWORD written = 0;
-    if (!WriteFile(fileHandle, bom, sizeof(bom), &written, nullptr)) {
-        CloseHandle(fileHandle);
-        return false;
+    std::wstring encoded;
+    encoded.reserve(((size + 2) / 3) * 4);
+
+    size_t index = 0;
+    while (index < size) {
+        const unsigned int b0 = data[index++];
+        const unsigned int b1 = (index < size) ? data[index++] : 0;
+        const unsigned int b2 = (index < size) ? data[index++] : 0;
+
+        const unsigned int triple = (b0 << 16) | (b1 << 8) | b2;
+        encoded.push_back(static_cast<wchar_t>(kTable[(triple >> 18) & 0x3F]));
+        encoded.push_back(static_cast<wchar_t>(kTable[(triple >> 12) & 0x3F]));
+        encoded.push_back(index - 1 > size ? L'=' : static_cast<wchar_t>(kTable[(triple >> 6) & 0x3F]));
+        encoded.push_back(index > size ? L'=' : static_cast<wchar_t>(kTable[triple & 0x3F]));
     }
 
-    const std::string utf8 = WideToUtf8(text);
-    if (!utf8.empty()) {
-        written = 0;
-        if (!WriteFile(fileHandle, utf8.data(), static_cast<DWORD>(utf8.size()), &written, nullptr)) {
-            CloseHandle(fileHandle);
-            return false;
-        }
+    const size_t mod = size % 3;
+    if (mod == 1) {
+        encoded[encoded.size() - 1] = L'=';
+        encoded[encoded.size() - 2] = L'=';
+    } else if (mod == 2) {
+        encoded[encoded.size() - 1] = L'=';
     }
 
-    CloseHandle(fileHandle);
-    return true;
+    return encoded;
 }
 }
 
@@ -244,7 +193,7 @@ bool ScriptRunner::Execute(
 
     if (!CreatePipe(&childStdInRead, &childStdInWrite, &sa, 0)) {
         if (errorText) {
-            *errorText = L"Не удалось создать stdin pipe.";
+            *errorText = T(L"script_runner.error.stdin_create");
         }
         return false;
     }
@@ -253,7 +202,7 @@ bool ScriptRunner::Execute(
         CloseHandle(childStdInRead);
         CloseHandle(childStdInWrite);
         if (errorText) {
-            *errorText = L"Не удалось настроить stdin pipe.";
+            *errorText = T(L"script_runner.error.stdin_config");
         }
         return false;
     }
@@ -262,7 +211,7 @@ bool ScriptRunner::Execute(
         CloseHandle(childStdInRead);
         CloseHandle(childStdInWrite);
         if (errorText) {
-            *errorText = L"Не удалось создать stdout pipe.";
+            *errorText = T(L"script_runner.error.stdout_create");
         }
         return false;
     }
@@ -273,7 +222,7 @@ bool ScriptRunner::Execute(
         closeHandle(childStdOutRead);
         closeHandle(childStdOutWrite);
         if (errorText) {
-            *errorText = L"Не удалось настроить stdout pipe.";
+            *errorText = T(L"script_runner.error.stdout_config");
         }
         return false;
     }
@@ -285,7 +234,7 @@ bool ScriptRunner::Execute(
         closeHandle(childStdOutRead);
         closeHandle(childStdOutWrite);
         if (errorText) {
-            *errorText = L"Не удалось получить каталог временных файлов.";
+            *errorText = T(L"script_runner.error.temp_dir");
         }
         return false;
     }
@@ -296,7 +245,7 @@ bool ScriptRunner::Execute(
         closeHandle(childStdOutRead);
         closeHandle(childStdOutWrite);
         if (errorText) {
-            *errorText = L"Не удалось создать временный файл stderr.";
+            *errorText = T(L"script_runner.error.stderr_temp_create");
         }
         return false;
     }
@@ -318,7 +267,7 @@ bool ScriptRunner::Execute(
         closeHandle(childStdOutWrite);
         DeleteFileW(stderrTempFilePath);
         if (errorText) {
-            *errorText = L"Не удалось открыть временный файл stderr.";
+            *errorText = T(L"script_runner.error.stderr_temp_open");
         }
         return false;
     }
@@ -357,12 +306,12 @@ bool ScriptRunner::Execute(
         closeHandle(childStdOutRead);
         DeleteFileW(stderrTempFilePath);
         if (errorText) {
-            *errorText = L"CreateProcessW failed: " + std::to_wstring(GetLastError());
+            *errorText = std::wstring(T(L"script_runner.error.create_process_prefix")) + std::to_wstring(GetLastError());
         }
         return false;
     }
 
-    const std::string utf8Input = WideToUtf8(inputText);
+    const std::string utf8Input = EncodingUtils::WideToUtf8(inputText);
     size_t sentBytes = 0;
     while (sentBytes < utf8Input.size()) {
         DWORD writtenBytes = 0;
@@ -385,7 +334,7 @@ bool ScriptRunner::Execute(
                 closeHandle(pi.hProcess);
                 DeleteFileW(stderrTempFilePath);
                 if (errorText) {
-                    *errorText = L"WriteFile failed: " + std::to_wstring(writeError);
+                    *errorText = std::wstring(T(L"script_runner.error.write_file_prefix")) + std::to_wstring(writeError);
                 }
                 return false;
             }
@@ -412,7 +361,7 @@ bool ScriptRunner::Execute(
         closeHandle(pi.hProcess);
         DeleteFileW(stderrTempFilePath);
         if (errorText) {
-            *errorText = L"Скрипт не завершился за 30 секунд.";
+            *errorText = T(L"script_runner.error.timeout");
         }
         return false;
     }
@@ -433,7 +382,7 @@ bool ScriptRunner::Execute(
 
     if (exitCode != 0 || !stderrText.empty()) {
         if (errorText) {
-            *errorText = L"Код выхода " + std::to_wstring(exitCode);
+            *errorText = std::wstring(T(L"script_runner.error.exit_code_prefix")) + std::to_wstring(exitCode);
             if (!output.empty()) {
                 *errorText += L"; stdout: " + output;
             }
@@ -462,54 +411,25 @@ bool ScriptRunner::ExecutePowerShellScript(
 
     if (scriptBody.empty()) {
         if (errorText) {
-            *errorText = L"Тело скрипта пустое.";
+            *errorText = T(L"script_runner.error.empty_body");
         }
         return false;
     }
 
-    wchar_t tempDirectory[MAX_PATH] = {};
-    if (!GetTempPathW(MAX_PATH, tempDirectory)) {
+    const unsigned char* scriptBytes = reinterpret_cast<const unsigned char*>(scriptBody.data());
+    const size_t scriptBytesCount = scriptBody.size() * sizeof(wchar_t);
+    const std::wstring encodedCommand = Base64Encode(scriptBytes, scriptBytesCount);
+    if (encodedCommand.empty()) {
         if (errorText) {
-            *errorText = L"Не удалось получить каталог временных файлов.";
-        }
-        return false;
-    }
-
-    wchar_t tempFilePath[MAX_PATH] = {};
-    if (!GetTempFileNameW(tempDirectory, L"tmg", 0, tempFilePath)) {
-        if (errorText) {
-            *errorText = L"Не удалось создать временный файл скрипта.";
-        }
-        return false;
-    }
-
-    std::wstring scriptPath = tempFilePath;
-    const size_t dotPos = scriptPath.find_last_of(L'.');
-    if (dotPos != std::wstring::npos) {
-        scriptPath = scriptPath.substr(0, dotPos);
-    }
-    scriptPath += L".ps1";
-
-    if (!MoveFileExW(tempFilePath, scriptPath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-        DeleteFileW(tempFilePath);
-        if (errorText) {
-            *errorText = L"Не удалось подготовить временный .ps1 файл: " + std::to_wstring(GetLastError());
-        }
-        return false;
-    }
-
-    if (!WriteUtf8File(scriptPath, scriptBody)) {
-        DeleteFileW(scriptPath.c_str());
-        if (errorText) {
-            *errorText = L"Не удалось записать временный скрипт.";
+            *errorText = T(L"script_runner.error.script_temp_write");
         }
         return false;
     }
 
     const std::wstring commandLine =
-        L"powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"" + scriptPath + L"\"";
+        std::wstring(PowerShellUtils::GetExecutableName())
+        + L" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand "
+        + encodedCommand;
 
-    const bool executeOk = Execute(commandLine, inputText, outputText, errorText);
-    DeleteFileW(scriptPath.c_str());
-    return executeOk;
+    return Execute(commandLine, inputText, outputText, errorText);
 }

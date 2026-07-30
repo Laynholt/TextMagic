@@ -143,7 +143,6 @@ constexpr ULONGLONG HOTKEY_DOUBLE_TAP_TIMEOUT_MS = 350;
 struct ScriptExecutionTaskResult {
     std::wstring scriptName;
     std::wstring sourceText;
-    std::wstring previousWordTrailing;
     InputBuffer::PreviousWordCapture previousWordCapture;
     bool hasSelection = false;
     bool previousWordMode = false;
@@ -217,22 +216,26 @@ HHOOK g_keyboardHook = nullptr;
 HHOOK g_mouseHook = nullptr;
 constexpr UINT HOTKEY_MODIFIER_MASK = MOD_ALT | MOD_CONTROL | MOD_SHIFT | MOD_WIN;
 
+InputBuffer::ContextId CurrentInputContext() {
+    return reinterpret_cast<InputBuffer::ContextId>(GetForegroundWindow());
+}
+
 void ClearInputBuffer() {
     std::lock_guard<std::mutex> lock(g_inputBufferMutex);
     g_inputBuffer.Clear();
 }
 
-void PopInputBufferCharacter() {
+void PopInputBufferCharacter(InputBuffer::ContextId contextId) {
     std::lock_guard<std::mutex> lock(g_inputBufferMutex);
-    g_inputBuffer.PopCharacter();
+    g_inputBuffer.PopCharacter(contextId);
 }
 
-void AppendInputBufferText(const std::wstring& text) {
+void AppendInputBufferText(InputBuffer::ContextId contextId, const std::wstring& text) {
     if (text.empty()) {
         return;
     }
     std::lock_guard<std::mutex> lock(g_inputBufferMutex);
-    g_inputBuffer.AppendText(text);
+    g_inputBuffer.AppendText(contextId, text);
 }
 
 void ClearTrackedHotkeys() {
@@ -530,7 +533,7 @@ void AppendKeyToInputBuffer(DWORD vkCode, DWORD scanCode) {
     );
 
     if (converted > 0) {
-        AppendInputBufferText(std::wstring(text, text + converted));
+        AppendInputBufferText(CurrentInputContext(), std::wstring(text, text + converted));
     } else if (converted < 0) {
         ToUnicodeEx(
             static_cast<UINT>(vkCode),
@@ -545,14 +548,38 @@ void AppendKeyToInputBuffer(DWORD vkCode, DWORD scanCode) {
 }
 
 void HandleInputBufferKeyDown(DWORD vkCode, DWORD scanCode) {
+    const bool controlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool altDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+    const bool shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+    const bool winDown = (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0
+        || (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
+
+    if (IsTrackedHotkeyPressed(vkCode, controlDown, altDown, shiftDown, winDown)) {
+        return;
+    }
+
     switch (vkCode) {
     case VK_LEFT:
     case VK_RIGHT:
+    case VK_UP:
+    case VK_DOWN:
+    case VK_HOME:
+    case VK_END:
+    case VK_PRIOR:
+    case VK_NEXT:
+    case VK_INSERT:
     case VK_DELETE:
+    case VK_RETURN:
+    case VK_TAB:
+    case VK_ESCAPE:
         ClearInputBuffer();
         return;
     case VK_BACK:
-        PopInputBufferCharacter();
+        if (controlDown || altDown || winDown) {
+            ClearInputBuffer();
+        } else {
+            PopInputBufferCharacter(CurrentInputContext());
+        }
         return;
     default:
         break;
@@ -560,23 +587,15 @@ void HandleInputBufferKeyDown(DWORD vkCode, DWORD scanCode) {
 
     if (vkCode == VK_SHIFT || vkCode == VK_CONTROL || vkCode == VK_MENU
         || vkCode == VK_LWIN || vkCode == VK_RWIN
-        || vkCode == VK_CAPITAL || vkCode == VK_ESCAPE) {
+        || vkCode == VK_CAPITAL) {
         return;
     }
     if (vkCode >= VK_F1 && vkCode <= VK_F24) {
         return;
     }
 
-    const bool controlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-    const bool altDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-    const bool shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-    const bool lwinDown = (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0;
-    const bool rwinDown = (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
-    const bool winDown = lwinDown || rwinDown;
-    if (IsTrackedHotkeyPressed(vkCode, controlDown, altDown, shiftDown, winDown)) {
-        return;
-    }
-    if (controlDown || altDown || lwinDown || rwinDown) {
+    if (controlDown || altDown || winDown) {
+        ClearInputBuffer();
         return;
     }
 
@@ -628,19 +647,22 @@ void UninstallInputHooks() {
     }
 }
 
-bool PeekPreviousWordFromInputBuffer(InputBuffer::PreviousWordCapture* capture) {
+bool PeekPreviousWordFromInputBuffer(
+    InputBuffer::ContextId contextId,
+    InputBuffer::PreviousWordCapture* capture
+) {
     std::lock_guard<std::mutex> lock(g_inputBufferMutex);
-    return g_inputBuffer.TryPeekPreviousWord(capture);
+    return g_inputBuffer.TryPeekPreviousWord(contextId, capture);
 }
 
 bool IsPreviousWordCaptureCurrent(const InputBuffer::PreviousWordCapture& capture) {
     std::lock_guard<std::mutex> lock(g_inputBufferMutex);
-    return g_inputBuffer.IsCaptureCurrent(capture);
+    return g_inputBuffer.IsCaptureCurrent(capture.contextId, capture);
 }
 
 bool CommitPreviousWordReplacement(const InputBuffer::PreviousWordCapture& capture, const std::wstring& replacement) {
     std::lock_guard<std::mutex> lock(g_inputBufferMutex);
-    return g_inputBuffer.CommitReplacement(capture, replacement);
+    return g_inputBuffer.CommitReplacement(capture.contextId, capture, replacement);
 }
 
 bool ImportScriptFileToDirectory(const std::wstring& scriptsDirectory,
@@ -1511,25 +1533,36 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                     + T(L"app.status.error_label_block") + result->executionError;
                 SetStatusText(statusMessage);
                 AppendLog(std::wstring(T(L"app.log.script.error_prefix")) + result->scriptName + L"\": " + result->executionError);
-                if (result->hasSelection) {
-                    m_textBridge.CollapseSelection();
-                }
                 ShowStyledMessage(T(L"app.title.execution_error"), dialogMessage);
                 return 0;
             }
 
             bool replaceOk = false;
-            bool previousWordSelected = false;
             if (result->clipboardMode) {
                 replaceOk = ClipboardUtils::WriteText(m_hWnd, result->outputText);
             } else if (result->previousWordMode) {
-                const std::wstring mergedText = result->outputText + result->previousWordTrailing;
-                if (IsPreviousWordCaptureCurrent(result->previousWordCapture)) {
-                    previousWordSelected = m_textBridge.SelectPreviousCharacters(result->previousWordCapture.deleteChars);
-                    if (previousWordSelected) {
-                        replaceOk = m_textBridge.SetSelectedText(mergedText);
-                        if (replaceOk) {
-                            replaceOk = CommitPreviousWordReplacement(result->previousWordCapture, mergedText);
+                const auto& capture = result->previousWordCapture;
+                const std::wstring replacement = result->outputText + capture.trailing;
+
+                if (IsPreviousWordCaptureCurrent(capture)
+                    && m_textBridge.DeleteCharacters(capture.deleteChars)) {
+                    size_t typedChars = 0;
+                    if (m_textBridge.TypeText(replacement, &typedChars)) {
+                        replaceOk = CommitPreviousWordReplacement(capture, replacement);
+                        if (!replaceOk) {
+                            ClearInputBuffer();
+                        }
+                    } else {
+                        if (typedChars > 0) {
+                            m_textBridge.DeleteCharacters(typedChars);
+                        }
+                        size_t restoredChars = 0;
+                        const bool restored = m_textBridge.TypeText(
+                            capture.word + capture.trailing,
+                            &restoredChars
+                        );
+                        if (!restored) {
+                            ClearInputBuffer();
                         }
                     }
                 }
@@ -1539,9 +1572,6 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                     : m_textBridge.SetAllText(result->outputText);
             }
             if (!replaceOk) {
-                if (result->previousWordMode && previousWordSelected) {
-                    m_textBridge.CollapseSelection();
-                }
                 const std::wstring msg = result->clipboardMode
                     ? T(L"app.status.clipboard_write_failed")
                     : T(L"app.status.active_control_paste_failed");
@@ -3404,6 +3434,7 @@ void Application::ExecuteScript(const RegisteredScript& script, bool clipboardOn
     const TextBridge textBridge = m_textBridge;
     const ScriptRunner scriptRunner = m_scriptRunner;
     const HWND windowHandle = m_hWnd;
+    const InputBuffer::ContextId inputContext = CurrentInputContext();
 
     std::thread([scriptName,
                  scriptBody,
@@ -3412,7 +3443,8 @@ void Application::ExecuteScript(const RegisteredScript& script, bool clipboardOn
                  useClipboardOnly,
                  textBridge,
                  scriptRunner,
-                 windowHandle]() {
+                 windowHandle,
+                 inputContext]() {
         auto* result = new ScriptExecutionTaskResult();
         result->scriptName = scriptName;
         result->clipboardMode = useClipboardOnly;
@@ -3420,26 +3452,23 @@ void Application::ExecuteScript(const RegisteredScript& script, bool clipboardOn
         std::wstring selectedText;
         bool hasSelection = false;
         bool previousWordMode = false;
-        std::wstring previousWordTrailing;
         InputBuffer::PreviousWordCapture previousWordCapture;
         std::wstring sourceText;
 
         if (useClipboardOnly) {
             ClipboardUtils::ReadText(windowHandle, &sourceText);
         } else {
-            selectedText = textBridge.GetSelectedText();
-            hasSelection = !selectedText.empty();
-            sourceText = hasSelection ? selectedText : L"";
+            if (PeekPreviousWordFromInputBuffer(inputContext, &previousWordCapture)
+                && !previousWordCapture.word.empty()) {
+                sourceText = previousWordCapture.word;
+                previousWordMode = true;
+            } else {
+                selectedText = textBridge.GetSelectedText();
+                hasSelection = !selectedText.empty();
+                sourceText = hasSelection ? selectedText : L"";
 
-            if (!hasSelection) {
-                if (fallbackToAllText) {
+                if (!hasSelection && fallbackToAllText) {
                     sourceText = textBridge.GetAllText();
-                } else {
-                    if (PeekPreviousWordFromInputBuffer(&previousWordCapture) && !previousWordCapture.word.empty()) {
-                        sourceText = previousWordCapture.word;
-                        previousWordTrailing = previousWordCapture.trailing;
-                        previousWordMode = true;
-                    }
                 }
             }
         }
@@ -3447,7 +3476,6 @@ void Application::ExecuteScript(const RegisteredScript& script, bool clipboardOn
         result->sourceText = sourceText;
         result->hasSelection = hasSelection;
         result->previousWordMode = previousWordMode;
-        result->previousWordTrailing = previousWordTrailing;
         result->previousWordCapture = previousWordCapture;
 
         if (sourceText.empty()) {

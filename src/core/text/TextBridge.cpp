@@ -78,20 +78,6 @@ bool TextBridge::DeleteCharacters(size_t count) const {
     return SendRepeatedKey(VK_BACK, count);
 }
 
-bool TextBridge::SelectPreviousCharacters(size_t count) const {
-    if (count == 0) {
-        return true;
-    }
-    WaitForModifiersRelease();
-    return SendRepeatedShiftKey(VK_LEFT, count);
-}
-
-bool TextBridge::CollapseSelection() const {
-    WaitForModifiersRelease();
-
-    return SendKey(VK_RIGHT);
-}
-
 std::wstring TextBridge::CopyFromActiveControl(bool selectAll) const {
     ClipboardUtils::Snapshot snapshot;
 
@@ -203,31 +189,6 @@ bool TextBridge::SendUnicodeChar(wchar_t ch) const {
 bool TextBridge::SendRepeatedKey(WORD virtualKey, size_t count) const {
     for (size_t i = 0; i < count; ++i) {
         if (!SendKey(virtualKey)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-bool TextBridge::SendRepeatedShiftKey(WORD virtualKey, size_t count) const {
-    for (size_t i = 0; i < count; ++i) {
-        INPUT inputs[4] = {};
-
-        inputs[0].type = INPUT_KEYBOARD;
-        inputs[0].ki.wVk = VK_SHIFT;
-
-        inputs[1].type = INPUT_KEYBOARD;
-        inputs[1].ki.wVk = virtualKey;
-
-        inputs[2].type = INPUT_KEYBOARD;
-        inputs[2].ki.wVk = virtualKey;
-        inputs[2].ki.dwFlags = KEYEVENTF_KEYUP;
-
-        inputs[3].type = INPUT_KEYBOARD;
-        inputs[3].ki.wVk = VK_SHIFT;
-        inputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
-
-        if (SendInput(4, inputs, sizeof(INPUT)) != 4) {
             return false;
         }
     }

@@ -13,8 +13,6 @@ public:
     bool SetSelectedText(const std::wstring& text) const;
     bool TypeText(const std::wstring& text, size_t* typedChars = nullptr) const;
     bool DeleteCharacters(size_t count) const;
-    bool SelectPreviousCharacters(size_t count) const;
-    bool CollapseSelection() const;
 
 private:
     std::wstring CopyFromActiveControl(bool selectAll) const;
@@ -24,7 +22,6 @@ private:
     bool SendKey(WORD virtualKey) const;
     bool SendUnicodeChar(wchar_t ch) const;
     bool SendRepeatedKey(WORD virtualKey, size_t count) const;
-    bool SendRepeatedShiftKey(WORD virtualKey, size_t count) const;
 
     static bool WaitForClipboardChange(DWORD initialSequence, int maxAttempts = 80, int sleepMs = 10);
 };

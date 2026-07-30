@@ -3,15 +3,9 @@
 #include "ClipboardUtils.h"
 
 #include <cwchar>
-#include <cwctype>
-
 namespace {
 bool IsModifierPressed(int virtualKey) {
     return (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
-}
-
-bool IsWordSeparator(wchar_t ch) {
-    return iswspace(ch);
 }
 
 void WaitForModifiersRelease() {

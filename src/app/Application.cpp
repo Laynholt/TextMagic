@@ -1,6 +1,7 @@
 #include "Application.h"
 
 #include "AppUiHelpers.h"
+#include "ClipboardUtils.h"
 #include "Localization.h"
 #include "ToolTip.h"
 #include "UiRenderer.h"
@@ -20,7 +21,6 @@
 #include <cstring>
 #include <cwctype>
 #include <filesystem>
-#include <initializer_list>
 #include <mutex>
 #include <thread>
 #include <sstream>
@@ -716,23 +716,6 @@ bool TryGetLanguageCodeByMenuId(UINT itemId, std::wstring* languageCode) {
     return true;
 }
 
-struct DialogFilterEntry {
-    const wchar_t* labelKey;
-    const wchar_t* pattern;
-};
-
-std::wstring BuildDialogFilter(std::initializer_list<DialogFilterEntry> entries) {
-    std::wstring filter;
-    for (const DialogFilterEntry& entry : entries) {
-        filter += T(entry.labelKey);
-        filter.push_back(L'\0');
-        filter += entry.pattern ? entry.pattern : L"*.*";
-        filter.push_back(L'\0');
-    }
-    filter.push_back(L'\0');
-    return filter;
-}
-
 UINT ResolveStyledMenuItemId(UINT itemId, ULONG_PTR itemData);
 
 std::wstring GetLanguageSettingsPath(const std::wstring& executableDirectory) {
@@ -1341,7 +1324,6 @@ bool Application::Initialize(HINSTANCE hInstance) {
 
     CreateControls();
     ApplyLocalization();
-    m_updateService = std::make_unique<UpdateService>();
 
     RECT clientRect = {};
     GetClientRect(m_hWnd, &clientRect);
@@ -1390,7 +1372,6 @@ void Application::Shutdown() {
     CloseMorePopupWindows();
 
     m_toolTip.reset();
-    m_updateService.reset();
 
     if (m_hTitleFont) {
         DeleteObject(m_hTitleFont);
@@ -1540,7 +1521,7 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             bool replaceOk = false;
             bool previousWordSelected = false;
             if (result->clipboardMode) {
-                replaceOk = CopyTextToClipboard(m_hWnd, result->outputText);
+                replaceOk = ClipboardUtils::WriteText(m_hWnd, result->outputText);
             } else if (result->previousWordMode) {
                 const std::wstring mergedText = result->outputText + result->previousWordTrailing;
                 if (IsPreviousWordCaptureCurrent(result->previousWordCapture)) {
@@ -1621,7 +1602,7 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
 
             m_updateInProgress = true;
             const HWND windowHandle = m_hWnd;
-            const UpdateService updateService = *m_updateService;
+            const UpdateService updateService = m_updateService;
             std::thread([windowHandle, updateService, latestTag, targetPath, tmpPath]() {
                 auto* installResult = new UpdateInstallTaskResult();
                 std::wstring error;
@@ -3350,7 +3331,7 @@ void Application::ImportScriptFiles(const std::vector<std::wstring>& filePaths) 
     int skippedCount = 0;
     for (const auto& filePath : filePaths) {
         std::wstring copiedPath;
-        if (ImportScriptFile(filePath, &copiedPath)) {
+        if (ImportScriptFileToDirectory(m_scriptsDirectory, filePath, &copiedPath)) {
             ++importedCount;
             AppendLog(std::wstring(T(L"app.log.scripts.imported_prefix")) + copiedPath);
         } else {
@@ -3371,10 +3352,6 @@ void Application::ImportScriptFiles(const std::vector<std::wstring>& filePaths) 
     const std::wstring status = T(L"app.status.no_suitable_add");
     SetStatusText(status);
     AppendLog(std::wstring(T(L"app.log.scripts.prefix")) + status);
-}
-
-bool Application::ImportScriptFile(const std::wstring& sourcePath, std::wstring* copiedPath) const {
-    return ImportScriptFileToDirectory(m_scriptsDirectory, sourcePath, copiedPath);
 }
 
 void Application::ExecuteSelectedScript() {
@@ -3448,7 +3425,7 @@ void Application::ExecuteScript(const RegisteredScript& script, bool clipboardOn
         std::wstring sourceText;
 
         if (useClipboardOnly) {
-            ReadTextFromClipboard(windowHandle, &sourceText);
+            ClipboardUtils::ReadText(windowHandle, &sourceText);
         } else {
             selectedText = textBridge.GetSelectedText();
             hasSelection = !selectedText.empty();
@@ -3817,13 +3794,9 @@ void Application::CheckForUpdates() {
         return;
     }
 
-    if (!m_updateService) {
-        m_updateService = std::make_unique<UpdateService>();
-    }
-
     AppendLog(T(L"app.log.update.checking"));
     m_updateInProgress = true;
-    const UpdateService updateService = *m_updateService;
+    const UpdateService updateService = m_updateService;
     const HWND windowHandle = m_hWnd;
     std::thread([updateService, windowHandle]() {
         auto* result = new UpdateCheckTaskResult();
@@ -4100,7 +4073,7 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                         if (toCopy.empty()) {
                             toCopy = state->text;
                         }
-                        CopyTextToClipboard(hWnd, toCopy);
+                        ClipboardUtils::WriteText(hWnd, toCopy);
                     } else {
                         CopyEditSelectionOrAll(state->textControl);
                     }
@@ -4355,7 +4328,7 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
             const UINT id = LOWORD(wParam);
             if (id == ID_MENU_CONTEXT_COPY) {
                 if (state->contextMenuTarget == state->textControl) {
-                    CopyTextToClipboard(hWnd, state->text);
+                    ClipboardUtils::WriteText(hWnd, state->text);
                 }
                 return 0;
             }

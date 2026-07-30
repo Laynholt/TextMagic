@@ -1,24 +1,17 @@
 #include "AppUiHelpers.h"
 
 #include "AppVersion.h"
-#include "ClipboardUtils.h"
 #include "EncodingUtils.h"
 #include "Localization.h"
 
 #include <windowsx.h>
 #include <commdlg.h>
 
-#include <initializer_list>
-
 namespace {
 const wchar_t* T(const wchar_t* key) {
     return Localization::GetTextByName(key);
 }
-
-struct DialogFilterEntry {
-    const wchar_t* labelKey;
-    const wchar_t* pattern;
-};
+} // namespace
 
 std::wstring BuildDialogFilter(std::initializer_list<DialogFilterEntry> entries) {
     std::wstring filter;
@@ -32,6 +25,7 @@ std::wstring BuildDialogFilter(std::initializer_list<DialogFilterEntry> entries)
     return filter;
 }
 
+namespace {
 void UpdateListBoxVerticalScrollbar(HWND listBox) {
     if (!listBox || !IsWindow(listBox)) {
         return;
@@ -105,14 +99,6 @@ bool SaveUtf8TextFile(const std::wstring& filePath, const std::wstring& text, st
     return true;
 }
 } // namespace
-
-bool CopyTextToClipboard(HWND ownerWindow, const std::wstring& text) {
-    return ClipboardUtils::WriteText(ownerWindow, text);
-}
-
-bool ReadTextFromClipboard(HWND ownerWindow, std::wstring* text) {
-    return ClipboardUtils::ReadText(ownerWindow, text);
-}
 
 void CopyEditSelectionOrAll(HWND editControl) {
     if (!editControl || !IsWindow(editControl)) {

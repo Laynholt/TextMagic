@@ -104,7 +104,6 @@ private:
     void ImportScriptsFromZip();
     void ExportScriptsToZip();
     void ImportScriptFiles(const std::vector<std::wstring>& filePaths);
-    bool ImportScriptFile(const std::wstring& sourcePath, std::wstring* copiedPath) const;
 
     void ExecuteSelectedScript();
     void ExecuteScriptByHotkeyId(int hotkeyId);
@@ -194,7 +193,7 @@ private:
     std::vector<UiRenderer::PopupMenuItem> m_moreSubPopupItems;
 
     std::unique_ptr<ToolTip> m_toolTip;
-    std::unique_ptr<UpdateService> m_updateService;
+    UpdateService m_updateService;
     TextBridge m_textBridge;
     ScriptRunner m_scriptRunner;
 

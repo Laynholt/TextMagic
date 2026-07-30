@@ -591,6 +591,7 @@ void HandleInputBufferKeyDown(DWORD vkCode, DWORD scanCode) {
         return;
     }
     if (vkCode >= VK_F1 && vkCode <= VK_F24) {
+        ClearInputBuffer();
         return;
     }
 
@@ -618,7 +619,9 @@ LRESULT CALLBACK InputKeyboardHookProc(int code, WPARAM wParam, LPARAM lParam) {
 }
 
 LRESULT CALLBACK InputMouseHookProc(int code, WPARAM wParam, LPARAM lParam) {
-    if (code == HC_ACTION && (wParam == WM_LBUTTONDOWN || wParam == WM_RBUTTONDOWN)) {
+    if (code == HC_ACTION
+        && (wParam == WM_LBUTTONDOWN || wParam == WM_RBUTTONDOWN
+            || wParam == WM_MBUTTONDOWN || wParam == WM_XBUTTONDOWN)) {
         const auto* mouseInfo = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
         if (!mouseInfo || (mouseInfo->flags & LLMHF_INJECTED) == 0) {
             ClearInputBuffer();
@@ -657,7 +660,8 @@ bool PeekPreviousWordFromInputBuffer(
 
 bool IsPreviousWordCaptureCurrent(const InputBuffer::PreviousWordCapture& capture) {
     std::lock_guard<std::mutex> lock(g_inputBufferMutex);
-    return g_inputBuffer.IsCaptureCurrent(capture.contextId, capture);
+    return CurrentInputContext() == capture.contextId
+        && g_inputBuffer.IsCaptureCurrent(capture.contextId, capture);
 }
 
 bool CommitPreviousWordReplacement(const InputBuffer::PreviousWordCapture& capture, const std::wstring& replacement) {
@@ -1544,26 +1548,28 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 const auto& capture = result->previousWordCapture;
                 const std::wstring replacement = result->outputText + capture.trailing;
 
-                if (IsPreviousWordCaptureCurrent(capture)) {
-                    if (!m_textBridge.DeleteCharacters(capture.deleteChars)) {
-                        ClearInputBuffer();
+                if (!m_textBridge.WaitForModifiersRelease()
+                    || !IsPreviousWordCaptureCurrent(capture)) {
+                    ClearInputBuffer();
+                } else if (!m_textBridge.DeleteCharacters(capture.deleteChars)) {
+                    ClearInputBuffer();
+                } else {
+                    size_t typedChars = 0;
+                    if (m_textBridge.TypeText(replacement, &typedChars)) {
+                        replaceOk = CommitPreviousWordReplacement(capture, replacement);
+                        if (!replaceOk) {
+                            ClearInputBuffer();
+                        }
                     } else {
-                        size_t typedChars = 0;
-                        if (m_textBridge.TypeText(replacement, &typedChars)) {
-                            replaceOk = CommitPreviousWordReplacement(capture, replacement);
-                            if (!replaceOk) {
-                                ClearInputBuffer();
-                            }
-                        } else {
-                            const bool cleanupOk = m_textBridge.DeleteCharacters(typedChars);
-                            size_t restoredChars = 0;
-                            const bool restored = m_textBridge.TypeText(
-                                capture.word + capture.trailing,
-                                &restoredChars
-                            );
-                            if (!cleanupOk || !restored) {
-                                ClearInputBuffer();
-                            }
+                        ClearInputBuffer();
+                        const bool cleanupOk = m_textBridge.DeleteCharacters(typedChars);
+                        size_t restoredChars = 0;
+                        const bool restored = m_textBridge.TypeText(
+                            capture.word + capture.trailing,
+                            &restoredChars
+                        );
+                        if (!cleanupOk || !restored) {
+                            ClearInputBuffer();
                         }
                     }
                 }
@@ -3435,7 +3441,10 @@ void Application::ExecuteScript(const RegisteredScript& script, bool clipboardOn
     const TextBridge textBridge = m_textBridge;
     const ScriptRunner scriptRunner = m_scriptRunner;
     const HWND windowHandle = m_hWnd;
-    const InputBuffer::ContextId inputContext = CurrentInputContext();
+    InputBuffer::PreviousWordCapture previousWordCapture;
+    const bool hasPreviousWordCapture = !useClipboardOnly
+        && PeekPreviousWordFromInputBuffer(CurrentInputContext(), &previousWordCapture)
+        && !previousWordCapture.word.empty();
 
     std::thread([scriptName,
                  scriptBody,
@@ -3445,7 +3454,8 @@ void Application::ExecuteScript(const RegisteredScript& script, bool clipboardOn
                  textBridge,
                  scriptRunner,
                  windowHandle,
-                 inputContext]() {
+                 hasPreviousWordCapture,
+                 previousWordCapture]() {
         auto* result = new ScriptExecutionTaskResult();
         result->scriptName = scriptName;
         result->clipboardMode = useClipboardOnly;
@@ -3453,24 +3463,20 @@ void Application::ExecuteScript(const RegisteredScript& script, bool clipboardOn
         std::wstring selectedText;
         bool hasSelection = false;
         bool previousWordMode = false;
-        InputBuffer::PreviousWordCapture previousWordCapture;
         std::wstring sourceText;
 
         if (useClipboardOnly) {
             ClipboardUtils::ReadText(windowHandle, &sourceText);
+        } else if (hasPreviousWordCapture) {
+            sourceText = previousWordCapture.word;
+            previousWordMode = true;
         } else {
-            if (PeekPreviousWordFromInputBuffer(inputContext, &previousWordCapture)
-                && !previousWordCapture.word.empty()) {
-                sourceText = previousWordCapture.word;
-                previousWordMode = true;
-            } else {
-                selectedText = textBridge.GetSelectedText();
-                hasSelection = !selectedText.empty();
-                sourceText = hasSelection ? selectedText : L"";
+            selectedText = textBridge.GetSelectedText();
+            hasSelection = !selectedText.empty();
+            sourceText = hasSelection ? selectedText : L"";
 
-                if (!hasSelection && fallbackToAllText) {
-                    sourceText = textBridge.GetAllText();
-                }
+            if (!hasSelection && fallbackToAllText) {
+                sourceText = textBridge.GetAllText();
             }
         }
 

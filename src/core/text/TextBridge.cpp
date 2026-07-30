@@ -8,7 +8,9 @@ bool IsModifierPressed(int virtualKey) {
     return (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
 }
 
-void WaitForModifiersRelease() {
+}
+
+bool TextBridge::WaitForModifiersRelease() const {
     for (int attempt = 0; attempt < 60; ++attempt) {
         const bool controlDown = IsModifierPressed(VK_CONTROL);
         const bool altDown = IsModifierPressed(VK_MENU);
@@ -16,12 +18,11 @@ void WaitForModifiersRelease() {
         const bool lwinDown = IsModifierPressed(VK_LWIN);
         const bool rwinDown = IsModifierPressed(VK_RWIN);
         if (!controlDown && !altDown && !shiftDown && !lwinDown && !rwinDown) {
-            return;
+            return true;
         }
         Sleep(5);
     }
-}
-
+    return false;
 }
 
 std::wstring TextBridge::GetAllText() const {
@@ -44,10 +45,10 @@ bool TextBridge::TypeText(const std::wstring& text, size_t* typedChars) const {
     if (typedChars) {
         *typedChars = 0;
     }
-    WaitForModifiersRelease();
     for (size_t i = 0; i < text.size(); ++i) {
         const wchar_t ch = text[i];
         bool sent = false;
+        bool unicodeCharMayHaveBeenTyped = false;
         if (ch == L'\r') {
             if (i + 1 < text.size() && text[i + 1] == L'\n') {
                 ++i;
@@ -58,9 +59,14 @@ bool TextBridge::TypeText(const std::wstring& text, size_t* typedChars) const {
         } else if (ch == L'\t') {
             sent = SendKey(VK_TAB);
         } else {
-            sent = SendUnicodeChar(ch);
+            const UINT sentInputs = SendUnicodeChar(ch);
+            sent = sentInputs == 2;
+            unicodeCharMayHaveBeenTyped = sentInputs > 0;
         }
         if (!sent) {
+            if (typedChars && unicodeCharMayHaveBeenTyped) {
+                ++(*typedChars);
+            }
             return false;
         }
         if (typedChars) {
@@ -74,14 +80,15 @@ bool TextBridge::DeleteCharacters(size_t count) const {
     if (count == 0) {
         return true;
     }
-    WaitForModifiersRelease();
     return SendRepeatedKey(VK_BACK, count);
 }
 
 std::wstring TextBridge::CopyFromActiveControl(bool selectAll) const {
     ClipboardUtils::Snapshot snapshot;
 
-    WaitForModifiersRelease();
+    if (!WaitForModifiersRelease()) {
+        return L"";
+    }
 
     if (selectAll) {
         SendCtrlShortcut('A');
@@ -99,7 +106,9 @@ std::wstring TextBridge::CopyFromActiveControl(bool selectAll) const {
 
 bool TextBridge::PasteIntoActiveControl(const std::wstring& text, bool selectAll) const {
     ClipboardUtils::Snapshot snapshot;
-    WaitForModifiersRelease();
+    if (!WaitForModifiersRelease()) {
+        return false;
+    }
     if (!ClipboardUtils::WriteText(nullptr, text)) {
         return false;
     }
@@ -175,7 +184,7 @@ bool TextBridge::SendKey(WORD virtualKey) const {
     return SendInput(2, inputs, sizeof(INPUT)) == 2;
 }
 
-bool TextBridge::SendUnicodeChar(wchar_t ch) const {
+UINT TextBridge::SendUnicodeChar(wchar_t ch) const {
     INPUT inputs[2] = {};
     inputs[0].type = INPUT_KEYBOARD;
     inputs[0].ki.wScan = ch;
@@ -183,7 +192,7 @@ bool TextBridge::SendUnicodeChar(wchar_t ch) const {
     inputs[1].type = INPUT_KEYBOARD;
     inputs[1].ki.wScan = ch;
     inputs[1].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
-    return SendInput(2, inputs, sizeof(INPUT)) == 2;
+    return SendInput(2, inputs, sizeof(INPUT));
 }
 
 bool TextBridge::SendRepeatedKey(WORD virtualKey, size_t count) const {

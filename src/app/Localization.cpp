@@ -16,48 +16,6 @@ namespace Localization {
 namespace {
 namespace fs = std::filesystem;
 
-struct Entry {
-    Key key;
-    const wchar_t* iniName;
-};
-
-constexpr Entry kEntries[] = {
-    { Key::MenuMoreLogs, L"menu.more.logs" },
-    { Key::MenuMoreAbout, L"menu.more.about" },
-    { Key::MenuCopy, L"menu.copy" },
-    { Key::MenuSaveAs, L"menu.save_as" },
-    { Key::MenuClearLogs, L"menu.clear_logs" },
-    { Key::MenuScriptsAdd, L"menu.scripts.add" },
-    { Key::MenuScriptsImportZip, L"menu.scripts.import_zip" },
-    { Key::MenuScriptsExportZip, L"menu.scripts.export_zip" },
-    { Key::MenuScriptsEnable, L"menu.scripts.enable" },
-    { Key::MenuScriptsDisable, L"menu.scripts.disable" },
-    { Key::MenuScriptsDelete, L"menu.scripts.delete" },
-    { Key::MenuTrayExit, L"menu.tray.exit" },
-    { Key::MenuLanguageTitle, L"menu.language.title" },
-    { Key::MenuLanguageRussian, L"menu.language.russian" },
-    { Key::MenuLanguageEnglish, L"menu.language.english" },
-    { Key::HintLabel, L"hint.label" },
-    { Key::ButtonReloadScripts, L"button.reload_scripts" },
-    { Key::ButtonOpenScriptsFolder, L"button.open_scripts_folder" },
-    { Key::ButtonMore, L"button.more" },
-    { Key::StatusReady, L"status.ready" },
-    { Key::TooltipReload, L"tooltip.reload" },
-    { Key::TooltipScriptList, L"tooltip.script_list" },
-    { Key::TooltipOpenScriptsFolder, L"tooltip.open_scripts_folder" },
-    { Key::TooltipMore, L"tooltip.more" },
-    { Key::StatusLanguageUpdated, L"status.language_updated" },
-    { Key::StatusNoScriptsFound, L"status.no_scripts_found" },
-    { Key::ScriptListHotkeyUnavailablePrefix, L"script_list.hotkey_unavailable_prefix" },
-    { Key::StatusLogsCleared, L"status.logs_cleared" },
-    { Key::AboutLoadedScriptsPrefix, L"about.loaded_scripts_prefix" },
-    { Key::AboutScriptsDirectoryPrefix, L"about.scripts_directory_prefix" },
-    { Key::AboutCheckUpdatesHint, L"about.check_updates_hint" },
-    { Key::LogIsEmpty, L"log.is_empty" },
-    { Key::InfoButtonClose, L"info.button.close" },
-    { Key::InfoButtonCheckUpdates, L"info.button.check_updates" }
-};
-
 bool g_isInitialized = false;
 std::wstring g_currentLanguageCode = L"ru";
 std::unordered_map<std::wstring, std::unordered_map<std::wstring, std::wstring>> g_embeddedLanguageTexts;
@@ -107,15 +65,6 @@ std::wstring UnescapeIniValue(const std::wstring& value) {
         result.push_back(value[i]);
     }
     return result;
-}
-
-const Entry* FindEntryByKey(Key key) {
-    for (const Entry& entry : kEntries) {
-        if (entry.key == key) {
-            return &entry;
-        }
-    }
-    return nullptr;
 }
 
 bool ReadUtf8TextFile(const fs::path& path, std::wstring* text) {
@@ -467,14 +416,4 @@ std::wstring GetLanguageDisplayName(const std::wstring& languageCode) {
     return normalizedCode;
 }
 
-const wchar_t* GetText(Key key) {
-    EnsureInitialized();
-
-    const Entry* entry = FindEntryByKey(key);
-    if (!entry) {
-        return L"";
-    }
-
-    return GetTextByName(entry->iniName);
-}
 } // namespace Localization

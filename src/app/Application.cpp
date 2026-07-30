@@ -178,10 +178,6 @@ struct ExportZipTaskResult {
     int scriptFileCount = 0;
 };
 
-const wchar_t* L(Localization::Key key) {
-    return Localization::GetText(key);
-}
-
 const wchar_t* T(const wchar_t* key) {
     return Localization::GetTextByName(key);
 }
@@ -987,31 +983,31 @@ UINT ResolveStyledMenuItemId(UINT itemId, ULONG_PTR itemData) {
 const wchar_t* GetMenuItemText(UINT itemId) {
     switch (itemId) {
     case ID_MENU_MORE_LOGS:
-        return L(Localization::Key::MenuMoreLogs);
+        return T(L"menu.more.logs");
     case ID_MENU_MORE_ABOUT:
-        return L(Localization::Key::MenuMoreAbout);
+        return T(L"menu.more.about");
     case ID_MENU_CONTEXT_COPY:
-        return L(Localization::Key::MenuCopy);
+        return T(L"menu.copy");
     case ID_MENU_CONTEXT_SAVEAS:
-        return L(Localization::Key::MenuSaveAs);
+        return T(L"menu.save_as");
     case ID_MENU_CONTEXT_CLEAR_LOGS:
-        return L(Localization::Key::MenuClearLogs);
+        return T(L"menu.clear_logs");
     case ID_MENU_SCRIPTS_ADD:
-        return L(Localization::Key::MenuScriptsAdd);
+        return T(L"menu.scripts.add");
     case ID_MENU_SCRIPTS_IMPORT_ZIP:
-        return L(Localization::Key::MenuScriptsImportZip);
+        return T(L"menu.scripts.import_zip");
     case ID_MENU_SCRIPTS_EXPORT_ZIP:
-        return L(Localization::Key::MenuScriptsExportZip);
+        return T(L"menu.scripts.export_zip");
     case ID_MENU_SCRIPTS_ENABLE:
-        return L(Localization::Key::MenuScriptsEnable);
+        return T(L"menu.scripts.enable");
     case ID_MENU_SCRIPTS_DISABLE:
-        return L(Localization::Key::MenuScriptsDisable);
+        return T(L"menu.scripts.disable");
     case ID_MENU_SCRIPTS_DELETE:
-        return L(Localization::Key::MenuScriptsDelete);
+        return T(L"menu.scripts.delete");
     case ID_MENU_TRAY_EXIT:
-        return L(Localization::Key::MenuTrayExit);
+        return T(L"menu.tray.exit");
     case ID_MENU_LANGUAGE_LABEL:
-        return L(Localization::Key::MenuLanguageTitle);
+        return T(L"menu.language.title");
     case ID_MENU_INPUT_MODE_LABEL:
         return T(L"menu.input_mode.title");
     case ID_MENU_INPUT_MODE_PREVIOUS_WORD:
@@ -1949,7 +1945,7 @@ void Application::CreateControls() {
         0, 0, 100, 30, m_hWnd, reinterpret_cast<HMENU>(ID_TITLE_LABEL), m_hInstance, nullptr);
 
     m_hHintLabel = CreateWindowExW(0, L"STATIC",
-        L(Localization::Key::HintLabel),
+        T(L"hint.label"),
         WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 100, 40,
         m_hWnd, reinterpret_cast<HMENU>(ID_HINT_LABEL), m_hInstance, nullptr);
 
@@ -1958,19 +1954,19 @@ void Application::CreateControls() {
         0, 0, 100, 100, m_hWnd, reinterpret_cast<HMENU>(ID_SCRIPTS_LIST), m_hInstance, nullptr);
     ApplyDarkScrollBar(m_hScriptList);
 
-    m_hReloadButton = CreateWindowExW(0, L"BUTTON", L(Localization::Key::ButtonReloadScripts),
+    m_hReloadButton = CreateWindowExW(0, L"BUTTON", T(L"button.reload_scripts"),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
         0, 0, 100, 32, m_hWnd, reinterpret_cast<HMENU>(ID_RELOAD_BUTTON), m_hInstance, nullptr);
 
-    m_hOpenFolderButton = CreateWindowExW(0, L"BUTTON", L(Localization::Key::ButtonOpenScriptsFolder),
+    m_hOpenFolderButton = CreateWindowExW(0, L"BUTTON", T(L"button.open_scripts_folder"),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
         0, 0, 100, 32, m_hWnd, reinterpret_cast<HMENU>(ID_OPEN_FOLDER_BUTTON), m_hInstance, nullptr);
 
-    m_hMoreButton = CreateWindowExW(0, L"BUTTON", L(Localization::Key::ButtonMore),
+    m_hMoreButton = CreateWindowExW(0, L"BUTTON", T(L"button.more"),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
         0, 0, 100, 32, m_hWnd, reinterpret_cast<HMENU>(ID_MORE_BUTTON), m_hInstance, nullptr);
 
-    m_hStatusLabel = CreateWindowExW(0, L"STATIC", L(Localization::Key::StatusReady),
+    m_hStatusLabel = CreateWindowExW(0, L"STATIC", T(L"status.ready"),
         WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 100, 24,
         m_hWnd, reinterpret_cast<HMENU>(ID_STATUS_LABEL), m_hInstance, nullptr);
 
@@ -1985,10 +1981,10 @@ void Application::CreateControls() {
     m_toolTip = std::make_unique<ToolTip>();
     if (m_toolTip->Initialize(m_hWnd)) {
         m_toolTip->SetStyle(m_hFont, RGB(50, 50, 50), RGB(240, 240, 240));
-        m_toolTip->AddTool(m_hReloadButton, L(Localization::Key::TooltipReload));
-        m_toolTip->AddTool(m_hScriptList, L(Localization::Key::TooltipScriptList));
-        m_toolTip->AddTool(m_hOpenFolderButton, L(Localization::Key::TooltipOpenScriptsFolder));
-        m_toolTip->AddTool(m_hMoreButton, L(Localization::Key::TooltipMore));
+        m_toolTip->AddTool(m_hReloadButton, T(L"tooltip.reload"));
+        m_toolTip->AddTool(m_hScriptList, T(L"tooltip.script_list"));
+        m_toolTip->AddTool(m_hOpenFolderButton, T(L"tooltip.open_scripts_folder"));
+        m_toolTip->AddTool(m_hMoreButton, T(L"tooltip.more"));
     }
 }
 
@@ -2624,16 +2620,16 @@ LRESULT Application::HandleMorePopupMessage(HWND hWnd, UINT message, WPARAM wPar
 
 void Application::ApplyLocalization() {
     if (m_hHintLabel) {
-        SetWindowTextW(m_hHintLabel, L(Localization::Key::HintLabel));
+        SetWindowTextW(m_hHintLabel, T(L"hint.label"));
     }
     if (m_hReloadButton) {
-        SetWindowTextW(m_hReloadButton, L(Localization::Key::ButtonReloadScripts));
+        SetWindowTextW(m_hReloadButton, T(L"button.reload_scripts"));
     }
     if (m_hOpenFolderButton) {
-        SetWindowTextW(m_hOpenFolderButton, L(Localization::Key::ButtonOpenScriptsFolder));
+        SetWindowTextW(m_hOpenFolderButton, T(L"button.open_scripts_folder"));
     }
     if (m_hMoreButton) {
-        SetWindowTextW(m_hMoreButton, L(Localization::Key::ButtonMore));
+        SetWindowTextW(m_hMoreButton, T(L"button.more"));
     }
 
     wchar_t statusText[256] = {};
@@ -2653,14 +2649,14 @@ void Application::ApplyLocalization() {
         }
     }
     if (shouldSetReadyStatus) {
-        SetStatusText(L(Localization::Key::StatusReady));
+        SetStatusText(T(L"status.ready"));
     }
 
     if (m_toolTip) {
-        m_toolTip->AddTool(m_hReloadButton, L(Localization::Key::TooltipReload));
-        m_toolTip->AddTool(m_hScriptList, L(Localization::Key::TooltipScriptList));
-        m_toolTip->AddTool(m_hOpenFolderButton, L(Localization::Key::TooltipOpenScriptsFolder));
-        m_toolTip->AddTool(m_hMoreButton, L(Localization::Key::TooltipMore));
+        m_toolTip->AddTool(m_hReloadButton, T(L"tooltip.reload"));
+        m_toolTip->AddTool(m_hScriptList, T(L"tooltip.script_list"));
+        m_toolTip->AddTool(m_hOpenFolderButton, T(L"tooltip.open_scripts_folder"));
+        m_toolTip->AddTool(m_hMoreButton, T(L"tooltip.more"));
     }
 
     CreateMoreMenu();
@@ -2683,7 +2679,7 @@ void Application::SetLanguage(const std::wstring& languageCode) {
     SaveLanguageSetting(GetLanguageSettingsPath(GetExecutableDirectory()));
     ApplyLocalization();
     RefreshScriptList();
-    SetStatusText(L(Localization::Key::StatusLanguageUpdated));
+    SetStatusText(T(L"status.language_updated"));
 }
 
 void Application::UpdateScriptInputModeMenuChecks() {
@@ -2862,7 +2858,7 @@ void Application::ReloadScripts(bool announceResult) {
         return;
     }
     if (m_scripts.empty()) {
-        SetStatusText(L(Localization::Key::StatusNoScriptsFound));
+        SetStatusText(T(L"status.no_scripts_found"));
         AppendLog(T(L"app.log.scripts.none"));
         return;
     }
@@ -2966,7 +2962,7 @@ void Application::RefreshScriptList() {
             line += L" - " + script.manifest.description;
         }
         if (script.manifest.enabled && !script.hotkeyRegistered) {
-            line += L(Localization::Key::ScriptListHotkeyUnavailablePrefix);
+            line += T(L"script_list.hotkey_unavailable_prefix");
             line += script.hotkeyError + L")";
         }
         SendMessageW(m_hScriptList, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(line.c_str()));
@@ -3854,21 +3850,21 @@ void Application::AppendLog(const std::wstring& line) {
 void Application::ClearLogs() {
     m_executionLogs.clear();
     UpdateInfoWindowText(InfoWindowKind::Logs, BuildLogText());
-    SetStatusText(L(Localization::Key::StatusLogsCleared));
+    SetStatusText(T(L"status.logs_cleared"));
 }
 
 std::wstring Application::BuildAboutText() const {
     std::wostringstream stream;
     stream << WINDOW_TITLE << L" " << APP_VERSION << L"\r\n\r\n";
-    stream << L(Localization::Key::AboutLoadedScriptsPrefix) << m_scripts.size() << L"\r\n";
-    stream << L(Localization::Key::AboutScriptsDirectoryPrefix) << m_scriptsDirectory << L"\r\n\r\n";
-    stream << L(Localization::Key::AboutCheckUpdatesHint);
+    stream << T(L"about.loaded_scripts_prefix") << m_scripts.size() << L"\r\n";
+    stream << T(L"about.scripts_directory_prefix") << m_scriptsDirectory << L"\r\n\r\n";
+    stream << T(L"about.check_updates_hint");
     return stream.str();
 }
 
 std::wstring Application::BuildLogText() const {
     if (m_executionLogs.empty()) {
-        return L(Localization::Key::LogIsEmpty);
+        return T(L"log.is_empty");
     }
 
     std::wstring text;
@@ -3934,7 +3930,7 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             }
 
             state->closeButton = CreateWindowExW(
-                0, L"BUTTON", L(Localization::Key::InfoButtonClose),
+                0, L"BUTTON", T(L"info.button.close"),
                 WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                 0, 0, 100, 34,
                 hWnd, reinterpret_cast<HMENU>(ID_INFO_CLOSE), GetModuleHandleW(nullptr), nullptr
@@ -3942,7 +3938,7 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
 
             if (state->kind == static_cast<int>(Application::InfoWindowKind::About)) {
                 state->actionButton = CreateWindowExW(
-                    0, L"BUTTON", L(Localization::Key::InfoButtonCheckUpdates),
+                    0, L"BUTTON", T(L"info.button.check_updates"),
                     WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                     0, 0, 180, 34,
                     hWnd, reinterpret_cast<HMENU>(ID_INFO_ACTION), GetModuleHandleW(nullptr), nullptr

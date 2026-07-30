@@ -60,7 +60,7 @@ private:
     void ApplyLocalization();
     void SetLanguage(const std::wstring& languageCode);
     void UpdateScriptInputModeMenuChecks();
-    void SetScriptInputMode(bool fallbackToAllText);
+    void SetScriptInputMode(bool allTextInputMode);
     void OnResize(int width, int height);
     void OnPaint();
     void OnCommand(UINT controlId, UINT notifyCode);
@@ -176,7 +176,7 @@ private:
     bool m_scriptExecutionInProgress = false;
     bool m_updateInProgress = false;
     bool m_archiveTaskInProgress = false;
-    bool m_scriptInputFallbackToAllText = false;
+    bool m_scriptInputAllText = false;
     UINT m_activeMoreSubMenuHeaderId = 0;
     UINT m_hoveredMorePopupItemId = 0;
     UINT m_hoveredMoreSubPopupItemId = 0;

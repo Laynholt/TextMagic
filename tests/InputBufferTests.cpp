@@ -66,5 +66,27 @@ int main() {
     buffer.AppendText(editorContext, L"   ");
     Expect(!buffer.TryPeekPreviousWord(editorContext, &capture), "separator-only buffer must not capture a word");
 
+    buffer.Clear();
+    buffer.AppendText(editorContext, L"one two three");
+    Expect(buffer.TryPeekAllText(editorContext, &capture), "expected all-text capture");
+    Expect(capture.word == L"one two three", "all-text capture must contain the complete session");
+    Expect(capture.trailing.empty(), "all-text capture must not add trailing text");
+    Expect(capture.deleteChars == 13 && capture.replaceOffset == 0,
+           "all-text capture must replace the complete session");
+    Expect(buffer.CommitReplacement(editorContext, capture, L"ONE TWO THREE"),
+           "expected all-text replacement commit");
+    Expect(buffer.TextForTest() == L"ONE TWO THREE", "expected committed all-text replacement");
+
+    buffer.PopCharacter(editorContext);
+    Expect(buffer.TextForTest() == L"ONE TWO THRE", "Backspace must remove one tracked character");
+
+    buffer.Clear();
+    buffer.AppendText(editorContext, std::wstring(20000, L'x'));
+    Expect(buffer.TextForTest().size() == 20000, "20,000 characters must remain tracked");
+    buffer.AppendText(editorContext, L"y");
+    Expect(buffer.TextForTest().empty(), "overflow must clear the whole session");
+    buffer.AppendText(editorContext, L"z");
+    Expect(buffer.TextForTest() == L"z", "typing after overflow must start a new session");
+
     return 0;
 }

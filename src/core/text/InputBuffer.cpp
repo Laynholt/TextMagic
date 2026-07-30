@@ -3,7 +3,7 @@
 #include <cwctype>
 
 namespace {
-constexpr size_t MAX_INPUT_BUFFER_CHARS = 2048;
+constexpr size_t MAX_INPUT_BUFFER_CHARS = 20000;
 }
 
 void InputBuffer::Clear() {
@@ -27,7 +27,7 @@ void InputBuffer::AppendText(ContextId contextId, const std::wstring& text) {
     SwitchContext(contextId);
     m_text += text;
     ++m_generation;
-    TrimToLimit();
+    ClearIfOverLimit();
 }
 
 bool InputBuffer::TryPeekPreviousWord(ContextId contextId, PreviousWordCapture* capture) const {
@@ -66,6 +66,24 @@ bool InputBuffer::TryPeekPreviousWord(ContextId contextId, PreviousWordCapture* 
     return true;
 }
 
+bool InputBuffer::TryPeekAllText(ContextId contextId, PreviousWordCapture* capture) const {
+    if (capture) {
+        *capture = PreviousWordCapture();
+    }
+    if (contextId == 0 || contextId != m_contextId || m_text.empty()) {
+        return false;
+    }
+    if (capture) {
+        capture->word = m_text;
+        capture->deleteChars = m_text.size();
+        capture->replaceOffset = 0;
+        capture->expectedSize = m_text.size();
+        capture->contextId = contextId;
+        capture->generation = m_generation;
+    }
+    return true;
+}
+
 bool InputBuffer::IsCaptureCurrent(ContextId contextId, const PreviousWordCapture& capture) const {
     if (contextId == 0 || contextId != m_contextId || contextId != capture.contextId ||
         capture.generation != m_generation || capture.expectedSize != m_text.size() ||
@@ -84,7 +102,7 @@ bool InputBuffer::CommitReplacement(ContextId contextId,
     }
     m_text.replace(capture.replaceOffset, capture.deleteChars, replacement);
     ++m_generation;
-    TrimToLimit();
+    ClearIfOverLimit();
     return true;
 }
 
@@ -101,10 +119,8 @@ bool InputBuffer::IsWordSeparator(wchar_t ch) {
     return iswspace(ch) != 0;
 }
 
-void InputBuffer::TrimToLimit() {
-    if (m_text.size() <= MAX_INPUT_BUFFER_CHARS) {
-        return;
+void InputBuffer::ClearIfOverLimit() {
+    if (m_text.size() > MAX_INPUT_BUFFER_CHARS) {
+        Clear();
     }
-    const size_t keepFrom = m_text.size() - MAX_INPUT_BUFFER_CHARS;
-    m_text.erase(0, keepFrom);
 }

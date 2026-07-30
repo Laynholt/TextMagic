@@ -143,9 +143,10 @@ constexpr ULONGLONG HOTKEY_DOUBLE_TAP_TIMEOUT_MS = 350;
 struct ScriptExecutionTaskResult {
     std::wstring scriptName;
     std::wstring sourceText;
-    InputBuffer::PreviousWordCapture previousWordCapture;
+    InputBuffer::PreviousWordCapture inputCapture;
     bool hasSelection = false;
-    bool previousWordMode = false;
+    bool inputBufferMode = false;
+    bool allTextInputMode = false;
     bool clipboardMode = false;
     bool noTextAvailable = false;
     bool executeOk = false;
@@ -658,6 +659,14 @@ bool PeekPreviousWordFromInputBuffer(
     return g_inputBuffer.TryPeekPreviousWord(contextId, capture);
 }
 
+bool PeekAllTextFromInputBuffer(
+    InputBuffer::ContextId contextId,
+    InputBuffer::PreviousWordCapture* capture
+) {
+    std::lock_guard<std::mutex> lock(g_inputBufferMutex);
+    return g_inputBuffer.TryPeekAllText(contextId, capture);
+}
+
 bool IsPreviousWordCaptureCurrent(const InputBuffer::PreviousWordCapture& capture) {
     std::lock_guard<std::mutex> lock(g_inputBufferMutex);
     return CurrentInputContext() == capture.contextId
@@ -759,7 +768,7 @@ std::wstring ParseLanguageCodeSetting(const wchar_t* value) {
     return code;
 }
 
-bool ParseScriptInputFallbackToAllTextSetting(const wchar_t* value) {
+bool ParseScriptInputAllTextSetting(const wchar_t* value) {
     if (!value || value[0] == L'\0') {
         return false;
     }
@@ -920,8 +929,8 @@ void LoadLanguageSetting(const std::wstring& settingsPath) {
     Localization::SetCurrentLanguageCode(ParseLanguageCodeSetting(value));
 }
 
-void LoadScriptInputModeSetting(const std::wstring& settingsPath, bool* fallbackToAllText) {
-    if (!fallbackToAllText) {
+void LoadScriptInputModeSetting(const std::wstring& settingsPath, bool* allTextInputMode) {
+    if (!allTextInputMode) {
         return;
     }
     wchar_t value[64] = {};
@@ -933,7 +942,7 @@ void LoadScriptInputModeSetting(const std::wstring& settingsPath, bool* fallback
         static_cast<DWORD>(_countof(value)),
         settingsPath.c_str()
     );
-    *fallbackToAllText = ParseScriptInputFallbackToAllTextSetting(value);
+    *allTextInputMode = ParseScriptInputAllTextSetting(value);
 }
 
 bool SaveLanguageSetting(const std::wstring& settingsPath) {
@@ -948,11 +957,11 @@ bool SaveLanguageSetting(const std::wstring& settingsPath) {
     ) != FALSE;
 }
 
-bool SaveScriptInputModeSetting(const std::wstring& settingsPath, bool fallbackToAllText) {
+bool SaveScriptInputModeSetting(const std::wstring& settingsPath, bool allTextInputMode) {
     return WritePrivateProfileStringW(
         LANGUAGE_SETTINGS_SECTION,
         SCRIPT_INPUT_SETTINGS_KEY,
-        fallbackToAllText ? SCRIPT_INPUT_MODE_ALL_TEXT : SCRIPT_INPUT_MODE_PREVIOUS_WORD,
+        allTextInputMode ? SCRIPT_INPUT_MODE_ALL_TEXT : SCRIPT_INPUT_MODE_PREVIOUS_WORD,
         settingsPath.c_str()
     ) != FALSE;
 }
@@ -1255,7 +1264,7 @@ bool Application::Initialize(HINSTANCE hInstance) {
     Localization::Initialize(executableDirectory + L"\\lang");
     const std::wstring settingsPath = GetLanguageSettingsPath(executableDirectory);
     LoadLanguageSetting(settingsPath);
-    LoadScriptInputModeSetting(settingsPath, &m_scriptInputFallbackToAllText);
+    LoadScriptInputModeSetting(settingsPath, &m_scriptInputAllText);
 
     m_singleInstanceMutex = CreateMutexW(nullptr, FALSE, SINGLE_INSTANCE_MUTEX_NAME);
     if (m_singleInstanceMutex && GetLastError() == ERROR_ALREADY_EXISTS) {
@@ -1518,7 +1527,8 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 ? T(L"app.status.clipboard")
                 : (result->hasSelection
                     ? T(L"app.status.selection")
-                    : (result->previousWordMode ? T(L"app.status.previous_word") : T(L"app.status.full_text")));
+                    : (result->inputBufferMode && !result->allTextInputMode
+                        ? T(L"app.status.previous_word") : T(L"app.status.full_text")));
             AppendLog(std::wstring(T(L"app.log.script.source_prefix")) + sourceName
                 + T(L"app.log.script.source_chars_prefix") + std::to_wstring(result->sourceText.size()) + L".");
 
@@ -1529,7 +1539,7 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                     AppendLog(std::wstring(T(L"app.log.script.error_prefix2")) + msg);
                     return 0;
                 }
-                if (result->previousWordMode) {
+                if (result->inputBufferMode && !result->allTextInputMode) {
                     AppendLog(T(L"app.log.script.previous_word_not_changed"));
                 }
                 const std::wstring statusMessage = std::wstring(T(L"app.status.script_error_prefix")) + result->scriptName;
@@ -1544,8 +1554,8 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             bool replaceOk = false;
             if (result->clipboardMode) {
                 replaceOk = ClipboardUtils::WriteText(m_hWnd, result->outputText);
-            } else if (result->previousWordMode) {
-                const auto& capture = result->previousWordCapture;
+            } else if (result->inputBufferMode) {
+                const auto& capture = result->inputCapture;
                 const std::wstring replacement = result->outputText + capture.trailing;
 
                 if (!m_textBridge.WaitForModifiersRelease()
@@ -1574,9 +1584,7 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                     }
                 }
             } else {
-                replaceOk = result->hasSelection
-                    ? m_textBridge.SetSelectedText(result->outputText)
-                    : m_textBridge.SetAllText(result->outputText);
+                replaceOk = m_textBridge.SetSelectedText(result->outputText);
             }
             if (!replaceOk) {
                 const std::wstring msg = result->clipboardMode
@@ -1590,8 +1598,10 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             std::wstring status = std::wstring(T(L"app.status.script_applied_prefix")) + result->scriptName + T(L"app.status.script_applied_middle");
             if (result->clipboardMode) {
                 status += T(L"app.status.clipboard_text");
-            } else if (result->previousWordMode) {
-                status += T(L"app.status.previous_word_text");
+            } else if (result->inputBufferMode) {
+                status += result->allTextInputMode
+                    ? T(L"app.status.all_text")
+                    : T(L"app.status.previous_word_text");
             } else {
                 status += result->hasSelection
                     ? T(L"app.status.selected_text")
@@ -2463,14 +2473,14 @@ std::vector<UiRenderer::PopupMenuItem> Application::BuildSubMorePopupItems(UINT 
             ID_MENU_INPUT_MODE_PREVIOUS_WORD,
             GetMenuItemText(ID_MENU_INPUT_MODE_PREVIOUS_WORD),
             false,
-            !m_scriptInputFallbackToAllText,
+            !m_scriptInputAllText,
             false
         });
         items.push_back({
             ID_MENU_INPUT_MODE_ALL_TEXT,
             GetMenuItemText(ID_MENU_INPUT_MODE_ALL_TEXT),
             false,
-            m_scriptInputFallbackToAllText,
+            m_scriptInputAllText,
             false
         });
     }
@@ -2707,14 +2717,14 @@ void Application::UpdateScriptInputModeMenuChecks() {
     }
 }
 
-void Application::SetScriptInputMode(bool fallbackToAllText) {
-    if (m_scriptInputFallbackToAllText == fallbackToAllText) {
+void Application::SetScriptInputMode(bool allTextInputMode) {
+    if (m_scriptInputAllText == allTextInputMode) {
         return;
     }
-    m_scriptInputFallbackToAllText = fallbackToAllText;
-    SaveScriptInputModeSetting(GetLanguageSettingsPath(GetExecutableDirectory()), m_scriptInputFallbackToAllText);
+    m_scriptInputAllText = allTextInputMode;
+    SaveScriptInputModeSetting(GetLanguageSettingsPath(GetExecutableDirectory()), m_scriptInputAllText);
     UpdateScriptInputModeMenuChecks();
-    SetStatusText(fallbackToAllText ? T(L"app.status.input_mode_all_text") : T(L"app.status.input_mode_previous_word"));
+    SetStatusText(allTextInputMode ? T(L"app.status.input_mode_all_text") : T(L"app.status.input_mode_previous_word"));
 }
 
 bool Application::InitializeTrayIcon() {
@@ -3436,54 +3446,53 @@ void Application::ExecuteScript(const RegisteredScript& script, bool clipboardOn
     const std::wstring scriptName = script.manifest.name;
     const std::wstring scriptBody = script.manifest.scriptBody;
     const std::wstring commandLine = script.manifest.commandLine;
-    const bool fallbackToAllText = m_scriptInputFallbackToAllText;
+    const bool allTextInputMode = m_scriptInputAllText;
     const bool useClipboardOnly = clipboardOnly;
     const TextBridge textBridge = m_textBridge;
     const ScriptRunner scriptRunner = m_scriptRunner;
     const HWND windowHandle = m_hWnd;
-    InputBuffer::PreviousWordCapture previousWordCapture;
-    const bool hasPreviousWordCapture = !useClipboardOnly
-        && PeekPreviousWordFromInputBuffer(CurrentInputContext(), &previousWordCapture)
-        && !previousWordCapture.word.empty();
+    InputBuffer::PreviousWordCapture inputCapture;
+    const bool hasInputCapture = !useClipboardOnly
+        && (allTextInputMode
+            ? PeekAllTextFromInputBuffer(CurrentInputContext(), &inputCapture)
+            : PeekPreviousWordFromInputBuffer(CurrentInputContext(), &inputCapture))
+        && !inputCapture.word.empty();
 
     std::thread([scriptName,
                  scriptBody,
                  commandLine,
-                 fallbackToAllText,
+                 allTextInputMode,
                  useClipboardOnly,
                  textBridge,
                  scriptRunner,
                  windowHandle,
-                 hasPreviousWordCapture,
-                 previousWordCapture]() {
+                 hasInputCapture,
+                 inputCapture]() {
         auto* result = new ScriptExecutionTaskResult();
         result->scriptName = scriptName;
         result->clipboardMode = useClipboardOnly;
 
         std::wstring selectedText;
         bool hasSelection = false;
-        bool previousWordMode = false;
+        bool inputBufferMode = false;
         std::wstring sourceText;
 
         if (useClipboardOnly) {
             ClipboardUtils::ReadText(windowHandle, &sourceText);
-        } else if (hasPreviousWordCapture) {
-            sourceText = previousWordCapture.word;
-            previousWordMode = true;
+        } else if (hasInputCapture) {
+            sourceText = inputCapture.word;
+            inputBufferMode = true;
         } else {
             selectedText = textBridge.GetSelectedText();
             hasSelection = !selectedText.empty();
             sourceText = hasSelection ? selectedText : L"";
-
-            if (!hasSelection && fallbackToAllText) {
-                sourceText = textBridge.GetAllText();
-            }
         }
 
         result->sourceText = sourceText;
         result->hasSelection = hasSelection;
-        result->previousWordMode = previousWordMode;
-        result->previousWordCapture = previousWordCapture;
+        result->inputBufferMode = inputBufferMode;
+        result->allTextInputMode = allTextInputMode;
+        result->inputCapture = inputCapture;
 
         if (sourceText.empty()) {
             result->noTextAvailable = true;

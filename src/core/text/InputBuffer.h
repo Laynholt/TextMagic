@@ -22,6 +22,7 @@ public:
     void AppendText(ContextId contextId, const std::wstring& text);
 
     bool TryPeekPreviousWord(ContextId contextId, PreviousWordCapture* capture) const;
+    bool TryPeekAllText(ContextId contextId, PreviousWordCapture* capture) const;
     bool IsCaptureCurrent(ContextId contextId, const PreviousWordCapture& capture) const;
     bool CommitReplacement(ContextId contextId,
                            const PreviousWordCapture& capture,
@@ -32,7 +33,7 @@ public:
 private:
     static bool IsWordSeparator(wchar_t ch);
     void SwitchContext(ContextId contextId);
-    void TrimToLimit();
+    void ClearIfOverLimit();
 
     std::wstring m_text;
     ContextId m_contextId = 0;

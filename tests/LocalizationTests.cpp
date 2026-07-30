@@ -42,6 +42,7 @@ void TestDoesNotMaterializeEmbeddedLanguages(const fs::path& root) {
 void TestExternalFileOverridesEmbeddedKeys(const fs::path& root) {
     const fs::path languageDirectory = root / L"overrides";
     fs::create_directories(languageDirectory);
+    const std::wstring embeddedButtonMore = Localization::GetTextByName(L"button.more", L"ru");
     WriteUtf8(
         languageDirectory / L"ru.ini",
         "status.ready=User ready\n"
@@ -50,7 +51,7 @@ void TestExternalFileOverridesEmbeddedKeys(const fs::path& root) {
 
     Localization::Initialize(languageDirectory.wstring());
     CHECK(std::wstring(Localization::GetTextByName(L"status.ready", L"ru")) == L"User ready");
-    CHECK(!std::wstring(Localization::GetTextByName(L"button.more", L"ru")).empty());
+    CHECK(std::wstring(Localization::GetTextByName(L"button.more", L"ru")) == embeddedButtonMore);
 }
 
 void TestExternalLanguageIsAvailable(const fs::path& root) {

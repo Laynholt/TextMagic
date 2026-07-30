@@ -40,7 +40,9 @@ add_custom_command(
     VERBATIM
 )
 
-set_source_files_properties("${TM_EMBEDDED_LANG_HEADER}" PROPERTIES GENERATED TRUE)
+add_custom_target(TextMagicEmbeddedLanguages
+    DEPENDS "${TM_EMBEDDED_LANG_HEADER}"
+)
 
 add_definitions(-DUNICODE -D_UNICODE)
 
@@ -64,8 +66,8 @@ set(SOURCES
 
 add_executable(${PROJECT_NAME} WIN32
     ${SOURCES}
-    ${TM_EMBEDDED_LANG_HEADER}
 )
+add_dependencies(${PROJECT_NAME} TextMagicEmbeddedLanguages)
 
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_BINARY_DIR}/generated
@@ -143,8 +145,8 @@ add_executable(TextMagicLocalizationTests
     src/app/Localization.cpp
     src/core/common/EncodingUtils.cpp
     tests/LocalizationTests.cpp
-    ${TM_EMBEDDED_LANG_HEADER}
 )
+add_dependencies(TextMagicLocalizationTests TextMagicEmbeddedLanguages)
 
 target_include_directories(TextMagicLocalizationTests PRIVATE
     ${CMAKE_BINARY_DIR}/generated
@@ -159,11 +161,10 @@ add_test(NAME TextMagicLocalizationTests COMMAND TextMagicLocalizationTests)
 add_executable(TextMagicScriptRunnerTests
     src/app/Localization.cpp
     src/core/common/EncodingUtils.cpp
-    src/core/common/PowerShellUtils.cpp
     src/core/scripts/ScriptRunner.cpp
     tests/ScriptRunnerTests.cpp
-    ${TM_EMBEDDED_LANG_HEADER}
 )
+add_dependencies(TextMagicScriptRunnerTests TextMagicEmbeddedLanguages)
 
 target_include_directories(TextMagicScriptRunnerTests PRIVATE
     ${CMAKE_BINARY_DIR}/generated

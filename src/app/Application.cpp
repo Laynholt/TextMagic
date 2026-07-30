@@ -1544,25 +1544,26 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 const auto& capture = result->previousWordCapture;
                 const std::wstring replacement = result->outputText + capture.trailing;
 
-                if (IsPreviousWordCaptureCurrent(capture)
-                    && m_textBridge.DeleteCharacters(capture.deleteChars)) {
-                    size_t typedChars = 0;
-                    if (m_textBridge.TypeText(replacement, &typedChars)) {
-                        replaceOk = CommitPreviousWordReplacement(capture, replacement);
-                        if (!replaceOk) {
-                            ClearInputBuffer();
-                        }
+                if (IsPreviousWordCaptureCurrent(capture)) {
+                    if (!m_textBridge.DeleteCharacters(capture.deleteChars)) {
+                        ClearInputBuffer();
                     } else {
-                        if (typedChars > 0) {
-                            m_textBridge.DeleteCharacters(typedChars);
-                        }
-                        size_t restoredChars = 0;
-                        const bool restored = m_textBridge.TypeText(
-                            capture.word + capture.trailing,
-                            &restoredChars
-                        );
-                        if (!restored) {
-                            ClearInputBuffer();
+                        size_t typedChars = 0;
+                        if (m_textBridge.TypeText(replacement, &typedChars)) {
+                            replaceOk = CommitPreviousWordReplacement(capture, replacement);
+                            if (!replaceOk) {
+                                ClearInputBuffer();
+                            }
+                        } else {
+                            const bool cleanupOk = m_textBridge.DeleteCharacters(typedChars);
+                            size_t restoredChars = 0;
+                            const bool restored = m_textBridge.TypeText(
+                                capture.word + capture.trailing,
+                                &restoredChars
+                            );
+                            if (!cleanupOk || !restored) {
+                                ClearInputBuffer();
+                            }
                         }
                     }
                 }

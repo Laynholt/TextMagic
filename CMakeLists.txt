@@ -160,3 +160,20 @@ target_include_directories(TextMagicInputBufferTests PRIVATE
 target_compile_features(TextMagicInputBufferTests PRIVATE cxx_std_17)
 
 add_test(NAME TextMagicInputBufferTests COMMAND TextMagicInputBufferTests)
+
+add_executable(TextMagicLocalizationTests
+    src/app/Localization.cpp
+    src/core/common/EncodingUtils.cpp
+    tests/LocalizationTests.cpp
+    ${TM_EMBEDDED_LANG_HEADER}
+)
+
+target_include_directories(TextMagicLocalizationTests PRIVATE
+    ${CMAKE_BINARY_DIR}/generated
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
+)
+
+target_compile_features(TextMagicLocalizationTests PRIVATE cxx_std_17)
+
+add_test(NAME TextMagicLocalizationTests COMMAND TextMagicLocalizationTests)

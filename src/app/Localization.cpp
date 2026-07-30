@@ -62,7 +62,6 @@ bool g_isInitialized = false;
 std::wstring g_currentLanguageCode = L"ru";
 std::unordered_map<std::wstring, std::unordered_map<std::wstring, std::wstring>> g_embeddedLanguageTexts;
 std::unordered_map<std::wstring, std::unordered_map<std::wstring, std::wstring>> g_allLanguageTexts;
-std::unordered_map<std::wstring, const EmbeddedLanguageFiles::File*> g_embeddedLanguageFiles;
 
 std::wstring ToLower(std::wstring value) {
     std::transform(value.begin(), value.end(), value.begin(), [](wchar_t ch) {
@@ -177,20 +176,6 @@ bool ReadUtf8Bytes(const unsigned char* data, size_t size, std::wstring* text) {
     return true;
 }
 
-bool WriteUtf8BytesFile(const fs::path& path, const unsigned char* data, size_t size) {
-    if (!data || size == 0) {
-        return false;
-    }
-
-    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
-    if (!stream) {
-        return false;
-    }
-
-    stream.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(size));
-    return stream.good();
-}
-
 void LoadLanguageMapFromContent(const std::wstring& content,
                                 std::unordered_map<std::wstring, std::wstring>* targetTexts) {
     if (!targetTexts) {
@@ -241,7 +226,6 @@ void LoadLanguageFile(const fs::path& filePath,
 void LoadEmbeddedLanguageTexts() {
     g_embeddedLanguageTexts.clear();
     g_allLanguageTexts.clear();
-    g_embeddedLanguageFiles.clear();
 
     for (size_t index = 0; index < EmbeddedLanguageFiles::kFileCount; ++index) {
         const EmbeddedLanguageFiles::File& file = EmbeddedLanguageFiles::kFiles[index];
@@ -263,7 +247,6 @@ void LoadEmbeddedLanguageTexts() {
 
         g_embeddedLanguageTexts[languageCode] = texts;
         g_allLanguageTexts[languageCode] = std::move(texts);
-        g_embeddedLanguageFiles[languageCode] = &file;
     }
 }
 
@@ -292,21 +275,6 @@ std::unordered_map<std::wstring, std::wstring> BuildFallbackTexts(const std::wst
     }
 
     return {};
-}
-
-void EnsureEmbeddedLanguageFileExists(const fs::path& languageDirectory, const std::wstring& languageCode) {
-    const auto fileIt = g_embeddedLanguageFiles.find(languageCode);
-    if (fileIt == g_embeddedLanguageFiles.end() || !fileIt->second) {
-        return;
-    }
-
-    const fs::path languageFilePath = languageDirectory / (languageCode + L".ini");
-    std::error_code statusError;
-    if (fs::exists(languageFilePath, statusError) && !statusError) {
-        return;
-    }
-
-    WriteUtf8BytesFile(languageFilePath, fileIt->second->utf8Data, fileIt->second->utf8Size);
 }
 
 const wchar_t* FindTextInMap(const std::unordered_map<std::wstring, std::wstring>& texts,
@@ -385,13 +353,12 @@ void Initialize(const std::wstring& langDirectory) {
 
     const fs::path languageDirectory(langDirectory);
     std::error_code statusError;
-    fs::create_directories(languageDirectory, statusError);
-    if (statusError) {
+    if (!fs::exists(languageDirectory, statusError)
+        || statusError
+        || !fs::is_directory(languageDirectory, statusError)
+        || statusError) {
         return;
     }
-
-    EnsureEmbeddedLanguageFileExists(languageDirectory, L"ru");
-    EnsureEmbeddedLanguageFileExists(languageDirectory, L"en");
 
     std::error_code iterateError;
     for (const auto& entry : fs::directory_iterator(languageDirectory, iterateError)) {

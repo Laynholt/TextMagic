@@ -42,9 +42,7 @@ add_custom_command(
 
 set_source_files_properties("${TM_EMBEDDED_LANG_HEADER}" PROPERTIES GENERATED TRUE)
 
-if(WIN32)
-    add_definitions(-DUNICODE -D_UNICODE)
-endif()
+add_definitions(-DUNICODE -D_UNICODE)
 
 set(SOURCES
     src/app/main.cpp
@@ -64,25 +62,10 @@ set(SOURCES
     src/resources/resource.rc
 )
 
-set(HEADERS
-    src/app/Application.h
-    src/app/AppUiHelpers.h
-    src/app/Localization.h
-    src/core/common/ClipboardUtils.h
-    src/core/common/EncodingUtils.h
-    src/core/common/PowerShellUtils.h
-    src/core/scripts/ScriptManifest.h
-    src/core/scripts/ScriptRunner.h
-    src/core/text/InputBuffer.h
-    src/core/text/TextBridge.h
-    src/core/update/UpdateService.h
-    src/ui/ToolTip.h
-    src/ui/UiRenderer.h
-    src/resources/resource.h
+add_executable(${PROJECT_NAME} WIN32
+    ${SOURCES}
     ${TM_EMBEDDED_LANG_HEADER}
 )
-
-add_executable(${PROJECT_NAME} WIN32 ${SOURCES} ${HEADERS})
 
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_BINARY_DIR}/generated
@@ -96,20 +79,18 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/resources
 )
 
-if(WIN32)
-    target_link_libraries(${PROJECT_NAME} PRIVATE
-        comctl32
-        gdi32
-        gdiplus
-        ole32
-        oleaut32
-        shell32
-        crypt32
-        uxtheme
-        user32
-        winhttp
-    )
-endif()
+target_link_libraries(${PROJECT_NAME} PRIVATE
+    comctl32
+    gdi32
+    gdiplus
+    ole32
+    oleaut32
+    shell32
+    crypt32
+    uxtheme
+    user32
+    winhttp
+)
 
 if(MSVC)
     target_compile_options(${PROJECT_NAME} PRIVATE
@@ -137,10 +118,6 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_CURRENT_SOURCE_DIR}/scripts"
         "$<TARGET_FILE_DIR:${PROJECT_NAME}>/scripts"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${PROJECT_NAME}>/lang"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_CURRENT_SOURCE_DIR}/lang"
-        "$<TARGET_FILE_DIR:${PROJECT_NAME}>/lang"
 )
 
 install(TARGETS ${PROJECT_NAME}

@@ -1,6 +1,7 @@
 #include "AppUiHelpers.h"
 
 #include "AppVersion.h"
+#include "ClipboardUtils.h"
 #include "EncodingUtils.h"
 #include "Localization.h"
 
@@ -106,36 +107,11 @@ bool SaveUtf8TextFile(const std::wstring& filePath, const std::wstring& text, st
 } // namespace
 
 bool CopyTextToClipboard(HWND ownerWindow, const std::wstring& text) {
-    if (!OpenClipboard(ownerWindow)) {
-        return false;
-    }
+    return ClipboardUtils::WriteText(ownerWindow, text);
+}
 
-    EmptyClipboard();
-    const size_t bytes = (text.size() + 1) * sizeof(wchar_t);
-    HGLOBAL memoryHandle = GlobalAlloc(GMEM_MOVEABLE, bytes);
-    if (!memoryHandle) {
-        CloseClipboard();
-        return false;
-    }
-
-    void* memory = GlobalLock(memoryHandle);
-    if (!memory) {
-        GlobalFree(memoryHandle);
-        CloseClipboard();
-        return false;
-    }
-
-    CopyMemory(memory, text.c_str(), bytes);
-    GlobalUnlock(memoryHandle);
-
-    if (!SetClipboardData(CF_UNICODETEXT, memoryHandle)) {
-        GlobalFree(memoryHandle);
-        CloseClipboard();
-        return false;
-    }
-
-    CloseClipboard();
-    return true;
+bool ReadTextFromClipboard(HWND ownerWindow, std::wstring* text) {
+    return ClipboardUtils::ReadText(ownerWindow, text);
 }
 
 void CopyEditSelectionOrAll(HWND editControl) {

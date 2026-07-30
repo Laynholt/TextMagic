@@ -108,7 +108,7 @@ private:
 
     void ExecuteSelectedScript();
     void ExecuteScriptByHotkeyId(int hotkeyId);
-    void ExecuteScript(const RegisteredScript& script);
+    void ExecuteScript(const RegisteredScript& script, bool clipboardOnly);
 
     bool RegisterInfoWindowClass();
     bool RegisterMessageWindowClass();

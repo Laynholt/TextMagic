@@ -1,6 +1,6 @@
 name=Layout Auto QWERTY
 description=Automatically converts text between RU and EN QWERTY layouts
-hotkey=Ctrl+Alt+Q
+hotkey=Shift+Shift
 enabled=true
 ---
 [Console]::InputEncoding = [System.Text.Encoding]::UTF8

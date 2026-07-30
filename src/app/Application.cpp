@@ -4,6 +4,7 @@
 #include "Localization.h"
 #include "ToolTip.h"
 #include "UiRenderer.h"
+#include "InputBuffer.h"
 #include "PowerShellUtils.h"
 #include "resource.h"
 
@@ -137,13 +138,16 @@ constexpr int MORE_POPUP_ARROW_EXTRA_WIDTH = 48;
 constexpr int MORE_POPUP_ITEM_EXTRA_WIDTH = 34;
 constexpr int MORE_POPUP_WIDTH_PADDING = 14;
 constexpr int MORE_POPUP_TRACK_INTERVAL_MS = 25;
+constexpr ULONGLONG HOTKEY_DOUBLE_TAP_TIMEOUT_MS = 350;
 
 struct ScriptExecutionTaskResult {
     std::wstring scriptName;
     std::wstring sourceText;
     std::wstring previousWordTrailing;
+    InputBuffer::PreviousWordCapture previousWordCapture;
     bool hasSelection = false;
     bool previousWordMode = false;
+    bool clipboardMode = false;
     bool noTextAvailable = false;
     bool executeOk = false;
     std::wstring outputText;
@@ -195,7 +199,7 @@ void PostOwnedMessage(HWND windowHandle, UINT message, TResult* result) {
 std::map<UINT, std::wstring> g_languageMenuTextById;
 std::map<UINT, std::wstring> g_languageMenuCodeById;
 std::mutex g_inputBufferMutex;
-std::wstring g_inputBuffer;
+InputBuffer g_inputBuffer;
 std::mutex g_registeredHotkeysMutex;
 struct TrackedHotkey {
     UINT modifiers = 0;
@@ -208,36 +212,23 @@ struct HookHotkey {
     UINT modifiers = 0;
     UINT virtualKey = 0;
     bool armed = true;
+    ULONGLONG pendingTapTick = 0;
+    DWORD pendingTapVkCode = 0;
 };
 std::vector<HookHotkey> g_hookHotkeys;
 HWND g_hotkeyDispatchWindow = nullptr;
 HHOOK g_keyboardHook = nullptr;
 HHOOK g_mouseHook = nullptr;
-constexpr size_t MAX_INPUT_BUFFER_CHARS = 2048;
 constexpr UINT HOTKEY_MODIFIER_MASK = MOD_ALT | MOD_CONTROL | MOD_SHIFT | MOD_WIN;
-
-bool IsWordSeparatorChar(wchar_t ch) {
-    return iswspace(ch);
-}
-
-void TrimInputBufferToLimit() {
-    if (g_inputBuffer.size() <= MAX_INPUT_BUFFER_CHARS) {
-        return;
-    }
-    const size_t keepFrom = g_inputBuffer.size() - MAX_INPUT_BUFFER_CHARS;
-    g_inputBuffer.erase(0, keepFrom);
-}
 
 void ClearInputBuffer() {
     std::lock_guard<std::mutex> lock(g_inputBufferMutex);
-    g_inputBuffer.clear();
+    g_inputBuffer.Clear();
 }
 
 void PopInputBufferCharacter() {
     std::lock_guard<std::mutex> lock(g_inputBufferMutex);
-    if (!g_inputBuffer.empty()) {
-        g_inputBuffer.pop_back();
-    }
+    g_inputBuffer.PopCharacter();
 }
 
 void AppendInputBufferText(const std::wstring& text) {
@@ -245,8 +236,7 @@ void AppendInputBufferText(const std::wstring& text) {
         return;
     }
     std::lock_guard<std::mutex> lock(g_inputBufferMutex);
-    g_inputBuffer += text;
-    TrimInputBufferToLimit();
+    g_inputBuffer.AppendText(text);
 }
 
 void ClearTrackedHotkeys() {
@@ -280,6 +270,56 @@ bool IsModifierVirtualKey(UINT virtualKey) {
         || virtualKey == VK_MENU
         || virtualKey == VK_LWIN
         || virtualKey == VK_RWIN;
+}
+
+bool IsDuplicateModifierHotkey(UINT modifiers, UINT virtualKey) {
+    return (virtualKey == VK_SHIFT && (modifiers & MOD_SHIFT) != 0)
+        || (virtualKey == VK_CONTROL && (modifiers & MOD_CONTROL) != 0)
+        || (virtualKey == VK_MENU && (modifiers & MOD_ALT) != 0)
+        || ((virtualKey == VK_LWIN || virtualKey == VK_RWIN) && (modifiers & MOD_WIN) != 0);
+}
+
+UINT GetModifierMaskForVirtualKey(UINT virtualKey) {
+    if (virtualKey == VK_SHIFT) {
+        return MOD_SHIFT;
+    }
+    if (virtualKey == VK_CONTROL) {
+        return MOD_CONTROL;
+    }
+    if (virtualKey == VK_MENU) {
+        return MOD_ALT;
+    }
+    if (virtualKey == VK_LWIN || virtualKey == VK_RWIN) {
+        return MOD_WIN;
+    }
+    return 0;
+}
+
+bool IsSameModifierTapKey(DWORD firstVkCode, DWORD secondVkCode, UINT hotkeyVirtualKey) {
+    if (firstVkCode == secondVkCode) {
+        return true;
+    }
+    if (hotkeyVirtualKey == VK_SHIFT) {
+        return (firstVkCode == VK_SHIFT && (secondVkCode == VK_LSHIFT || secondVkCode == VK_RSHIFT))
+            || (secondVkCode == VK_SHIFT && (firstVkCode == VK_LSHIFT || firstVkCode == VK_RSHIFT));
+    }
+    if (hotkeyVirtualKey == VK_CONTROL) {
+        return (firstVkCode == VK_CONTROL && (secondVkCode == VK_LCONTROL || secondVkCode == VK_RCONTROL))
+            || (secondVkCode == VK_CONTROL && (firstVkCode == VK_LCONTROL || firstVkCode == VK_RCONTROL));
+    }
+    if (hotkeyVirtualKey == VK_MENU) {
+        return (firstVkCode == VK_MENU && (secondVkCode == VK_LMENU || secondVkCode == VK_RMENU))
+            || (secondVkCode == VK_MENU && (firstVkCode == VK_LMENU || firstVkCode == VK_RMENU));
+    }
+    return false;
+}
+
+void ResetPendingModifierTap(HookHotkey* hotkey) {
+    if (!hotkey) {
+        return;
+    }
+    hotkey->pendingTapTick = 0;
+    hotkey->pendingTapVkCode = 0;
 }
 
 bool IsVirtualKeyPressed(int virtualKey) {
@@ -360,12 +400,7 @@ bool IsHotkeyMatchedByKeyEvent(UINT modifiers, UINT virtualKey, DWORD inputVkCod
     if (!MatchesVirtualKey(inputVkCode, virtualKey)) {
         return false;
     }
-    const bool duplicatesModifierKey =
-        (virtualKey == VK_SHIFT && (modifiers & MOD_SHIFT) != 0)
-        || (virtualKey == VK_CONTROL && (modifiers & MOD_CONTROL) != 0)
-        || (virtualKey == VK_MENU && (modifiers & MOD_ALT) != 0)
-        || ((virtualKey == VK_LWIN || virtualKey == VK_RWIN) && (modifiers & MOD_WIN) != 0);
-    if (duplicatesModifierKey) {
+    if (IsDuplicateModifierHotkey(modifiers, virtualKey)) {
         return IsDualModifierPressed(virtualKey, inputVkCode);
     }
     return true;
@@ -400,6 +435,7 @@ bool IsHotkeyStillHeld(UINT modifiers, UINT virtualKey, UINT currentModifiers) {
 
 void DispatchHookHotkeysOnKeyDown(DWORD inputVkCode) {
     const UINT currentModifiers = GetCurrentHotkeyModifiers();
+    const ULONGLONG nowTick = GetTickCount64();
     std::lock_guard<std::mutex> lock(g_hookHotkeysMutex);
     if (!g_hotkeyDispatchWindow || !IsWindow(g_hotkeyDispatchWindow)) {
         return;
@@ -408,7 +444,28 @@ void DispatchHookHotkeysOnKeyDown(DWORD inputVkCode) {
         if (!hotkey.armed) {
             continue;
         }
-        if (!IsHotkeyMatchedByKeyEvent(hotkey.modifiers, hotkey.virtualKey, inputVkCode, currentModifiers)) {
+        if (IsDuplicateModifierHotkey(hotkey.modifiers, hotkey.virtualKey)) {
+            if (hotkey.pendingTapTick != 0 && nowTick - hotkey.pendingTapTick > HOTKEY_DOUBLE_TAP_TIMEOUT_MS) {
+                ResetPendingModifierTap(&hotkey);
+            }
+            const UINT effectiveModifiers = currentModifiers | GetModifierMaskForVirtualKey(hotkey.virtualKey);
+            if ((hotkey.modifiers & HOTKEY_MODIFIER_MASK) != effectiveModifiers
+                || !MatchesVirtualKey(inputVkCode, hotkey.virtualKey)) {
+                ResetPendingModifierTap(&hotkey);
+                continue;
+            }
+
+            const bool dualPressed = IsDualModifierPressed(hotkey.virtualKey, inputVkCode);
+            const bool sameKeyTappedTwice = hotkey.pendingTapTick != 0
+                && IsSameModifierTapKey(hotkey.pendingTapVkCode, inputVkCode, hotkey.virtualKey)
+                && nowTick - hotkey.pendingTapTick <= HOTKEY_DOUBLE_TAP_TIMEOUT_MS;
+            if (!dualPressed && !sameKeyTappedTwice) {
+                hotkey.pendingTapTick = nowTick;
+                hotkey.pendingTapVkCode = inputVkCode;
+                continue;
+            }
+            ResetPendingModifierTap(&hotkey);
+        } else if (!IsHotkeyMatchedByKeyEvent(hotkey.modifiers, hotkey.virtualKey, inputVkCode, currentModifiers)) {
             continue;
         }
         if (PostMessageW(g_hotkeyDispatchWindow, WM_HOTKEY, static_cast<WPARAM>(hotkey.hotkeyId), 0)) {
@@ -575,52 +632,19 @@ void UninstallInputHooks() {
     }
 }
 
-bool ConsumePreviousWordFromInputBuffer(std::wstring* word, std::wstring* trailing, size_t* deleteChars) {
-    if (word) {
-        word->clear();
-    }
-    if (trailing) {
-        trailing->clear();
-    }
-    if (deleteChars) {
-        *deleteChars = 0;
-    }
-
+bool PeekPreviousWordFromInputBuffer(InputBuffer::PreviousWordCapture* capture) {
     std::lock_guard<std::mutex> lock(g_inputBufferMutex);
-    if (g_inputBuffer.empty()) {
-        return false;
-    }
+    return g_inputBuffer.TryPeekPreviousWord(capture);
+}
 
-    size_t wordEnd = g_inputBuffer.size();
-    while (wordEnd > 0 && IsWordSeparatorChar(g_inputBuffer[wordEnd - 1])) {
-        --wordEnd;
-    }
-    if (wordEnd == 0) {
-        return false;
-    }
+bool IsPreviousWordCaptureCurrent(const InputBuffer::PreviousWordCapture& capture) {
+    std::lock_guard<std::mutex> lock(g_inputBufferMutex);
+    return g_inputBuffer.IsCaptureCurrent(capture);
+}
 
-    size_t wordStart = wordEnd;
-    while (wordStart > 0 && !IsWordSeparatorChar(g_inputBuffer[wordStart - 1])) {
-        --wordStart;
-    }
-    if (wordStart >= wordEnd) {
-        return false;
-    }
-
-    const std::wstring capturedWord = g_inputBuffer.substr(wordStart, wordEnd - wordStart);
-    const std::wstring capturedTrailing = g_inputBuffer.substr(wordEnd);
-    g_inputBuffer.erase(wordStart);
-
-    if (word) {
-        *word = capturedWord;
-    }
-    if (trailing) {
-        *trailing = capturedTrailing;
-    }
-    if (deleteChars) {
-        *deleteChars = capturedWord.size() + capturedTrailing.size();
-    }
-    return true;
+bool CommitPreviousWordReplacement(const InputBuffer::PreviousWordCapture& capture, const std::wstring& replacement) {
+    std::lock_guard<std::mutex> lock(g_inputBufferMutex);
+    return g_inputBuffer.CommitReplacement(capture, replacement);
 }
 
 bool ImportScriptFileToDirectory(const std::wstring& scriptsDirectory,
@@ -1487,9 +1511,11 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
 
-            std::wstring sourceName = result->hasSelection
-                ? T(L"app.status.selection")
-                : (result->previousWordMode ? T(L"app.status.previous_word") : T(L"app.status.full_text"));
+            std::wstring sourceName = result->clipboardMode
+                ? T(L"app.status.clipboard")
+                : (result->hasSelection
+                    ? T(L"app.status.selection")
+                    : (result->previousWordMode ? T(L"app.status.previous_word") : T(L"app.status.full_text")));
             AppendLog(std::wstring(T(L"app.log.script.source_prefix")) + sourceName
                 + T(L"app.log.script.source_chars_prefix") + std::to_wstring(result->sourceText.size()) + L".");
 
@@ -1501,9 +1527,7 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                     return 0;
                 }
                 if (result->previousWordMode) {
-                    const std::wstring restoreText = result->sourceText + result->previousWordTrailing;
-                    m_textBridge.SetSelectedText(restoreText);
-                    AppendInputBufferText(restoreText);
+                    AppendLog(T(L"app.log.script.previous_word_not_changed"));
                 }
                 const std::wstring statusMessage = std::wstring(T(L"app.status.script_error_prefix")) + result->scriptName;
                 const std::wstring dialogMessage = std::wstring(T(L"app.status.script_label")) + result->scriptName
@@ -1518,33 +1542,41 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             }
 
             bool replaceOk = false;
-            if (result->previousWordMode) {
+            bool previousWordSelected = false;
+            if (result->clipboardMode) {
+                replaceOk = CopyTextToClipboard(m_hWnd, result->outputText);
+            } else if (result->previousWordMode) {
                 const std::wstring mergedText = result->outputText + result->previousWordTrailing;
-                replaceOk = m_textBridge.SetSelectedText(mergedText);
+                if (IsPreviousWordCaptureCurrent(result->previousWordCapture)) {
+                    previousWordSelected = m_textBridge.SelectPreviousCharacters(result->previousWordCapture.deleteChars);
+                    if (previousWordSelected) {
+                        replaceOk = m_textBridge.SetSelectedText(mergedText);
+                        if (replaceOk) {
+                            replaceOk = CommitPreviousWordReplacement(result->previousWordCapture, mergedText);
+                        }
+                    }
+                }
             } else {
                 replaceOk = result->hasSelection
                     ? m_textBridge.SetSelectedText(result->outputText)
                     : m_textBridge.SetAllText(result->outputText);
             }
             if (!replaceOk) {
-                if (result->previousWordMode) {
-                    const std::wstring restoreText = result->sourceText + result->previousWordTrailing;
-                    m_textBridge.SetSelectedText(restoreText);
-                    AppendInputBufferText(restoreText);
+                if (result->previousWordMode && previousWordSelected) {
+                    m_textBridge.CollapseSelection();
                 }
-                const std::wstring msg = T(L"app.status.active_control_paste_failed");
+                const std::wstring msg = result->clipboardMode
+                    ? T(L"app.status.clipboard_write_failed")
+                    : T(L"app.status.active_control_paste_failed");
                 SetStatusText(msg);
                 AppendLog(std::wstring(T(L"app.log.script.error_prefix")) + result->scriptName + L"\": " + msg);
                 ShowStyledMessage(T(L"app.title.paste_error"), msg);
                 return 0;
             }
-            if (result->previousWordMode) {
-                const std::wstring mergedText = result->outputText + result->previousWordTrailing;
-                AppendInputBufferText(mergedText);
-            }
-
             std::wstring status = std::wstring(T(L"app.status.script_applied_prefix")) + result->scriptName + T(L"app.status.script_applied_middle");
-            if (result->previousWordMode) {
+            if (result->clipboardMode) {
+                status += T(L"app.status.clipboard_text");
+            } else if (result->previousWordMode) {
                 status += T(L"app.status.previous_word_text");
             } else {
                 status += result->hasSelection
@@ -3359,7 +3391,7 @@ void Application::ExecuteSelectedScript() {
         SetStatusText(T(L"app.status.script_disabled"));
         return;
     }
-    ExecuteScript(m_scripts[selectedIndex]);
+    ExecuteScript(m_scripts[selectedIndex], true);
 }
 
 void Application::ExecuteScriptByHotkeyId(int hotkeyId) {
@@ -3373,10 +3405,10 @@ void Application::ExecuteScriptByHotkeyId(int hotkeyId) {
     if (!m_scripts[it->second].manifest.enabled) {
         return;
     }
-    ExecuteScript(m_scripts[it->second]);
+    ExecuteScript(m_scripts[it->second], false);
 }
 
-void Application::ExecuteScript(const RegisteredScript& script) {
+void Application::ExecuteScript(const RegisteredScript& script, bool clipboardOnly) {
     if (m_scriptExecutionInProgress) {
         SetStatusText(T(L"app.status.script_already_running"));
         return;
@@ -3395,6 +3427,7 @@ void Application::ExecuteScript(const RegisteredScript& script) {
     const std::wstring scriptBody = script.manifest.scriptBody;
     const std::wstring commandLine = script.manifest.commandLine;
     const bool fallbackToAllText = m_scriptInputFallbackToAllText;
+    const bool useClipboardOnly = clipboardOnly;
     const TextBridge textBridge = m_textBridge;
     const ScriptRunner scriptRunner = m_scriptRunner;
     const HWND windowHandle = m_hWnd;
@@ -3403,30 +3436,36 @@ void Application::ExecuteScript(const RegisteredScript& script) {
                  scriptBody,
                  commandLine,
                  fallbackToAllText,
+                 useClipboardOnly,
                  textBridge,
                  scriptRunner,
                  windowHandle]() {
         auto* result = new ScriptExecutionTaskResult();
         result->scriptName = scriptName;
+        result->clipboardMode = useClipboardOnly;
 
-        std::wstring selectedText = textBridge.GetSelectedText();
-        bool hasSelection = !selectedText.empty();
+        std::wstring selectedText;
+        bool hasSelection = false;
         bool previousWordMode = false;
         std::wstring previousWordTrailing;
-        std::wstring sourceText = hasSelection ? selectedText : L"";
+        InputBuffer::PreviousWordCapture previousWordCapture;
+        std::wstring sourceText;
 
-        if (!hasSelection) {
-            if (fallbackToAllText) {
-                sourceText = textBridge.GetAllText();
-            } else {
-                std::wstring previousWord;
-                size_t deleteChars = 0;
-                if (ConsumePreviousWordFromInputBuffer(&previousWord, &previousWordTrailing, &deleteChars) && !previousWord.empty()) {
-                    if (textBridge.DeleteCharacters(deleteChars)) {
-                        sourceText = previousWord;
+        if (useClipboardOnly) {
+            ReadTextFromClipboard(windowHandle, &sourceText);
+        } else {
+            selectedText = textBridge.GetSelectedText();
+            hasSelection = !selectedText.empty();
+            sourceText = hasSelection ? selectedText : L"";
+
+            if (!hasSelection) {
+                if (fallbackToAllText) {
+                    sourceText = textBridge.GetAllText();
+                } else {
+                    if (PeekPreviousWordFromInputBuffer(&previousWordCapture) && !previousWordCapture.word.empty()) {
+                        sourceText = previousWordCapture.word;
+                        previousWordTrailing = previousWordCapture.trailing;
                         previousWordMode = true;
-                    } else {
-                        AppendInputBufferText(previousWord + previousWordTrailing);
                     }
                 }
             }
@@ -3436,6 +3475,7 @@ void Application::ExecuteScript(const RegisteredScript& script) {
         result->hasSelection = hasSelection;
         result->previousWordMode = previousWordMode;
         result->previousWordTrailing = previousWordTrailing;
+        result->previousWordCapture = previousWordCapture;
 
         if (sourceText.empty()) {
             result->noTextAvailable = true;

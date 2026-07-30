@@ -51,10 +51,12 @@ set(SOURCES
     src/app/Application.cpp
     src/app/AppUiHelpers.cpp
     src/app/Localization.cpp
+    src/core/common/ClipboardUtils.cpp
     src/core/common/EncodingUtils.cpp
     src/core/common/PowerShellUtils.cpp
     src/core/scripts/ScriptManifest.cpp
     src/core/scripts/ScriptRunner.cpp
+    src/core/text/InputBuffer.cpp
     src/core/text/TextBridge.cpp
     src/core/update/UpdateService.cpp
     src/ui/ToolTip.cpp
@@ -66,10 +68,12 @@ set(HEADERS
     src/app/Application.h
     src/app/AppUiHelpers.h
     src/app/Localization.h
+    src/core/common/ClipboardUtils.h
     src/core/common/EncodingUtils.h
     src/core/common/PowerShellUtils.h
     src/core/scripts/ScriptManifest.h
     src/core/scripts/ScriptRunner.h
+    src/core/text/InputBuffer.h
     src/core/text/TextBridge.h
     src/core/update/UpdateService.h
     src/ui/ToolTip.h
@@ -141,3 +145,18 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
 install(TARGETS ${PROJECT_NAME}
     RUNTIME DESTINATION bin
 )
+
+enable_testing()
+
+add_executable(TextMagicInputBufferTests
+    src/core/text/InputBuffer.cpp
+    tests/InputBufferTests.cpp
+)
+
+target_include_directories(TextMagicInputBufferTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/text
+)
+
+target_compile_features(TextMagicInputBufferTests PRIVATE cxx_std_17)
+
+add_test(NAME TextMagicInputBufferTests COMMAND TextMagicInputBufferTests)

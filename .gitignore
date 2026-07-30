@@ -1,3 +1,5 @@
 build/
-tests/
 .vscode/
+tests/*
+!tests/
+!tests/InputBufferTests.cpp

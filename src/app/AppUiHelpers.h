@@ -6,6 +6,7 @@
 #include <string>
 
 bool CopyTextToClipboard(HWND ownerWindow, const std::wstring& text);
+bool ReadTextFromClipboard(HWND ownerWindow, std::wstring* text);
 void CopyEditSelectionOrAll(HWND editControl);
 bool SaveTextWithDialog(HWND ownerWindow, const std::wstring& text, std::wstring* savedPath, std::wstring* error);
 void FillListBoxWithText(HWND listBox, const std::wstring& text);

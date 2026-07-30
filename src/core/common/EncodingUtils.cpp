@@ -3,7 +3,7 @@
 #include <windows.h>
 
 namespace EncodingUtils {
-std::string WideToUtf8(const std::wstring& text, bool allowAnsiFallback) {
+std::string WideToUtf8(const std::wstring& text) {
     if (text.empty()) {
         return std::string();
     }
@@ -31,10 +31,6 @@ std::string WideToUtf8(const std::wstring& text, bool allowAnsiFallback) {
             nullptr
         );
         return utf8;
-    }
-
-    if (!allowAnsiFallback) {
-        return std::string();
     }
 
     const int ansiSize = WideCharToMultiByte(

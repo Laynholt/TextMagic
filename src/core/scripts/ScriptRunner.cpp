@@ -2,12 +2,15 @@
 
 #include "EncodingUtils.h"
 #include "Localization.h"
-#include "PowerShellUtils.h"
 
 #include <windows.h>
+#include <wincrypt.h>
 
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -44,49 +47,7 @@ std::wstring BytesToWide(const std::string& text) {
         }
     }
 
-    const int requiredSize = MultiByteToWideChar(
-        CP_UTF8,
-        0,
-        text.data(),
-        static_cast<int>(text.size()),
-        nullptr,
-        0
-    );
-    if (requiredSize <= 0) {
-        const int acpSize = MultiByteToWideChar(
-            CP_ACP,
-            0,
-            text.data(),
-            static_cast<int>(text.size()),
-            nullptr,
-            0
-        );
-        if (acpSize <= 0) {
-            return std::wstring();
-        }
-
-        std::wstring fallback(static_cast<size_t>(acpSize), L'\0');
-        MultiByteToWideChar(
-            CP_ACP,
-            0,
-            text.data(),
-            static_cast<int>(text.size()),
-            fallback.data(),
-            acpSize
-        );
-        return fallback;
-    }
-
-    std::wstring result(static_cast<size_t>(requiredSize), L'\0');
-    MultiByteToWideChar(
-        CP_UTF8,
-        0,
-        text.data(),
-        static_cast<int>(text.size()),
-        result.data(),
-        requiredSize
-    );
-    return result;
+    return EncodingUtils::Utf8ToWide(text);
 }
 
 std::string ReadHandleToString(HANDLE handle) {
@@ -108,54 +69,41 @@ std::string ReadHandleToString(HANDLE handle) {
 }
 
 std::string ReadFileToString(const std::wstring& filePath) {
-    std::string output;
-    HANDLE fileHandle = CreateFileW(
-        filePath.c_str(),
-        GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        nullptr,
-        OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL,
-        nullptr
-    );
-    if (fileHandle == INVALID_HANDLE_VALUE) {
-        return output;
-    }
-    output = ReadHandleToString(fileHandle);
-    CloseHandle(fileHandle);
-    return output;
+    std::ifstream input(std::filesystem::path(filePath), std::ios::binary);
+    return {
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>()
+    };
 }
 
 std::wstring Base64Encode(const unsigned char* data, size_t size) {
-    static const char kTable[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    if (!data || size == 0) {
-        return std::wstring();
+    if (!data || size == 0 || size > MAXDWORD) {
+        return {};
     }
 
-    std::wstring encoded;
-    encoded.reserve(((size + 2) / 3) * 4);
-
-    size_t index = 0;
-    while (index < size) {
-        const unsigned int b0 = data[index++];
-        const unsigned int b1 = (index < size) ? data[index++] : 0;
-        const unsigned int b2 = (index < size) ? data[index++] : 0;
-
-        const unsigned int triple = (b0 << 16) | (b1 << 8) | b2;
-        encoded.push_back(static_cast<wchar_t>(kTable[(triple >> 18) & 0x3F]));
-        encoded.push_back(static_cast<wchar_t>(kTable[(triple >> 12) & 0x3F]));
-        encoded.push_back(index - 1 > size ? L'=' : static_cast<wchar_t>(kTable[(triple >> 6) & 0x3F]));
-        encoded.push_back(index > size ? L'=' : static_cast<wchar_t>(kTable[triple & 0x3F]));
+    constexpr DWORD flags = CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF;
+    DWORD outputLength = 0;
+    if (!CryptBinaryToStringW(
+            data,
+            static_cast<DWORD>(size),
+            flags,
+            nullptr,
+            &outputLength)) {
+        return {};
     }
 
-    const size_t mod = size % 3;
-    if (mod == 1) {
-        encoded[encoded.size() - 1] = L'=';
-        encoded[encoded.size() - 2] = L'=';
-    } else if (mod == 2) {
-        encoded[encoded.size() - 1] = L'=';
+    std::wstring encoded(outputLength, L'\0');
+    if (!CryptBinaryToStringW(
+            data,
+            static_cast<DWORD>(size),
+            flags,
+            encoded.data(),
+            &outputLength)) {
+        return {};
     }
-
+    if (!encoded.empty() && encoded.back() == L'\0') {
+        encoded.pop_back();
+    }
     return encoded;
 }
 }
@@ -427,7 +375,7 @@ bool ScriptRunner::ExecutePowerShellScript(
     }
 
     const std::wstring commandLine =
-        std::wstring(PowerShellUtils::GetExecutableName())
+        std::wstring(L"powershell.exe")
         + L" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand "
         + encodedCommand;
 

@@ -104,6 +104,7 @@ if(WIN32)
         ole32
         oleaut32
         shell32
+        crypt32
         uxtheme
         user32
         winhttp
@@ -177,3 +178,24 @@ target_include_directories(TextMagicLocalizationTests PRIVATE
 target_compile_features(TextMagicLocalizationTests PRIVATE cxx_std_17)
 
 add_test(NAME TextMagicLocalizationTests COMMAND TextMagicLocalizationTests)
+
+add_executable(TextMagicScriptRunnerTests
+    src/app/Localization.cpp
+    src/core/common/EncodingUtils.cpp
+    src/core/common/PowerShellUtils.cpp
+    src/core/scripts/ScriptRunner.cpp
+    tests/ScriptRunnerTests.cpp
+    ${TM_EMBEDDED_LANG_HEADER}
+)
+
+target_include_directories(TextMagicScriptRunnerTests PRIVATE
+    ${CMAKE_BINARY_DIR}/generated
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/scripts
+)
+
+target_compile_features(TextMagicScriptRunnerTests PRIVATE cxx_std_17)
+target_link_libraries(TextMagicScriptRunnerTests PRIVATE crypt32)
+
+add_test(NAME TextMagicScriptRunnerTests COMMAND TextMagicScriptRunnerTests)

@@ -374,7 +374,7 @@ bool UpdateService::LaunchUpdaterProcess(DWORD currentProcessId,
     script << L"Remove-Item -LiteralPath $download -Force -ErrorAction SilentlyContinue;";
 
     std::wstring commandLine =
-        std::wstring(PowerShellUtils::GetExecutableName()) + L" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command \"" +
+        L"powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command \"" +
         script.str() + L"\"";
 
     STARTUPINFOW startupInfo = {};

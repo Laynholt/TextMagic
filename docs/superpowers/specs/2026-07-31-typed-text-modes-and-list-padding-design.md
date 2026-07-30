@@ -81,15 +81,41 @@ The parent background provides the visible padding. This avoids owner-drawing li
 items and preserves native selection, scrolling, keyboard navigation, context
 menus, and accessibility behavior.
 
+## Fullscreen hotkey suppression
+
+Add an unchecked-by-default option to the More menu:
+
+- Russian: `Отключать горячие клавиши в полноэкранных приложениях`.
+- English: `Disable hotkeys in fullscreen applications`.
+
+Persist the option in the existing INI settings file. When enabled, both native
+and hook-based script hotkeys stop before script execution if the foreground
+window covers its monitor's complete monitor rectangle, including the taskbar
+area. A normal maximized window that only covers the monitor work area is not
+treated as fullscreen.
+
+The check uses the foreground window and its nearest monitor. TextMagic's own
+windows, the desktop, invalid/minimized windows, and ordinary maximized windows
+are not fullscreen targets. Suppression performs no clipboard access, script
+launch, status change, or log entry.
+
+An application executable blacklist is a possible later extension of the same
+pre-execution gate, but process enumeration, executable pickers, storage, and UI
+for that feature are outside this change.
+
 ## Verification
 
 - Unit-test complete-session capture, replacement commit, Backspace behavior, and
   full reset on 20,000-character overflow.
 - Unit-test the 500-character replacement-strategy boundary.
+- Unit-test fullscreen rectangle classification, including a true fullscreen
+  rectangle and a normal maximized work-area rectangle.
 - Build the Debug configuration and run the existing CTest suite.
 - Manually verify both modes and both replacement paths in a normal editor and
   PowerShell.
 - Visually verify script-list and log-list padding.
+- Manually verify that the enabled fullscreen option suppresses a script hotkey
+  in a fullscreen application but not in a normal maximized window.
 
 ## Alternatives rejected
 
@@ -99,3 +125,5 @@ menus, and accessibility behavior.
 - Clipboard replacement: faster for very large text but weakens terminal behavior
   and clipboard isolation.
 - Owner-drawn list boxes: more code than required for a small visual inset.
+- Building the executable blacklist now: speculative UI and persistence that are
+  unnecessary for fullscreen suppression.

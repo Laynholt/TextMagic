@@ -3,7 +3,19 @@
 #include "ClipboardUtils.h"
 
 #include <cwchar>
+#include <limits>
+#include <vector>
+
 namespace {
+constexpr size_t DIRECT_BACKSPACE_LIMIT = 500;
+
+constexpr bool ShouldSelectBeforeDelete(size_t count) {
+    return count > DIRECT_BACKSPACE_LIMIT;
+}
+
+static_assert(!ShouldSelectBeforeDelete(500));
+static_assert(ShouldSelectBeforeDelete(501));
+
 bool IsModifierPressed(int virtualKey) {
     return (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
 }
@@ -80,7 +92,17 @@ bool TextBridge::DeleteCharacters(size_t count) const {
     if (count == 0) {
         return true;
     }
-    return SendRepeatedKey(VK_BACK, count);
+    if (!ShouldSelectBeforeDelete(count)) {
+        return SendRepeatedKey(VK_BACK, count);
+    }
+    if (!SelectPreviousCharacters(count)) {
+        return false;
+    }
+    if (SendKey(VK_BACK)) {
+        return true;
+    }
+    SendKey(VK_RIGHT);
+    return false;
 }
 
 std::wstring TextBridge::CopyFromActiveControl(bool selectAll) const {
@@ -202,6 +224,51 @@ bool TextBridge::SendRepeatedKey(WORD virtualKey, size_t count) const {
         }
     }
     return true;
+}
+
+bool TextBridge::SelectPreviousCharacters(size_t count) const {
+    if (count > ((std::numeric_limits<UINT>::max)() - 2) / 2) {
+        return false;
+    }
+
+    std::vector<INPUT> inputs;
+    inputs.reserve(2 + count * 2);
+
+    INPUT shiftDown = {};
+    shiftDown.type = INPUT_KEYBOARD;
+    shiftDown.ki.wVk = VK_SHIFT;
+    inputs.push_back(shiftDown);
+
+    for (size_t i = 0; i < count; ++i) {
+        INPUT leftDown = {};
+        leftDown.type = INPUT_KEYBOARD;
+        leftDown.ki.wVk = VK_LEFT;
+        inputs.push_back(leftDown);
+
+        INPUT leftUp = leftDown;
+        leftUp.ki.dwFlags = KEYEVENTF_KEYUP;
+        inputs.push_back(leftUp);
+    }
+
+    INPUT shiftUp = shiftDown;
+    shiftUp.ki.dwFlags = KEYEVENTF_KEYUP;
+    inputs.push_back(shiftUp);
+
+    const UINT sent = SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
+    if (sent == inputs.size()) {
+        return true;
+    }
+
+    INPUT cleanup[3] = {};
+    cleanup[0].type = INPUT_KEYBOARD;
+    cleanup[0].ki.wVk = VK_SHIFT;
+    cleanup[0].ki.dwFlags = KEYEVENTF_KEYUP;
+    cleanup[1].type = INPUT_KEYBOARD;
+    cleanup[1].ki.wVk = VK_RIGHT;
+    cleanup[2] = cleanup[1];
+    cleanup[2].ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(3, cleanup, sizeof(INPUT));
+    return false;
 }
 
 bool TextBridge::WaitForClipboardChange(DWORD initialSequence, int maxAttempts, int sleepMs) {

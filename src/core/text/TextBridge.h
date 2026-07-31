@@ -23,6 +23,7 @@ private:
     bool SendKey(WORD virtualKey) const;
     UINT SendUnicodeChar(wchar_t ch) const;
     bool SendRepeatedKey(WORD virtualKey, size_t count) const;
+    bool SelectPreviousCharacters(size_t count) const;
 
     static bool WaitForClipboardChange(DWORD initialSequence, int maxAttempts = 80, int sleepMs = 10);
 };

@@ -4,11 +4,11 @@
 #include "TextBridgeInputUtils.h"
 
 #include <cwchar>
+#include <uiautomation.h>
+#include <wrl/client.h>
 
 namespace {
-constexpr size_t SELECTION_CHUNK_SIZE = 32;
-constexpr DWORD SELECTION_CHUNK_DELAY_MS = 1;
-constexpr DWORD SELECTION_SETTLE_DELAY_MS = 10;
+constexpr int TARGET_INPUT_IDLE_TIMEOUT_MS = 1000;
 
 bool IsModifierPressed(int virtualKey) {
     return (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
@@ -220,9 +220,45 @@ bool TextBridge::SendRepeatedKey(WORD virtualKey, size_t count) const {
 }
 
 bool TextBridge::SelectPreviousCharacters(size_t count) const {
+    const HWND targetWindow = GetForegroundWindow();
+    Microsoft::WRL::ComPtr<IUIAutomation> automation;
+    Microsoft::WRL::ComPtr<IUIAutomationElement> targetElement;
+    Microsoft::WRL::ComPtr<IUIAutomationWindowPattern> targetWindowPattern;
+    if (!targetWindow
+        || FAILED(CoCreateInstance(
+            __uuidof(CUIAutomation),
+            nullptr,
+            CLSCTX_INPROC_SERVER,
+            __uuidof(IUIAutomation),
+            reinterpret_cast<void**>(automation.GetAddressOf())
+        ))
+        || FAILED(automation->ElementFromHandle(targetWindow, targetElement.GetAddressOf()))
+        || FAILED(targetElement->GetCurrentPatternAs(
+            UIA_WindowPatternId,
+            __uuidof(IUIAutomationWindowPattern),
+            reinterpret_cast<void**>(targetWindowPattern.GetAddressOf())
+        ))) {
+        return false;
+    }
+
     if (!SendKeyDown(VK_SHIFT)) {
         return false;
     }
+
+    const auto failSelection = [this](bool leftMayBeDown, bool hasSelection) {
+        bool leftReleased = !leftMayBeDown || SendKeyUp(VK_LEFT);
+        if (!leftReleased) {
+            leftReleased = SendKeyUp(VK_LEFT);
+        }
+        bool shiftReleased = SendKeyUp(VK_SHIFT);
+        if (!shiftReleased) {
+            shiftReleased = SendKeyUp(VK_SHIFT);
+        }
+        if (leftReleased && shiftReleased && hasSelection && !SendKey(VK_RIGHT)) {
+            SendKeyUp(VK_RIGHT);
+        }
+        return false;
+    };
 
     size_t selected = 0;
     for (; selected < count; ++selected) {
@@ -234,33 +270,22 @@ bool TextBridge::SelectPreviousCharacters(size_t count) const {
 
         const UINT sent = SendInput(2, inputs, sizeof(INPUT));
         if (sent != 2) {
-            bool leftReleased = sent == 0 || SendKeyUp(VK_LEFT);
-            if (!leftReleased) {
-                leftReleased = SendKeyUp(VK_LEFT);
-            }
-            bool shiftReleased = SendKeyUp(VK_SHIFT);
-            if (!shiftReleased) {
-                shiftReleased = SendKeyUp(VK_SHIFT);
-            }
-            if (leftReleased && shiftReleased && (selected > 0 || sent > 0)
-                && !SendKey(VK_RIGHT)) {
-                SendKeyUp(VK_RIGHT);
-            }
-            return false;
+            return failSelection(sent > 0, selected > 0 || sent > 0);
         }
-        if ((selected + 1) % SELECTION_CHUNK_SIZE == 0) {
-            Sleep(SELECTION_CHUNK_DELAY_MS);
+        if (TextBridgeInputUtils::ShouldWaitForSelectionConsumption(selected + 1, count)) {
+            BOOL targetIdle = FALSE;
+            if (FAILED(targetWindowPattern->WaitForInputIdle(
+                    TARGET_INPUT_IDLE_TIMEOUT_MS,
+                    &targetIdle
+                ))
+                || !targetIdle) {
+                return failSelection(false, true);
+            }
         }
     }
 
-    Sleep(SELECTION_SETTLE_DELAY_MS);
     if (!SendKeyUp(VK_SHIFT)) {
-        SendKeyUp(VK_LEFT);
-        const bool shiftReleased = SendKeyUp(VK_SHIFT);
-        if (shiftReleased && !SendKey(VK_RIGHT)) {
-            SendKeyUp(VK_RIGHT);
-        }
-        return false;
+        return failSelection(false, true);
     }
     return true;
 }

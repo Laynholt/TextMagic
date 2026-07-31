@@ -16,10 +16,10 @@ int main() {
     using ScriptInputSource::Choose;
     using ScriptInputSource::Type;
 
-    Expect(Choose(false, true, true) == Type::Selection,
-           "explicit selection must take precedence over tracked input");
-    Expect(Choose(false, false, true) == Type::TrackedInput,
-           "tracked input must be the no-selection fallback");
+    Expect(Choose(false, true, true) == Type::TrackedInput,
+           "valid tracked input must avoid false editor selections");
+    Expect(Choose(false, true, false) == Type::Selection,
+           "selection remains the fallback without tracked input");
     Expect(Choose(false, false, false) == Type::None,
            "missing selection and tracked input must not fall back to the whole field");
     Expect(Choose(true, true, true) == Type::Clipboard,

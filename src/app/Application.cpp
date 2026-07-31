@@ -3528,7 +3528,7 @@ void Application::ExecuteScript(const RegisteredScript& script, bool clipboardOn
         bool inputBufferMode = false;
         std::wstring sourceText;
 
-        if (!useClipboardOnly) {
+        if (!useClipboardOnly && !hasInputCapture) {
             selectedText = textBridge.GetSelectedText();
             hasSelection = !selectedText.empty();
         }

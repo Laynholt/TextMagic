@@ -11,8 +11,8 @@ enum class Type {
 constexpr Type Choose(bool clipboardOnly, bool hasSelection, bool hasTrackedInput) noexcept {
     return clipboardOnly
         ? Type::Clipboard
-        : (hasSelection
-            ? Type::Selection
-            : (hasTrackedInput ? Type::TrackedInput : Type::None));
+        : (hasTrackedInput
+            ? Type::TrackedInput
+            : (hasSelection ? Type::Selection : Type::None));
 }
 }

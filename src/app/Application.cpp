@@ -1416,6 +1416,14 @@ int Application::Run() {
         if (m_toolTip) {
             m_toolTip->RelayEvent(msg);
         }
+        const HWND activeInfoWindow = GetActiveWindow();
+        if (activeInfoWindow
+            && (activeInfoWindow == m_hAboutWindow
+                || activeInfoWindow == m_hLogsWindow
+                || activeInfoWindow == m_hHotkeyExclusionsWindow)
+            && IsDialogMessageW(activeInfoWindow, &msg)) {
+            continue;
+        }
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
@@ -3779,6 +3787,9 @@ void Application::CreateOrActivateInfoWindow(InfoWindowKind kind, HWND& targetHa
         UpdateInfoWindowText(kind, bodyText);
         ShowWindow(targetHandle, SW_SHOWNORMAL);
         SetForegroundWindow(targetHandle);
+        if (kind == InfoWindowKind::HotkeyExclusions) {
+            SetFocus(GetDlgItem(targetHandle, ID_INFO_FULLSCREEN_CHECKBOX));
+        }
         return;
     }
 
@@ -3827,6 +3838,9 @@ void Application::CreateOrActivateInfoWindow(InfoWindowKind kind, HWND& targetHa
     targetHandle = infoWindow;
     ShowWindow(infoWindow, SW_SHOWNORMAL);
     UpdateWindow(infoWindow);
+    if (kind == InfoWindowKind::HotkeyExclusions) {
+        SetFocus(state->fullscreenCheckbox);
+    }
 }
 
 void Application::OnInfoWindowClosed(InfoWindowKind kind) {
@@ -4075,7 +4089,7 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
 
             state->closeButton = CreateWindowExW(
                 0, L"BUTTON", T(L"info.button.close"),
-                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
                 0, 0, 100, 34,
                 hWnd, reinterpret_cast<HMENU>(ID_INFO_CLOSE), GetModuleHandleW(nullptr), nullptr
             );

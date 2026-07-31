@@ -50,6 +50,7 @@ set(SOURCES
     src/app/main.cpp
     src/app/Application.cpp
     src/app/AppUiHelpers.cpp
+    src/app/FullscreenUtils.cpp
     src/app/Localization.cpp
     src/core/common/ClipboardUtils.cpp
     src/core/common/EncodingUtils.cpp
@@ -140,6 +141,20 @@ target_include_directories(TextMagicInputBufferTests PRIVATE
 target_compile_features(TextMagicInputBufferTests PRIVATE cxx_std_17)
 
 add_test(NAME TextMagicInputBufferTests COMMAND TextMagicInputBufferTests)
+
+add_executable(TextMagicFullscreenUtilsTests
+    src/app/FullscreenUtils.cpp
+    tests/FullscreenUtilsTests.cpp
+)
+
+target_include_directories(TextMagicFullscreenUtilsTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+)
+
+target_compile_features(TextMagicFullscreenUtilsTests PRIVATE cxx_std_17)
+target_link_libraries(TextMagicFullscreenUtilsTests PRIVATE user32)
+
+add_test(NAME TextMagicFullscreenUtilsTests COMMAND TextMagicFullscreenUtilsTests)
 
 add_executable(TextMagicLocalizationTests
     src/app/Localization.cpp

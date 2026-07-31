@@ -177,6 +177,7 @@ private:
     bool m_updateInProgress = false;
     bool m_archiveTaskInProgress = false;
     bool m_scriptInputAllText = false;
+    bool m_disableHotkeysInFullscreen = false;
     UINT m_activeMoreSubMenuHeaderId = 0;
     UINT m_hoveredMorePopupItemId = 0;
     UINT m_hoveredMoreSubPopupItemId = 0;

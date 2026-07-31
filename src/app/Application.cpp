@@ -2,6 +2,7 @@
 
 #include "AppUiHelpers.h"
 #include "ClipboardUtils.h"
+#include "FullscreenUtils.h"
 #include "Localization.h"
 #include "ToolTip.h"
 #include "UiRenderer.h"
@@ -61,7 +62,8 @@ enum MenuId {
     ID_MENU_LANGUAGE_LABEL = 2016,
     ID_MENU_INPUT_MODE_PREVIOUS_WORD = 2017,
     ID_MENU_INPUT_MODE_ALL_TEXT = 2018,
-    ID_MENU_INPUT_MODE_LABEL = 2019
+    ID_MENU_INPUT_MODE_LABEL = 2019,
+    ID_MENU_DISABLE_HOTKEYS_FULLSCREEN = 2020
 };
 
 constexpr UINT ID_MENU_LANGUAGE_DYNAMIC_FIRST = 2300;
@@ -130,6 +132,8 @@ constexpr const wchar_t* LANGUAGE_SETTINGS_FILE_NAME = TM_APP_NAME_W L".settings
 constexpr const wchar_t* LANGUAGE_SETTINGS_SECTION = L"ui";
 constexpr const wchar_t* LANGUAGE_SETTINGS_KEY = L"language";
 constexpr const wchar_t* SCRIPT_INPUT_SETTINGS_KEY = L"script_input_mode";
+constexpr const wchar_t* DISABLE_FULLSCREEN_HOTKEYS_SETTINGS_KEY =
+    L"disable_hotkeys_in_fullscreen";
 constexpr const wchar_t* SCRIPT_INPUT_MODE_PREVIOUS_WORD = L"previous_word";
 constexpr const wchar_t* SCRIPT_INPUT_MODE_ALL_TEXT = L"all_text";
 constexpr int MORE_POPUP_ITEM_HEIGHT = 34;
@@ -946,6 +950,18 @@ void LoadScriptInputModeSetting(const std::wstring& settingsPath, bool* allTextI
     *allTextInputMode = ParseScriptInputAllTextSetting(value);
 }
 
+void LoadDisableFullscreenHotkeysSetting(const std::wstring& settingsPath, bool* disabled) {
+    if (!disabled) {
+        return;
+    }
+    *disabled = GetPrivateProfileIntW(
+        LANGUAGE_SETTINGS_SECTION,
+        DISABLE_FULLSCREEN_HOTKEYS_SETTINGS_KEY,
+        0,
+        settingsPath.c_str()
+    ) != 0;
+}
+
 bool SaveLanguageSetting(const std::wstring& settingsPath) {
     const std::wstring value = Localization::GetCurrentLanguageCode().empty()
         ? L"ru"
@@ -963,6 +979,15 @@ bool SaveScriptInputModeSetting(const std::wstring& settingsPath, bool allTextIn
         LANGUAGE_SETTINGS_SECTION,
         SCRIPT_INPUT_SETTINGS_KEY,
         allTextInputMode ? SCRIPT_INPUT_MODE_ALL_TEXT : SCRIPT_INPUT_MODE_PREVIOUS_WORD,
+        settingsPath.c_str()
+    ) != FALSE;
+}
+
+bool SaveDisableFullscreenHotkeysSetting(const std::wstring& settingsPath, bool disabled) {
+    return WritePrivateProfileStringW(
+        LANGUAGE_SETTINGS_SECTION,
+        DISABLE_FULLSCREEN_HOTKEYS_SETTINGS_KEY,
+        disabled ? L"1" : L"0",
         settingsPath.c_str()
     ) != FALSE;
 }
@@ -1033,6 +1058,8 @@ const wchar_t* GetMenuItemText(UINT itemId) {
         return T(L"menu.input_mode.previous_word");
     case ID_MENU_INPUT_MODE_ALL_TEXT:
         return T(L"menu.input_mode.all_text");
+    case ID_MENU_DISABLE_HOTKEYS_FULLSCREEN:
+        return T(L"menu.disable_hotkeys_fullscreen");
     case ID_MENU_MORE_SEPARATOR:
         return L"";
     default:
@@ -1058,6 +1085,7 @@ bool IsStyledMenuItem(UINT itemId) {
         || itemId == ID_MENU_INPUT_MODE_LABEL
         || itemId == ID_MENU_INPUT_MODE_PREVIOUS_WORD
         || itemId == ID_MENU_INPUT_MODE_ALL_TEXT
+        || itemId == ID_MENU_DISABLE_HOTKEYS_FULLSCREEN
         || itemId == ID_MENU_TRAY_EXIT
         || itemId == ID_MENU_MORE_SEPARATOR
         || IsDynamicLanguageMenuId(itemId);
@@ -1266,6 +1294,7 @@ bool Application::Initialize(HINSTANCE hInstance) {
     const std::wstring settingsPath = GetLanguageSettingsPath(executableDirectory);
     LoadLanguageSetting(settingsPath);
     LoadScriptInputModeSetting(settingsPath, &m_scriptInputAllText);
+    LoadDisableFullscreenHotkeysSetting(settingsPath, &m_disableHotkeysInFullscreen);
 
     m_singleInstanceMutex = CreateMutexW(nullptr, FALSE, SINGLE_INSTANCE_MUTEX_NAME);
     if (m_singleInstanceMutex && GetLastError() == ERROR_ALREADY_EXISTS) {
@@ -2175,6 +2204,13 @@ void Application::OnMenuCommand(UINT menuId) {
     case ID_MENU_INPUT_MODE_ALL_TEXT:
         SetScriptInputMode(true);
         break;
+    case ID_MENU_DISABLE_HOTKEYS_FULLSCREEN:
+        m_disableHotkeysInFullscreen = !m_disableHotkeysInFullscreen;
+        SaveDisableFullscreenHotkeysSetting(
+            GetLanguageSettingsPath(GetExecutableDirectory()),
+            m_disableHotkeysInFullscreen
+        );
+        break;
     case ID_MENU_TRAY_EXIT:
         ExitApplication();
         break;
@@ -2451,6 +2487,8 @@ std::vector<UiRenderer::PopupMenuItem> Application::BuildMainMorePopupItems() co
         { ID_MENU_LANGUAGE_LABEL, GetMenuItemText(ID_MENU_LANGUAGE_LABEL), false, false, true },
         { ID_MENU_MORE_SEPARATOR, L"", true, false, false },
         { ID_MENU_INPUT_MODE_LABEL, GetMenuItemText(ID_MENU_INPUT_MODE_LABEL), false, false, true },
+        { ID_MENU_MORE_SEPARATOR, L"", true, false, false },
+        { ID_MENU_DISABLE_HOTKEYS_FULLSCREEN, GetMenuItemText(ID_MENU_DISABLE_HOTKEYS_FULLSCREEN), false, m_disableHotkeysInFullscreen, false },
         { ID_MENU_MORE_SEPARATOR, L"", true, false, false },
         { ID_MENU_MORE_ABOUT, GetMenuItemText(ID_MENU_MORE_ABOUT), false, false, false }
     };
@@ -3423,6 +3461,10 @@ void Application::ExecuteSelectedScript() {
 }
 
 void Application::ExecuteScriptByHotkeyId(int hotkeyId) {
+    if (m_disableHotkeysInFullscreen
+        && FullscreenUtils::IsForegroundWindowFullscreen(m_hWnd)) {
+        return;
+    }
     const auto it = m_scriptIndexByHotkeyId.find(hotkeyId);
     if (it == m_scriptIndexByHotkeyId.end()) {
         return;

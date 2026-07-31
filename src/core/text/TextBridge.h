@@ -18,6 +18,7 @@ private:
     bool TryCopyShortcut(int waitAttempts, int waitSleepMs, std::wstring* copied) const;
     bool SendCtrlShortcut(WORD virtualKey) const;
     bool SendKey(WORD virtualKey) const;
+    bool SendKeyDown(WORD virtualKey) const;
     bool SendKeyUp(WORD virtualKey) const;
     UINT SendUnicodeChar(wchar_t ch) const;
     bool SendRepeatedKey(WORD virtualKey, size_t count) const;

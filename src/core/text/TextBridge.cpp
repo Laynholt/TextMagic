@@ -4,18 +4,11 @@
 #include "TextBridgeInputUtils.h"
 
 #include <cwchar>
-#include <limits>
-#include <vector>
 
 namespace {
-constexpr size_t DIRECT_BACKSPACE_LIMIT = 500;
-
-constexpr bool ShouldSelectBeforeDelete(size_t count) {
-    return count > DIRECT_BACKSPACE_LIMIT;
-}
-
-static_assert(!ShouldSelectBeforeDelete(500));
-static_assert(ShouldSelectBeforeDelete(501));
+constexpr size_t SELECTION_CHUNK_SIZE = 32;
+constexpr DWORD SELECTION_CHUNK_DELAY_MS = 1;
+constexpr DWORD SELECTION_SETTLE_DELAY_MS = 10;
 
 bool IsModifierPressed(int virtualKey) {
     return (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
@@ -85,7 +78,7 @@ bool TextBridge::DeleteCharacters(size_t count) const {
     if (count == 0) {
         return true;
     }
-    if (!ShouldSelectBeforeDelete(count)) {
+    if (!TextBridgeInputUtils::ShouldSelectBeforeDelete(count)) {
         return SendRepeatedKey(VK_BACK, count);
     }
     if (!SelectPreviousCharacters(count)) {
@@ -186,10 +179,16 @@ bool TextBridge::SendKey(WORD virtualKey) const {
     inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
     const UINT sent = SendInput(2, inputs, sizeof(INPUT));
     if (sent == 1) {
-        SendKeyUp(virtualKey);
-        return true;
+        return SendKeyUp(virtualKey);
     }
     return sent == 2;
+}
+
+bool TextBridge::SendKeyDown(WORD virtualKey) const {
+    INPUT input = {};
+    input.type = INPUT_KEYBOARD;
+    input.ki.wVk = virtualKey;
+    return SendInput(1, &input, sizeof(INPUT)) == 1;
 }
 
 bool TextBridge::SendKeyUp(WORD virtualKey) const {
@@ -221,52 +220,49 @@ bool TextBridge::SendRepeatedKey(WORD virtualKey, size_t count) const {
 }
 
 bool TextBridge::SelectPreviousCharacters(size_t count) const {
-    if (count > ((std::numeric_limits<UINT>::max)() - 2) / 2) {
+    if (!SendKeyDown(VK_SHIFT)) {
         return false;
     }
 
-    std::vector<INPUT> inputs;
-    inputs.reserve(2 + count * 2);
+    size_t selected = 0;
+    for (; selected < count; ++selected) {
+        INPUT inputs[2] = {};
+        inputs[0].type = INPUT_KEYBOARD;
+        inputs[0].ki.wVk = VK_LEFT;
+        inputs[1] = inputs[0];
+        inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
 
-    INPUT shiftDown = {};
-    shiftDown.type = INPUT_KEYBOARD;
-    shiftDown.ki.wVk = VK_SHIFT;
-    inputs.push_back(shiftDown);
-
-    for (size_t i = 0; i < count; ++i) {
-        INPUT leftDown = {};
-        leftDown.type = INPUT_KEYBOARD;
-        leftDown.ki.wVk = VK_LEFT;
-        inputs.push_back(leftDown);
-
-        INPUT leftUp = leftDown;
-        leftUp.ki.dwFlags = KEYEVENTF_KEYUP;
-        inputs.push_back(leftUp);
+        const UINT sent = SendInput(2, inputs, sizeof(INPUT));
+        if (sent != 2) {
+            bool leftReleased = sent == 0 || SendKeyUp(VK_LEFT);
+            if (!leftReleased) {
+                leftReleased = SendKeyUp(VK_LEFT);
+            }
+            bool shiftReleased = SendKeyUp(VK_SHIFT);
+            if (!shiftReleased) {
+                shiftReleased = SendKeyUp(VK_SHIFT);
+            }
+            if (leftReleased && shiftReleased && (selected > 0 || sent > 0)
+                && !SendKey(VK_RIGHT)) {
+                SendKeyUp(VK_RIGHT);
+            }
+            return false;
+        }
+        if ((selected + 1) % SELECTION_CHUNK_SIZE == 0) {
+            Sleep(SELECTION_CHUNK_DELAY_MS);
+        }
     }
 
-    INPUT shiftUp = shiftDown;
-    shiftUp.ki.dwFlags = KEYEVENTF_KEYUP;
-    inputs.push_back(shiftUp);
-
-    const UINT sent = SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
-    if (sent == inputs.size()) {
-        return true;
-    }
-
-    const auto cleanup = TextBridgeInputUtils::PlanPartialSelectionCleanup(
-        sent,
-        inputs.size()
-    );
-    if (cleanup.releaseLeft) {
+    Sleep(SELECTION_SETTLE_DELAY_MS);
+    if (!SendKeyUp(VK_SHIFT)) {
         SendKeyUp(VK_LEFT);
+        const bool shiftReleased = SendKeyUp(VK_SHIFT);
+        if (shiftReleased && !SendKey(VK_RIGHT)) {
+            SendKeyUp(VK_RIGHT);
+        }
+        return false;
     }
-    if (cleanup.releaseShift) {
-        SendKeyUp(VK_SHIFT);
-    }
-    if (cleanup.collapseSelection) {
-        SendKey(VK_RIGHT);
-    }
-    return false;
+    return true;
 }
 
 bool TextBridge::WaitForClipboardChange(DWORD initialSequence, int maxAttempts, int sleepMs) {

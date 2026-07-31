@@ -3,23 +3,9 @@
 #include <cstddef>
 
 namespace TextBridgeInputUtils {
-struct SelectionCleanupPlan {
-    bool releaseLeft = false;
-    bool releaseShift = false;
-    bool collapseSelection = false;
-};
+constexpr size_t DIRECT_BACKSPACE_LIMIT = 100;
 
-constexpr SelectionCleanupPlan PlanPartialSelectionCleanup(
-    size_t insertedInputCount,
-    size_t totalInputCount
-) noexcept {
-    if (insertedInputCount >= totalInputCount) {
-        return {};
-    }
-    return {
-        insertedInputCount > 1 && insertedInputCount % 2 == 0,
-        insertedInputCount > 0,
-        insertedInputCount > 1
-    };
+constexpr bool ShouldSelectBeforeDelete(size_t count) noexcept {
+    return count > DIRECT_BACKSPACE_LIMIT;
 }
 }

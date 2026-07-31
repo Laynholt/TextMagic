@@ -4,6 +4,7 @@
 #include "ClipboardUtils.h"
 #include "FullscreenUtils.h"
 #include "Localization.h"
+#include "ScriptInputSource.h"
 #include "ToolTip.h"
 #include "UiRenderer.h"
 #include "InputBuffer.h"
@@ -3462,7 +3463,7 @@ void Application::ExecuteSelectedScript() {
 
 void Application::ExecuteScriptByHotkeyId(int hotkeyId) {
     if (m_disableHotkeysInFullscreen
-        && FullscreenUtils::IsForegroundWindowFullscreen(m_hWnd)) {
+        && FullscreenUtils::IsForegroundWindowFullscreen()) {
         return;
     }
     const auto it = m_scriptIndexByHotkeyId.find(hotkeyId);
@@ -3527,15 +3528,28 @@ void Application::ExecuteScript(const RegisteredScript& script, bool clipboardOn
         bool inputBufferMode = false;
         std::wstring sourceText;
 
-        if (useClipboardOnly) {
-            ClipboardUtils::ReadText(windowHandle, &sourceText);
-        } else if (hasInputCapture) {
-            sourceText = inputCapture.word;
-            inputBufferMode = true;
-        } else {
+        if (!useClipboardOnly) {
             selectedText = textBridge.GetSelectedText();
             hasSelection = !selectedText.empty();
-            sourceText = hasSelection ? selectedText : L"";
+        }
+
+        switch (ScriptInputSource::Choose(
+            useClipboardOnly,
+            hasSelection,
+            hasInputCapture
+        )) {
+        case ScriptInputSource::Type::Clipboard:
+            ClipboardUtils::ReadText(windowHandle, &sourceText);
+            break;
+        case ScriptInputSource::Type::Selection:
+            sourceText = selectedText;
+            break;
+        case ScriptInputSource::Type::TrackedInput:
+            sourceText = inputCapture.word;
+            inputBufferMode = true;
+            break;
+        case ScriptInputSource::Type::None:
+            break;
         }
 
         result->sourceText = sourceText;

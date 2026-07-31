@@ -1,6 +1,7 @@
 #include "TextBridge.h"
 
 #include "ClipboardUtils.h"
+#include "TextBridgeInputUtils.h"
 
 #include <cwchar>
 #include <limits>
@@ -37,20 +38,12 @@ bool TextBridge::WaitForModifiersRelease() const {
     return false;
 }
 
-std::wstring TextBridge::GetAllText() const {
-    return CopyFromActiveControl(true);
-}
-
-bool TextBridge::SetAllText(const std::wstring& text) const {
-    return PasteIntoActiveControl(text, true);
-}
-
 std::wstring TextBridge::GetSelectedText() const {
-    return CopyFromActiveControl(false);
+    return CopyFromActiveControl();
 }
 
 bool TextBridge::SetSelectedText(const std::wstring& text) const {
-    return PasteIntoActiveControl(text, false);
+    return PasteIntoActiveControl(text);
 }
 
 bool TextBridge::TypeText(const std::wstring& text, size_t* typedChars) const {
@@ -105,39 +98,27 @@ bool TextBridge::DeleteCharacters(size_t count) const {
     return false;
 }
 
-std::wstring TextBridge::CopyFromActiveControl(bool selectAll) const {
+std::wstring TextBridge::CopyFromActiveControl() const {
     ClipboardUtils::Snapshot snapshot;
 
     if (!WaitForModifiersRelease()) {
         return L"";
     }
 
-    if (selectAll) {
-        SendCtrlShortcut('A');
-        Sleep(20);
-    }
-
-    const int waitAttempts = selectAll ? 80 : 12;
-    const int waitSleepMs = selectAll ? 10 : 5;
     std::wstring copied;
-    if (TryCopyShortcut(waitAttempts, waitSleepMs, &copied)) {
+    if (TryCopyShortcut(12, 5, &copied)) {
         return copied;
     }
     return L"";
 }
 
-bool TextBridge::PasteIntoActiveControl(const std::wstring& text, bool selectAll) const {
+bool TextBridge::PasteIntoActiveControl(const std::wstring& text) const {
     ClipboardUtils::Snapshot snapshot;
     if (!WaitForModifiersRelease()) {
         return false;
     }
     if (!ClipboardUtils::WriteText(nullptr, text)) {
         return false;
-    }
-
-    if (selectAll) {
-        SendCtrlShortcut('A');
-        Sleep(20);
     }
 
     const bool pasted = SendCtrlShortcut('V');
@@ -203,7 +184,20 @@ bool TextBridge::SendKey(WORD virtualKey) const {
     inputs[1].type = INPUT_KEYBOARD;
     inputs[1].ki.wVk = virtualKey;
     inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
-    return SendInput(2, inputs, sizeof(INPUT)) == 2;
+    const UINT sent = SendInput(2, inputs, sizeof(INPUT));
+    if (sent == 1) {
+        SendKeyUp(virtualKey);
+        return true;
+    }
+    return sent == 2;
+}
+
+bool TextBridge::SendKeyUp(WORD virtualKey) const {
+    INPUT input = {};
+    input.type = INPUT_KEYBOARD;
+    input.ki.wVk = virtualKey;
+    input.ki.dwFlags = KEYEVENTF_KEYUP;
+    return SendInput(1, &input, sizeof(INPUT)) == 1;
 }
 
 UINT TextBridge::SendUnicodeChar(wchar_t ch) const {
@@ -259,15 +253,19 @@ bool TextBridge::SelectPreviousCharacters(size_t count) const {
         return true;
     }
 
-    INPUT cleanup[3] = {};
-    cleanup[0].type = INPUT_KEYBOARD;
-    cleanup[0].ki.wVk = VK_SHIFT;
-    cleanup[0].ki.dwFlags = KEYEVENTF_KEYUP;
-    cleanup[1].type = INPUT_KEYBOARD;
-    cleanup[1].ki.wVk = VK_RIGHT;
-    cleanup[2] = cleanup[1];
-    cleanup[2].ki.dwFlags = KEYEVENTF_KEYUP;
-    SendInput(3, cleanup, sizeof(INPUT));
+    const auto cleanup = TextBridgeInputUtils::PlanPartialSelectionCleanup(
+        sent,
+        inputs.size()
+    );
+    if (cleanup.releaseLeft) {
+        SendKeyUp(VK_LEFT);
+    }
+    if (cleanup.releaseShift) {
+        SendKeyUp(VK_SHIFT);
+    }
+    if (cleanup.collapseSelection) {
+        SendKey(VK_RIGHT);
+    }
     return false;
 }
 

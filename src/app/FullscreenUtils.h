@@ -3,8 +3,9 @@
 #include <windows.h>
 
 namespace FullscreenUtils {
-bool IsFullscreenBounds(const RECT& windowRect,
+bool IsFullscreenBounds(const RECT& extendedFrameBounds,
+                        const RECT& clientBounds,
                         const RECT& monitorRect,
-                        bool ordinaryMaximized);
-bool IsForegroundWindowFullscreen(HWND ignoredWindow);
+                        bool hasExtendedFrameBounds);
+bool IsForegroundWindowFullscreen();
 }

@@ -1,28 +1,31 @@
 #include "FullscreenUtils.h"
 
+#include <dwmapi.h>
+
 namespace FullscreenUtils {
-bool IsFullscreenBounds(const RECT& windowRect,
+bool IsFullscreenBounds(const RECT& extendedFrameBounds,
+                        const RECT& clientBounds,
                         const RECT& monitorRect,
-                        bool ordinaryMaximized) {
-    return !ordinaryMaximized
-        && windowRect.left <= monitorRect.left
-        && windowRect.top <= monitorRect.top
-        && windowRect.right >= monitorRect.right
-        && windowRect.bottom >= monitorRect.bottom;
+                        bool hasExtendedFrameBounds) {
+    const RECT& visibleBounds = hasExtendedFrameBounds ? extendedFrameBounds : clientBounds;
+    return visibleBounds.left <= monitorRect.left
+        && visibleBounds.top <= monitorRect.top
+        && visibleBounds.right >= monitorRect.right
+        && visibleBounds.bottom >= monitorRect.bottom;
 }
 
-bool IsForegroundWindowFullscreen(HWND ignoredWindow) {
+bool IsForegroundWindowFullscreen() {
     const HWND foregroundWindow = GetForegroundWindow();
     if (!foregroundWindow
-        || foregroundWindow == ignoredWindow
         || foregroundWindow == GetDesktopWindow()
         || foregroundWindow == GetShellWindow()
         || IsIconic(foregroundWindow)) {
         return false;
     }
 
-    RECT windowRect = {};
-    if (!GetWindowRect(foregroundWindow, &windowRect)) {
+    DWORD processId = 0;
+    GetWindowThreadProcessId(foregroundWindow, &processId);
+    if (processId == GetCurrentProcessId()) {
         return false;
     }
 
@@ -32,9 +35,33 @@ bool IsForegroundWindowFullscreen(HWND ignoredWindow) {
         return false;
     }
 
-    const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(foregroundWindow, GWL_STYLE));
-    const bool ordinaryMaximized = IsZoomed(foregroundWindow)
-        && (style & WS_OVERLAPPEDWINDOW) == WS_OVERLAPPEDWINDOW;
-    return IsFullscreenBounds(windowRect, monitorInfo.rcMonitor, ordinaryMaximized);
+    RECT extendedFrameBounds = {};
+    const bool hasExtendedFrameBounds = SUCCEEDED(DwmGetWindowAttribute(
+        foregroundWindow,
+        DWMWA_EXTENDED_FRAME_BOUNDS,
+        &extendedFrameBounds,
+        sizeof(extendedFrameBounds)
+    )) && !IsRectEmpty(&extendedFrameBounds);
+
+    RECT clientBounds = {};
+    if (!hasExtendedFrameBounds) {
+        if (!GetClientRect(foregroundWindow, &clientBounds)) {
+            return false;
+        }
+        POINT topLeft = { clientBounds.left, clientBounds.top };
+        POINT bottomRight = { clientBounds.right, clientBounds.bottom };
+        if (!ClientToScreen(foregroundWindow, &topLeft)
+            || !ClientToScreen(foregroundWindow, &bottomRight)) {
+            return false;
+        }
+        clientBounds = { topLeft.x, topLeft.y, bottomRight.x, bottomRight.y };
+    }
+
+    return IsFullscreenBounds(
+        extendedFrameBounds,
+        clientBounds,
+        monitorInfo.rcMonitor,
+        hasExtendedFrameBounds
+    );
 }
 }

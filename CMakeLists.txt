@@ -84,6 +84,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
     comctl32
+    dwmapi
     gdi32
     gdiplus
     ole32
@@ -142,6 +143,30 @@ target_compile_features(TextMagicInputBufferTests PRIVATE cxx_std_17)
 
 add_test(NAME TextMagicInputBufferTests COMMAND TextMagicInputBufferTests)
 
+add_executable(TextMagicScriptInputSourceTests
+    tests/ScriptInputSourceTests.cpp
+)
+
+target_include_directories(TextMagicScriptInputSourceTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+)
+
+target_compile_features(TextMagicScriptInputSourceTests PRIVATE cxx_std_17)
+
+add_test(NAME TextMagicScriptInputSourceTests COMMAND TextMagicScriptInputSourceTests)
+
+add_executable(TextMagicTextBridgeInputUtilsTests
+    tests/TextBridgeInputUtilsTests.cpp
+)
+
+target_include_directories(TextMagicTextBridgeInputUtilsTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/text
+)
+
+target_compile_features(TextMagicTextBridgeInputUtilsTests PRIVATE cxx_std_17)
+
+add_test(NAME TextMagicTextBridgeInputUtilsTests COMMAND TextMagicTextBridgeInputUtilsTests)
+
 add_executable(TextMagicFullscreenUtilsTests
     src/app/FullscreenUtils.cpp
     tests/FullscreenUtilsTests.cpp
@@ -152,7 +177,7 @@ target_include_directories(TextMagicFullscreenUtilsTests PRIVATE
 )
 
 target_compile_features(TextMagicFullscreenUtilsTests PRIVATE cxx_std_17)
-target_link_libraries(TextMagicFullscreenUtilsTests PRIVATE user32)
+target_link_libraries(TextMagicFullscreenUtilsTests PRIVATE dwmapi user32)
 
 add_test(NAME TextMagicFullscreenUtilsTests COMMAND TextMagicFullscreenUtilsTests)
 

@@ -125,6 +125,7 @@ constexpr int LOGS_MIN_WIDTH = 640;
 constexpr int LOGS_MIN_HEIGHT = 420;
 constexpr int INFO_MIN_WIDTH = 500;
 constexpr int INFO_MIN_HEIGHT = 300;
+constexpr int LIST_CONTENT_PADDING = 6;
 constexpr const wchar_t* LANGUAGE_SETTINGS_FILE_NAME = TM_APP_NAME_W L".settings.ini";
 constexpr const wchar_t* LANGUAGE_SETTINGS_SECTION = L"ui";
 constexpr const wchar_t* LANGUAGE_SETTINGS_KEY = L"language";
@@ -2074,7 +2075,14 @@ void Application::OnResize(int width, int height) {
 
     const int listTop = innerY + 102;
     const int listHeight = std::max(90, buttonRowY - listTop - 14);
-    MoveWindow(m_hScriptList, innerX, listTop, innerWidth, listHeight, TRUE);
+    MoveWindow(
+        m_hScriptList,
+        innerX + LIST_CONTENT_PADDING,
+        listTop + LIST_CONTENT_PADDING,
+        std::max(1, innerWidth - 2 * LIST_CONTENT_PADDING),
+        std::max(1, listHeight - 2 * LIST_CONTENT_PADDING),
+        TRUE
+    );
 
     const int buttonsTotalWidth = buttonCount * buttonWidth + buttonGap * (buttonCount - 1);
     int x = innerX + std::max(0, (innerWidth - buttonsTotalWidth) / 2);
@@ -2098,7 +2106,7 @@ void Application::OnPaint() {
     UiRenderer::DrawBackground(hdc, clientRect);
     UiRenderer::DrawCard(hdc, m_cardRect);
     UiRenderer::DrawCard(hdc, m_statusCardRect);
-    UiRenderer::DrawEditBorder(m_hWnd, m_hScriptList);
+    UiRenderer::DrawEditBorder(m_hWnd, m_hScriptList, LIST_CONTENT_PADDING);
     EndPaint(m_hWnd, &ps);
 }
 
@@ -3989,9 +3997,18 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             const int y = textTop + textHeight + footerGap;
 
             MoveWindow(state->titleLabel, m, m, w - 2 * m, titleH, TRUE);
-            MoveWindow(state->textControl, m, textTop, w - 2 * m, textHeight, TRUE);
             if (state->usesListBox && state->kind == static_cast<int>(Application::InfoWindowKind::Logs)) {
+                MoveWindow(
+                    state->textControl,
+                    m + LIST_CONTENT_PADDING,
+                    textTop + LIST_CONTENT_PADDING,
+                    std::max(1, w - 2 * m - 2 * LIST_CONTENT_PADDING),
+                    std::max(1, textHeight - 2 * LIST_CONTENT_PADDING),
+                    TRUE
+                );
                 FillListBoxWithWrappedText(state->textControl, state->text, true);
+            } else {
+                MoveWindow(state->textControl, m, textTop, w - 2 * m, textHeight, TRUE);
             }
             MoveWindow(state->closeButton, w - m - closeW, y, closeW, bh, TRUE);
             if (state->actionButton) {
@@ -4070,7 +4087,7 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             UiRenderer::DrawCard(hdc, card);
             EndPaint(hWnd, &ps);
             if (state && state->usesListBox) {
-                UiRenderer::DrawEditBorder(hWnd, state->textControl);
+                UiRenderer::DrawEditBorder(hWnd, state->textControl, LIST_CONTENT_PADDING);
             }
         }
         return 0;

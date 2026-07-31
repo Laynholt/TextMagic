@@ -1,5 +1,6 @@
 #include "UiRenderer.h"
 
+#include <algorithm>
 #include <gdiplus.h>
 
 using namespace Gdiplus;
@@ -238,7 +239,7 @@ void UiRenderer::DrawCard(HDC hdc, const RECT& rect, const std::wstring& title) 
     }
 }
 
-void UiRenderer::DrawEditBorder(HWND parentWindow, HWND editControl) {
+void UiRenderer::DrawEditBorder(HWND parentWindow, HWND editControl, int padding) {
     if (!editControl || !parentWindow) {
         return;
     }
@@ -247,6 +248,7 @@ void UiRenderer::DrawEditBorder(HWND parentWindow, HWND editControl) {
     GetWindowRect(editControl, &rect);
     ScreenToClient(parentWindow, reinterpret_cast<LPPOINT>(&rect.left));
     ScreenToClient(parentWindow, reinterpret_cast<LPPOINT>(&rect.right));
+    InflateRect(&rect, (std::max)(0, padding), (std::max)(0, padding));
 
     HDC hdc = GetDC(parentWindow);
     if (!hdc) {

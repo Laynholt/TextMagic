@@ -4,29 +4,92 @@
 #include "TextBridgeInputUtils.h"
 
 #include <cwchar>
+#include <oleauto.h>
 #include <uiautomation.h>
 #include <wrl/client.h>
 
 namespace {
-constexpr int TARGET_INPUT_IDLE_TIMEOUT_MS = 1000;
+constexpr DWORD SELECTION_ACK_TIMEOUT_MS = 1000;
+constexpr DWORD SELECTION_ACK_POLL_MS = 5;
 
 bool IsModifierPressed(int virtualKey) {
     return (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
 }
 
+bool IsTargetCurrent(HWND expectedTarget) {
+    return expectedTarget && GetForegroundWindow() == expectedTarget;
 }
 
-bool TextBridge::WaitForModifiersRelease() const {
+bool IsFocusedElementCurrent(
+    IUIAutomation* automation,
+    IUIAutomationElement* expectedElement
+) {
+    Microsoft::WRL::ComPtr<IUIAutomationElement> currentElement;
+    BOOL sameElement = FALSE;
+    return automation
+        && expectedElement
+        && SUCCEEDED(automation->GetFocusedElement(currentElement.GetAddressOf()))
+        && currentElement
+        && SUCCEEDED(automation->CompareElements(
+            expectedElement,
+            currentElement.Get(),
+            &sameElement
+        ))
+        && sameElement;
+}
+
+bool ReadSelectedText(IUIAutomationTextPattern* textPattern, std::wstring* text) {
+    if (!textPattern || !text) {
+        return false;
+    }
+    text->clear();
+
+    Microsoft::WRL::ComPtr<IUIAutomationTextRangeArray> ranges;
+    if (FAILED(textPattern->GetSelection(ranges.GetAddressOf())) || !ranges) {
+        return false;
+    }
+
+    int rangeCount = 0;
+    if (FAILED(ranges->get_Length(&rangeCount)) || rangeCount != 1) {
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<IUIAutomationTextRange> range;
+    if (FAILED(ranges->GetElement(0, range.GetAddressOf())) || !range) {
+        return false;
+    }
+
+    BSTR selectedText = nullptr;
+    const HRESULT result = range->GetText(-1, &selectedText);
+    if (FAILED(result)) {
+        return false;
+    }
+    if (selectedText) {
+        text->assign(selectedText, SysStringLen(selectedText));
+        SysFreeString(selectedText);
+    }
+    return true;
+}
+
+}
+
+bool TextBridge::WaitForModifiersRelease(HWND expectedTarget) const {
     for (int attempt = 0; attempt < 60; ++attempt) {
+        if (expectedTarget && !IsTargetCurrent(expectedTarget)) {
+            return false;
+        }
         const bool controlDown = IsModifierPressed(VK_CONTROL);
         const bool altDown = IsModifierPressed(VK_MENU);
         const bool shiftDown = IsModifierPressed(VK_SHIFT);
         const bool lwinDown = IsModifierPressed(VK_LWIN);
         const bool rwinDown = IsModifierPressed(VK_RWIN);
         if (!controlDown && !altDown && !shiftDown && !lwinDown && !rwinDown) {
-            return true;
+            return !expectedTarget || IsTargetCurrent(expectedTarget);
         }
         Sleep(5);
+        if (expectedTarget && !IsTargetCurrent(expectedTarget)) {
+            return false;
+        }
     }
     return false;
 }
@@ -39,11 +102,18 @@ bool TextBridge::SetSelectedText(const std::wstring& text) const {
     return PasteIntoActiveControl(text);
 }
 
-bool TextBridge::TypeText(const std::wstring& text, size_t* typedChars) const {
+bool TextBridge::TypeText(
+    HWND expectedTarget,
+    const std::wstring& text,
+    size_t* typedChars
+) const {
     if (typedChars) {
         *typedChars = 0;
     }
     for (size_t i = 0; i < text.size(); ++i) {
+        if (!IsTargetCurrent(expectedTarget)) {
+            return false;
+        }
         const wchar_t ch = text[i];
         bool sent = false;
         bool unicodeCharMayHaveBeenTyped = false;
@@ -71,23 +141,32 @@ bool TextBridge::TypeText(const std::wstring& text, size_t* typedChars) const {
             ++(*typedChars);
         }
     }
-    return true;
+    return IsTargetCurrent(expectedTarget);
 }
 
-bool TextBridge::DeleteCharacters(size_t count) const {
+bool TextBridge::DeleteCharacters(
+    HWND expectedTarget,
+    const std::wstring& text
+) const {
+    const size_t count = text.size();
     if (count == 0) {
-        return true;
+        return IsTargetCurrent(expectedTarget);
     }
-    if (!TextBridgeInputUtils::ShouldSelectBeforeDelete(count)) {
-        return SendRepeatedKey(VK_BACK, count);
-    }
-    if (!SelectPreviousCharacters(count)) {
+    if (!IsTargetCurrent(expectedTarget)) {
         return false;
     }
-    if (SendKey(VK_BACK)) {
+    if (!TextBridgeInputUtils::ShouldSelectBeforeDelete(count)) {
+        return SendRepeatedKey(expectedTarget, VK_BACK, count);
+    }
+    if (!SelectPreviousCharacters(expectedTarget, text)) {
+        return false;
+    }
+    if (IsTargetCurrent(expectedTarget) && SendKey(VK_BACK)) {
         return true;
     }
-    SendKey(VK_RIGHT);
+    if (IsTargetCurrent(expectedTarget)) {
+        SendKey(VK_RIGHT);
+    }
     return false;
 }
 
@@ -210,84 +289,124 @@ UINT TextBridge::SendUnicodeChar(wchar_t ch) const {
     return SendInput(2, inputs, sizeof(INPUT));
 }
 
-bool TextBridge::SendRepeatedKey(WORD virtualKey, size_t count) const {
+bool TextBridge::SendRepeatedKey(
+    HWND expectedTarget,
+    WORD virtualKey,
+    size_t count
+) const {
     for (size_t i = 0; i < count; ++i) {
-        if (!SendKey(virtualKey)) {
+        if (!IsTargetCurrent(expectedTarget) || !SendKey(virtualKey)) {
             return false;
         }
     }
-    return true;
+    return IsTargetCurrent(expectedTarget);
 }
 
-bool TextBridge::SelectPreviousCharacters(size_t count) const {
-    const HWND targetWindow = GetForegroundWindow();
+bool TextBridge::SelectPreviousCharacters(
+    HWND expectedTarget,
+    const std::wstring& text
+) const {
+    if (text.empty() || !IsTargetCurrent(expectedTarget)) {
+        return false;
+    }
+
     Microsoft::WRL::ComPtr<IUIAutomation> automation;
-    Microsoft::WRL::ComPtr<IUIAutomationElement> targetElement;
-    Microsoft::WRL::ComPtr<IUIAutomationWindowPattern> targetWindowPattern;
-    if (!targetWindow
-        || FAILED(CoCreateInstance(
+    Microsoft::WRL::ComPtr<IUIAutomationElement> focusedElement;
+    Microsoft::WRL::ComPtr<IUIAutomationTextPattern> textPattern;
+    if (FAILED(CoCreateInstance(
             __uuidof(CUIAutomation),
             nullptr,
             CLSCTX_INPROC_SERVER,
             __uuidof(IUIAutomation),
             reinterpret_cast<void**>(automation.GetAddressOf())
         ))
-        || FAILED(automation->ElementFromHandle(targetWindow, targetElement.GetAddressOf()))
-        || FAILED(targetElement->GetCurrentPatternAs(
-            UIA_WindowPatternId,
-            __uuidof(IUIAutomationWindowPattern),
-            reinterpret_cast<void**>(targetWindowPattern.GetAddressOf())
-        ))) {
+        || !automation
+        || FAILED(automation->GetFocusedElement(focusedElement.GetAddressOf()))
+        || !focusedElement
+        || FAILED(focusedElement->GetCurrentPatternAs(
+            UIA_TextPatternId,
+            __uuidof(IUIAutomationTextPattern),
+            reinterpret_cast<void**>(textPattern.GetAddressOf())
+        ))
+        || !textPattern) {
         return false;
     }
 
-    if (!SendKeyDown(VK_SHIFT)) {
+    std::wstring initialSelection;
+    if (!ReadSelectedText(textPattern.Get(), &initialSelection)
+        || !initialSelection.empty()
+        || !IsTargetCurrent(expectedTarget)
+        || !IsFocusedElementCurrent(automation.Get(), focusedElement.Get())) {
         return false;
     }
 
-    const auto failSelection = [this](bool leftMayBeDown, bool hasSelection) {
-        bool leftReleased = !leftMayBeDown || SendKeyUp(VK_LEFT);
-        if (!leftReleased) {
-            leftReleased = SendKeyUp(VK_LEFT);
-        }
-        bool shiftReleased = SendKeyUp(VK_SHIFT);
-        if (!shiftReleased) {
-            shiftReleased = SendKeyUp(VK_SHIFT);
-        }
-        if (leftReleased && shiftReleased && hasSelection && !SendKey(VK_RIGHT)) {
-            SendKeyUp(VK_RIGHT);
-        }
-        return false;
-    };
+    const auto waitForSelection = [&](size_t selected) {
+        const std::wstring expectedSelection =
+            text.substr(text.size() - selected);
+        const ULONGLONG started = GetTickCount64();
 
-    size_t selected = 0;
-    for (; selected < count; ++selected) {
-        INPUT inputs[2] = {};
-        inputs[0].type = INPUT_KEYBOARD;
-        inputs[0].ki.wVk = VK_LEFT;
-        inputs[1] = inputs[0];
-        inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
+        while (true) {
+            if (!IsTargetCurrent(expectedTarget)
+                || !IsFocusedElementCurrent(automation.Get(), focusedElement.Get())) {
+                return false;
+            }
 
-        const UINT sent = SendInput(2, inputs, sizeof(INPUT));
-        if (sent != 2) {
-            return failSelection(sent > 0, selected > 0 || sent > 0);
-        }
-        if (TextBridgeInputUtils::ShouldWaitForSelectionConsumption(selected + 1, count)) {
-            BOOL targetIdle = FALSE;
-            if (FAILED(targetWindowPattern->WaitForInputIdle(
-                    TARGET_INPUT_IDLE_TIMEOUT_MS,
-                    &targetIdle
-                ))
-                || !targetIdle) {
-                return failSelection(false, true);
+            std::wstring currentSelection;
+            if (ReadSelectedText(textPattern.Get(), &currentSelection)
+                && currentSelection == expectedSelection) {
+                return IsTargetCurrent(expectedTarget);
+            }
+
+            if (GetTickCount64() - started >= SELECTION_ACK_TIMEOUT_MS) {
+                return false;
+            }
+            Sleep(SELECTION_ACK_POLL_MS);
+            if (!IsTargetCurrent(expectedTarget)) {
+                return false;
             }
         }
-    }
+    };
 
-    if (!SendKeyUp(VK_SHIFT)) {
-        return failSelection(false, true);
+    const TextBridgeInputUtils::SelectionOperations operations = {
+        [expectedTarget]() {
+            return IsTargetCurrent(expectedTarget);
+        },
+        [this, expectedTarget]() {
+            return IsTargetCurrent(expectedTarget) && SendKeyDown(VK_SHIFT);
+        },
+        [expectedTarget]() -> size_t {
+            if (!IsTargetCurrent(expectedTarget)) {
+                return 0;
+            }
+            INPUT inputs[2] = {};
+            inputs[0].type = INPUT_KEYBOARD;
+            inputs[0].ki.wVk = VK_LEFT;
+            inputs[1] = inputs[0];
+            inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
+            return SendInput(2, inputs, sizeof(INPUT));
+        },
+        waitForSelection,
+        [this]() {
+            return SendKeyUp(VK_LEFT);
+        },
+        [this]() {
+            return SendKeyUp(VK_SHIFT);
+        },
+        [this, expectedTarget]() {
+            return IsTargetCurrent(expectedTarget) && SendKey(VK_RIGHT);
+        }
+    };
+
+    if (!TextBridgeInputUtils::RunLongSelection(text.size(), operations)) {
+        return false;
     }
-    return true;
+    if (!waitForSelection(text.size())) {
+        if (IsTargetCurrent(expectedTarget)) {
+            SendKey(VK_RIGHT);
+        }
+        return false;
+    }
+    return IsTargetCurrent(expectedTarget);
 }
 
 bool TextBridge::WaitForClipboardChange(DWORD initialSequence, int maxAttempts, int sleepMs) {

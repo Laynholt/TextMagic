@@ -8,9 +8,11 @@ class TextBridge {
 public:
     std::wstring GetSelectedText() const;
     bool SetSelectedText(const std::wstring& text) const;
-    bool WaitForModifiersRelease() const;
-    bool TypeText(const std::wstring& text, size_t* typedChars = nullptr) const;
-    bool DeleteCharacters(size_t count) const;
+    bool WaitForModifiersRelease(HWND expectedTarget = nullptr) const;
+    bool TypeText(HWND expectedTarget,
+                  const std::wstring& text,
+                  size_t* typedChars = nullptr) const;
+    bool DeleteCharacters(HWND expectedTarget, const std::wstring& text) const;
 
 private:
     std::wstring CopyFromActiveControl() const;
@@ -21,8 +23,8 @@ private:
     bool SendKeyDown(WORD virtualKey) const;
     bool SendKeyUp(WORD virtualKey) const;
     UINT SendUnicodeChar(wchar_t ch) const;
-    bool SendRepeatedKey(WORD virtualKey, size_t count) const;
-    bool SelectPreviousCharacters(size_t count) const;
+    bool SendRepeatedKey(HWND expectedTarget, WORD virtualKey, size_t count) const;
+    bool SelectPreviousCharacters(HWND expectedTarget, const std::wstring& text) const;
 
     static bool WaitForClipboardChange(DWORD initialSequence, int maxAttempts = 80, int sleepMs = 10);
 };

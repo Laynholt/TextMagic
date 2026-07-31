@@ -152,6 +152,7 @@ struct ScriptExecutionTaskResult {
     std::wstring scriptName;
     std::wstring sourceText;
     InputBuffer::PreviousWordCapture inputCapture;
+    HWND inputTargetWindow = nullptr;
     bool hasSelection = false;
     bool inputBufferMode = false;
     bool allTextInputMode = false;
@@ -1605,24 +1606,30 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             } else if (result->inputBufferMode) {
                 const auto& capture = result->inputCapture;
                 const std::wstring replacement = result->outputText + capture.trailing;
+                const std::wstring capturedText = capture.word + capture.trailing;
+                const HWND expectedTarget = result->inputTargetWindow;
 
-                if (!m_textBridge.WaitForModifiersRelease()
+                if (!m_textBridge.WaitForModifiersRelease(expectedTarget)
                     || !IsPreviousWordCaptureCurrent(capture)) {
                     ClearInputBuffer();
-                } else if (!m_textBridge.DeleteCharacters(capture.deleteChars)) {
+                } else if (!m_textBridge.DeleteCharacters(expectedTarget, capturedText)) {
                     ClearInputBuffer();
                 } else {
                     size_t typedChars = 0;
-                    if (m_textBridge.TypeText(replacement, &typedChars)) {
+                    if (m_textBridge.TypeText(expectedTarget, replacement, &typedChars)) {
                         replaceOk = CommitPreviousWordReplacement(capture, replacement);
                         if (!replaceOk) {
                             ClearInputBuffer();
                         }
                     } else {
                         ClearInputBuffer();
-                        const bool cleanupOk = m_textBridge.DeleteCharacters(typedChars);
+                        const bool cleanupOk = m_textBridge.DeleteCharacters(
+                            expectedTarget,
+                            replacement.substr(0, typedChars)
+                        );
                         size_t restoredChars = 0;
                         const bool restored = m_textBridge.TypeText(
+                            expectedTarget,
                             capture.word + capture.trailing,
                             &restoredChars
                         );
@@ -3541,11 +3548,15 @@ void Application::ExecuteScript(const RegisteredScript& script, bool clipboardOn
     const TextBridge textBridge = m_textBridge;
     const ScriptRunner scriptRunner = m_scriptRunner;
     const HWND windowHandle = m_hWnd;
+    const HWND inputTargetWindow = useClipboardOnly ? nullptr : GetForegroundWindow();
+    const InputBuffer::ContextId inputContext =
+        reinterpret_cast<InputBuffer::ContextId>(inputTargetWindow);
     InputBuffer::PreviousWordCapture inputCapture;
-    const bool hasInputCapture = !useClipboardOnly
+    const bool hasInputCapture = inputTargetWindow
+        && !useClipboardOnly
         && (allTextInputMode
-            ? PeekAllTextFromInputBuffer(CurrentInputContext(), &inputCapture)
-            : PeekPreviousWordFromInputBuffer(CurrentInputContext(), &inputCapture))
+            ? PeekAllTextFromInputBuffer(inputContext, &inputCapture)
+            : PeekPreviousWordFromInputBuffer(inputContext, &inputCapture))
         && !inputCapture.word.empty();
 
     std::thread([scriptName,
@@ -3556,11 +3567,13 @@ void Application::ExecuteScript(const RegisteredScript& script, bool clipboardOn
                  textBridge,
                  scriptRunner,
                  windowHandle,
+                 inputTargetWindow,
                  hasInputCapture,
                  inputCapture]() {
         auto* result = new ScriptExecutionTaskResult();
         result->scriptName = scriptName;
         result->clipboardMode = useClipboardOnly;
+        result->inputTargetWindow = hasInputCapture ? inputTargetWindow : nullptr;
 
         std::wstring selectedText;
         bool hasSelection = false;

@@ -39,7 +39,8 @@ public:
 private:
     enum class InfoWindowKind {
         About = 1,
-        Logs = 2
+        Logs = 2,
+        HotkeyExclusions = 3
     };
 
     struct RegisteredScript {
@@ -113,6 +114,7 @@ private:
     bool RegisterMessageWindowClass();
     void ShowAboutWindow();
     void ShowLogsWindow();
+    void ShowHotkeyExclusionsWindow();
     void CreateOrActivateInfoWindow(InfoWindowKind kind, HWND& targetHandle, const wchar_t* title, const std::wstring& bodyText);
     void OnInfoWindowClosed(InfoWindowKind kind);
     void UpdateInfoWindowText(InfoWindowKind kind, const std::wstring& text);
@@ -150,6 +152,7 @@ private:
 
     HWND m_hAboutWindow = nullptr;
     HWND m_hLogsWindow = nullptr;
+    HWND m_hHotkeyExclusionsWindow = nullptr;
     HWND m_hMorePopupWindow = nullptr;
     HWND m_hMoreSubPopupWindow = nullptr;
 

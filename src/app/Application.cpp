@@ -64,7 +64,7 @@ enum MenuId {
     ID_MENU_INPUT_MODE_PREVIOUS_WORD = 2017,
     ID_MENU_INPUT_MODE_ALL_TEXT = 2018,
     ID_MENU_INPUT_MODE_LABEL = 2019,
-    ID_MENU_DISABLE_HOTKEYS_FULLSCREEN = 2020
+    ID_MENU_HOTKEY_EXCLUSIONS = 2020
 };
 
 constexpr UINT ID_MENU_LANGUAGE_DYNAMIC_FIRST = 2300;
@@ -73,7 +73,8 @@ constexpr UINT ID_MENU_LANGUAGE_DYNAMIC_LAST = 2399;
 enum InfoControlId {
     ID_INFO_TEXT = 2101,
     ID_INFO_CLOSE = 2102,
-    ID_INFO_ACTION = 2103
+    ID_INFO_ACTION = 2103,
+    ID_INFO_FULLSCREEN_CHECKBOX = 2104
 };
 
 enum MessageControlId {
@@ -89,6 +90,7 @@ struct InfoWindowState {
     HWND textControl = nullptr;
     HWND closeButton = nullptr;
     HWND actionButton = nullptr;
+    HWND fullscreenCheckbox = nullptr;
     HWND contextMenuTarget = nullptr;
     std::wstring title;
     std::wstring text;
@@ -1059,8 +1061,8 @@ const wchar_t* GetMenuItemText(UINT itemId) {
         return T(L"menu.input_mode.previous_word");
     case ID_MENU_INPUT_MODE_ALL_TEXT:
         return T(L"menu.input_mode.all_text");
-    case ID_MENU_DISABLE_HOTKEYS_FULLSCREEN:
-        return T(L"menu.disable_hotkeys_fullscreen");
+    case ID_MENU_HOTKEY_EXCLUSIONS:
+        return T(L"menu.hotkey_exclusions");
     case ID_MENU_MORE_SEPARATOR:
         return L"";
     default:
@@ -1086,7 +1088,7 @@ bool IsStyledMenuItem(UINT itemId) {
         || itemId == ID_MENU_INPUT_MODE_LABEL
         || itemId == ID_MENU_INPUT_MODE_PREVIOUS_WORD
         || itemId == ID_MENU_INPUT_MODE_ALL_TEXT
-        || itemId == ID_MENU_DISABLE_HOTKEYS_FULLSCREEN
+        || itemId == ID_MENU_HOTKEY_EXCLUSIONS
         || itemId == ID_MENU_TRAY_EXIT
         || itemId == ID_MENU_MORE_SEPARATOR
         || IsDynamicLanguageMenuId(itemId);
@@ -1098,6 +1100,9 @@ const wchar_t* GetInfoWindowTitleByKind(int kind) {
     }
     if (kind == 2) {
         return GetMenuItemText(ID_MENU_MORE_LOGS);
+    }
+    if (kind == 3) {
+        return GetMenuItemText(ID_MENU_HOTKEY_EXCLUSIONS);
     }
     return L"";
 }
@@ -1434,6 +1439,10 @@ void Application::Shutdown() {
     if (m_hLogsWindow && IsWindow(m_hLogsWindow)) {
         DestroyWindow(m_hLogsWindow);
         m_hLogsWindow = nullptr;
+    }
+    if (m_hHotkeyExclusionsWindow && IsWindow(m_hHotkeyExclusionsWindow)) {
+        DestroyWindow(m_hHotkeyExclusionsWindow);
+        m_hHotkeyExclusionsWindow = nullptr;
     }
     CloseMorePopupWindows();
 
@@ -2205,12 +2214,8 @@ void Application::OnMenuCommand(UINT menuId) {
     case ID_MENU_INPUT_MODE_ALL_TEXT:
         SetScriptInputMode(true);
         break;
-    case ID_MENU_DISABLE_HOTKEYS_FULLSCREEN:
-        m_disableHotkeysInFullscreen = !m_disableHotkeysInFullscreen;
-        SaveDisableFullscreenHotkeysSetting(
-            GetLanguageSettingsPath(GetExecutableDirectory()),
-            m_disableHotkeysInFullscreen
-        );
+    case ID_MENU_HOTKEY_EXCLUSIONS:
+        ShowHotkeyExclusionsWindow();
         break;
     case ID_MENU_TRAY_EXIT:
         ExitApplication();
@@ -2489,7 +2494,7 @@ std::vector<UiRenderer::PopupMenuItem> Application::BuildMainMorePopupItems() co
         { ID_MENU_MORE_SEPARATOR, L"", true, false, false },
         { ID_MENU_INPUT_MODE_LABEL, GetMenuItemText(ID_MENU_INPUT_MODE_LABEL), false, false, true },
         { ID_MENU_MORE_SEPARATOR, L"", true, false, false },
-        { ID_MENU_DISABLE_HOTKEYS_FULLSCREEN, GetMenuItemText(ID_MENU_DISABLE_HOTKEYS_FULLSCREEN), false, m_disableHotkeysInFullscreen, false },
+        { ID_MENU_HOTKEY_EXCLUSIONS, GetMenuItemText(ID_MENU_HOTKEY_EXCLUSIONS), false, false, false },
         { ID_MENU_MORE_SEPARATOR, L"", true, false, false },
         { ID_MENU_MORE_ABOUT, GetMenuItemText(ID_MENU_MORE_ABOUT), false, false, false }
     };
@@ -2735,12 +2740,38 @@ void Application::ApplyLocalization() {
     }
 
     CreateMoreMenu();
+    const auto localizeInfoWindow = [](HWND infoWindow, InfoWindowKind kind) {
+        if (!infoWindow || !IsWindow(infoWindow)) {
+            return;
+        }
+        const wchar_t* title = GetInfoWindowTitleByKind(static_cast<int>(kind));
+        SetWindowTextW(infoWindow, title);
+        auto* state = reinterpret_cast<InfoWindowState*>(
+            GetWindowLongPtrW(infoWindow, GWLP_USERDATA)
+        );
+        if (!state) {
+            return;
+        }
+        state->title = title;
+        SetWindowTextW(state->titleLabel, title);
+        SetWindowTextW(state->closeButton, T(L"info.button.close"));
+        if (state->actionButton) {
+            SetWindowTextW(state->actionButton, T(L"info.button.check_updates"));
+        }
+        if (state->fullscreenCheckbox) {
+            SetWindowTextW(
+                state->fullscreenCheckbox,
+                T(L"hotkey_exclusions.disable_fullscreen")
+            );
+        }
+    };
+    localizeInfoWindow(m_hAboutWindow, InfoWindowKind::About);
+    localizeInfoWindow(m_hLogsWindow, InfoWindowKind::Logs);
+    localizeInfoWindow(m_hHotkeyExclusionsWindow, InfoWindowKind::HotkeyExclusions);
     if (m_hAboutWindow && IsWindow(m_hAboutWindow)) {
-        SetWindowTextW(m_hAboutWindow, GetMenuItemText(ID_MENU_MORE_ABOUT));
         UpdateInfoWindowText(InfoWindowKind::About, BuildAboutText());
     }
     if (m_hLogsWindow && IsWindow(m_hLogsWindow)) {
-        SetWindowTextW(m_hLogsWindow, GetMenuItemText(ID_MENU_MORE_LOGS));
         UpdateInfoWindowText(InfoWindowKind::Logs, BuildLogText());
     }
 }
@@ -3734,6 +3765,15 @@ void Application::ShowLogsWindow() {
     );
 }
 
+void Application::ShowHotkeyExclusionsWindow() {
+    CreateOrActivateInfoWindow(
+        InfoWindowKind::HotkeyExclusions,
+        m_hHotkeyExclusionsWindow,
+        GetInfoWindowTitleByKind(static_cast<int>(InfoWindowKind::HotkeyExclusions)),
+        L""
+    );
+}
+
 void Application::CreateOrActivateInfoWindow(InfoWindowKind kind, HWND& targetHandle, const wchar_t* title, const std::wstring& bodyText) {
     if (targetHandle && IsWindow(targetHandle)) {
         UpdateInfoWindowText(kind, bodyText);
@@ -3752,14 +3792,17 @@ void Application::CreateOrActivateInfoWindow(InfoWindowKind kind, HWND& targetHa
     RECT ownerRect = {};
     GetWindowRect(m_hWnd, &ownerRect);
     const bool isLogsWindow = kind == InfoWindowKind::Logs;
+    const bool isHotkeyExclusionsWindow = kind == InfoWindowKind::HotkeyExclusions;
     const int width = isLogsWindow ? 700 : 560;
-    const int height = isLogsWindow ? 480 : 360;
+    const int height = isLogsWindow ? 480 : (isHotkeyExclusionsWindow ? 200 : 360);
     const int x = ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2;
     const int y = ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2;
 
     const DWORD infoStyle = isLogsWindow
         ? WS_OVERLAPPEDWINDOW
-        : (WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX);
+        : (isHotkeyExclusionsWindow
+            ? (WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU)
+            : (WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX));
 
     HWND infoWindow = CreateWindowExW(
         0,
@@ -3791,6 +3834,8 @@ void Application::OnInfoWindowClosed(InfoWindowKind kind) {
         m_hAboutWindow = nullptr;
     } else if (kind == InfoWindowKind::Logs) {
         m_hLogsWindow = nullptr;
+    } else if (kind == InfoWindowKind::HotkeyExclusions) {
+        m_hHotkeyExclusionsWindow = nullptr;
     }
 }
 
@@ -3800,6 +3845,8 @@ void Application::UpdateInfoWindowText(InfoWindowKind kind, const std::wstring& 
         target = m_hAboutWindow;
     } else if (kind == InfoWindowKind::Logs) {
         target = m_hLogsWindow;
+    } else if (kind == InfoWindowKind::HotkeyExclusions) {
+        target = m_hHotkeyExclusionsWindow;
     }
     if (!target || !IsWindow(target)) {
         return;
@@ -3998,6 +4045,22 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 );
                 ApplyDarkScrollBar(state->textControl);
                 FillListBoxWithWrappedText(state->textControl, state->text, true);
+            } else if (state->kind == static_cast<int>(Application::InfoWindowKind::HotkeyExclusions)) {
+                state->fullscreenCheckbox = CreateWindowExW(
+                    0, L"BUTTON", T(L"hotkey_exclusions.disable_fullscreen"),
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+                    0, 0, 100, 28,
+                    hWnd,
+                    reinterpret_cast<HMENU>(ID_INFO_FULLSCREEN_CHECKBOX),
+                    GetModuleHandleW(nullptr),
+                    nullptr
+                );
+                SendMessageW(
+                    state->fullscreenCheckbox,
+                    BM_SETCHECK,
+                    state->owner->m_disableHotkeysInFullscreen ? BST_CHECKED : BST_UNCHECKED,
+                    0
+                );
             } else {
                 state->textControl = CreateWindowExW(
                     0, L"EDIT", state->text.c_str(),
@@ -4028,10 +4091,20 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
 
             HFONT textFont = state->usesListBox ? state->owner->m_hMonoFont : state->owner->m_hFont;
             SendMessageW(state->titleLabel, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
-            SendMessageW(state->textControl, WM_SETFONT, reinterpret_cast<WPARAM>(textFont), TRUE);
+            if (state->textControl) {
+                SendMessageW(state->textControl, WM_SETFONT, reinterpret_cast<WPARAM>(textFont), TRUE);
+            }
             SendMessageW(state->closeButton, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
             if (state->actionButton) {
                 SendMessageW(state->actionButton, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
+            }
+            if (state->fullscreenCheckbox) {
+                SendMessageW(
+                    state->fullscreenCheckbox,
+                    WM_SETFONT,
+                    reinterpret_cast<WPARAM>(state->owner->m_hFont),
+                    TRUE
+                );
             }
         }
         return 0;
@@ -4049,10 +4122,16 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             const int footerGap = 12;
 
             const int textTop = m + titleH + 6;
+            MoveWindow(state->titleLabel, m, m, w - 2 * m, titleH, TRUE);
+            if (state->kind == static_cast<int>(Application::InfoWindowKind::HotkeyExclusions)) {
+                MoveWindow(state->fullscreenCheckbox, m, textTop, w - 2 * m, 28, TRUE);
+                MoveWindow(state->closeButton, w - m - closeW, h - m - bh, closeW, bh, TRUE);
+                return 0;
+            }
+
             const int textHeight = std::max(70, h - textTop - m - bh - footerGap);
             const int y = textTop + textHeight + footerGap;
 
-            MoveWindow(state->titleLabel, m, m, w - 2 * m, titleH, TRUE);
             if (state->usesListBox && state->kind == static_cast<int>(Application::InfoWindowKind::Logs)) {
                 MoveWindow(
                     state->textControl,
@@ -4162,6 +4241,15 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
         }
         break;
 
+    case WM_CTLCOLORBTN:
+        if (state && reinterpret_cast<HWND>(lParam) == state->fullscreenCheckbox) {
+            HDC hdc = reinterpret_cast<HDC>(wParam);
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, RGB(230, 230, 230));
+            return reinterpret_cast<INT_PTR>(state->owner->m_hCardBrush);
+        }
+        break;
+
     case WM_CTLCOLOREDIT:
         if (state && state->editBrush) {
             HDC hdc = reinterpret_cast<HDC>(wParam);
@@ -4183,6 +4271,7 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
     case WM_COMMAND:
         if (state) {
             const UINT id = LOWORD(wParam);
+            const UINT notifyCode = HIWORD(wParam);
             if (id == ID_MENU_CONTEXT_COPY) {
                 if (state->contextMenuTarget == state->textControl) {
                     if (state->usesListBox) {
@@ -4215,6 +4304,18 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 if (state->usesListBox && state->owner) {
                     state->owner->ClearLogs();
                 }
+                return 0;
+            }
+            if (id == ID_INFO_FULLSCREEN_CHECKBOX
+                && notifyCode == BN_CLICKED
+                && state->owner
+                && state->fullscreenCheckbox) {
+                state->owner->m_disableHotkeysInFullscreen =
+                    SendMessageW(state->fullscreenCheckbox, BM_GETCHECK, 0, 0) == BST_CHECKED;
+                SaveDisableFullscreenHotkeysSetting(
+                    GetLanguageSettingsPath(state->owner->GetExecutableDirectory()),
+                    state->owner->m_disableHotkeysInFullscreen
+                );
                 return 0;
             }
             if (id == ID_INFO_CLOSE || id == IDOK || id == IDCANCEL) {

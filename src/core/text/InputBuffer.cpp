@@ -24,8 +24,17 @@ void InputBuffer::AppendText(ContextId contextId, const std::wstring& text) {
     if (text.empty() || contextId == 0) {
         return;
     }
+    std::wstring printable;
+    for (const wchar_t ch : text) {
+        if (!iswcntrl(ch)) {
+            printable.push_back(ch);
+        }
+    }
+    if (printable.empty()) {
+        return;
+    }
     SwitchContext(contextId);
-    m_text += text;
+    m_text += printable;
     ++m_generation;
     ClearIfOverLimit();
 }

@@ -3,3 +3,5 @@ build/
 tests/*
 !tests/
 !tests/InputBufferTests.cpp
+!tests/LogFileTests.cpp
+!tests/ScriptExecutionCooldownTests.cpp

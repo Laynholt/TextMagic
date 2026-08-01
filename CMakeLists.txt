@@ -54,6 +54,7 @@ set(SOURCES
     src/app/Localization.cpp
     src/core/common/ClipboardUtils.cpp
     src/core/common/EncodingUtils.cpp
+    src/core/common/LogFile.cpp
     src/core/common/PowerShellUtils.cpp
     src/core/scripts/ScriptManifest.cpp
     src/core/scripts/ScriptRunner.cpp
@@ -88,7 +89,6 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     gdi32
     gdiplus
     ole32
-    oleaut32
     shell32
     crypt32
     uxtheme
@@ -142,6 +142,32 @@ target_include_directories(TextMagicInputBufferTests PRIVATE
 target_compile_features(TextMagicInputBufferTests PRIVATE cxx_std_17)
 
 add_test(NAME TextMagicInputBufferTests COMMAND TextMagicInputBufferTests)
+
+add_executable(TextMagicLogFileTests
+    src/core/common/EncodingUtils.cpp
+    src/core/common/LogFile.cpp
+    tests/LogFileTests.cpp
+)
+
+target_include_directories(TextMagicLogFileTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
+)
+
+target_compile_features(TextMagicLogFileTests PRIVATE cxx_std_17)
+
+add_test(NAME TextMagicLogFileTests COMMAND TextMagicLogFileTests)
+
+add_executable(TextMagicScriptExecutionCooldownTests
+    tests/ScriptExecutionCooldownTests.cpp
+)
+
+target_include_directories(TextMagicScriptExecutionCooldownTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+)
+
+target_compile_features(TextMagicScriptExecutionCooldownTests PRIVATE cxx_std_17)
+
+add_test(NAME TextMagicScriptExecutionCooldownTests COMMAND TextMagicScriptExecutionCooldownTests)
 
 add_executable(TextMagicScriptInputSourceTests
     tests/ScriptInputSourceTests.cpp

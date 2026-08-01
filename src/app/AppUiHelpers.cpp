@@ -296,7 +296,7 @@ void FillListBoxWithWrappedText(HWND listBox, const std::wstring& text, bool scr
 
     RECT rect = {};
     GetClientRect(listBox, &rect);
-    const int clientWidth = (rect.right - rect.left) - 10;
+    const int clientWidth = (rect.right - rect.left) - 20;
     const int maxWidthPx = clientWidth > 1 ? clientWidth : 1;
 
     HDC hdc = GetDC(listBox);

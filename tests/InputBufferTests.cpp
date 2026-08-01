@@ -88,5 +88,10 @@ int main() {
     buffer.AppendText(editorContext, L"z");
     Expect(buffer.TextForTest() == L"z", "typing after overflow must start a new session");
 
+    buffer.Clear();
+    buffer.AppendText(editorContext, std::wstring(L"abc") + wchar_t{3} + L"def");
+    Expect(buffer.TextForTest() == L"abcdef",
+           "control characters from keyboard translation must not enter tracked text");
+
     return 0;
 }

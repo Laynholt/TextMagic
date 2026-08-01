@@ -8,7 +8,9 @@
 #include "ToolTip.h"
 #include "UiRenderer.h"
 #include "InputBuffer.h"
+#include "LogFile.h"
 #include "PowerShellUtils.h"
+#include "ScriptExecutionCooldown.h"
 #include "resource.h"
 
 #include <windowsx.h>
@@ -94,7 +96,6 @@ struct InfoWindowState {
     HWND contextMenuTarget = nullptr;
     std::wstring title;
     std::wstring text;
-    bool usesListBox = false;
     HBRUSH editBrush = nullptr;
 };
 
@@ -131,6 +132,9 @@ constexpr int LOGS_MIN_HEIGHT = 420;
 constexpr int INFO_MIN_WIDTH = 500;
 constexpr int INFO_MIN_HEIGHT = 300;
 constexpr int LIST_CONTENT_PADDING = 6;
+constexpr int LIST_ITEM_HEIGHT = 24;
+constexpr int LIST_TEXT_PADDING = 9;
+constexpr const wchar_t* LOG_FILE_NAME = TM_APP_NAME_W L".log";
 constexpr const wchar_t* LANGUAGE_SETTINGS_FILE_NAME = TM_APP_NAME_W L".settings.ini";
 constexpr const wchar_t* LANGUAGE_SETTINGS_SECTION = L"ui";
 constexpr const wchar_t* LANGUAGE_SETTINGS_KEY = L"language";
@@ -147,6 +151,35 @@ constexpr int MORE_POPUP_ITEM_EXTRA_WIDTH = 34;
 constexpr int MORE_POPUP_WIDTH_PADDING = 14;
 constexpr int MORE_POPUP_TRACK_INTERVAL_MS = 25;
 constexpr ULONGLONG HOTKEY_DOUBLE_TAP_TIMEOUT_MS = 350;
+
+bool DrawPaddedListBoxItem(const DRAWITEMSTRUCT* item) {
+    if (!item || item->CtlType != ODT_LISTBOX || item->itemID == static_cast<UINT>(-1)) {
+        return false;
+    }
+
+    const bool selected = (item->itemState & ODS_SELECTED) != 0;
+    SetDCBrushColor(item->hDC, selected ? RGB(58, 58, 58) : RGB(37, 37, 37));
+    FillRect(item->hDC, &item->rcItem, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+
+    const LRESULT length = SendMessageW(item->hwndItem, LB_GETTEXTLEN, item->itemID, 0);
+    if (length >= 0) {
+        std::wstring text(static_cast<size_t>(length) + 1, L'\0');
+        SendMessageW(item->hwndItem, LB_GETTEXT, item->itemID, reinterpret_cast<LPARAM>(text.data()));
+        text.resize(static_cast<size_t>(length));
+
+        RECT textRect = item->rcItem;
+        textRect.left += LIST_TEXT_PADDING;
+        textRect.right -= LIST_TEXT_PADDING;
+        SetBkMode(item->hDC, TRANSPARENT);
+        SetTextColor(item->hDC, RGB(245, 245, 245));
+        DrawTextW(item->hDC, text.c_str(), static_cast<int>(text.size()), &textRect,
+            DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+    }
+    if ((item->itemState & ODS_FOCUS) != 0) {
+        DrawFocusRect(item->hDC, &item->rcItem);
+    }
+    return true;
+}
 
 struct ScriptExecutionTaskResult {
     std::wstring scriptName;
@@ -442,12 +475,12 @@ bool IsHotkeyStillHeld(UINT modifiers, UINT virtualKey, UINT currentModifiers) {
     return IsVirtualKeyPressed(static_cast<int>(virtualKey));
 }
 
-void DispatchHookHotkeysOnKeyDown(DWORD inputVkCode) {
+bool DispatchHookHotkeysOnKeyDown(DWORD inputVkCode) {
     const UINT currentModifiers = GetCurrentHotkeyModifiers();
     const ULONGLONG nowTick = GetTickCount64();
     std::lock_guard<std::mutex> lock(g_hookHotkeysMutex);
     if (!g_hotkeyDispatchWindow || !IsWindow(g_hotkeyDispatchWindow)) {
-        return;
+        return false;
     }
     for (auto& hotkey : g_hookHotkeys) {
         if (!hotkey.armed) {
@@ -479,8 +512,10 @@ void DispatchHookHotkeysOnKeyDown(DWORD inputVkCode) {
         }
         if (PostMessageW(g_hotkeyDispatchWindow, WM_HOTKEY, static_cast<WPARAM>(hotkey.hotkeyId), 0)) {
             hotkey.armed = false;
+            return true;
         }
     }
+    return false;
 }
 
 void RearmHookHotkeysIfReleased() {
@@ -618,7 +653,9 @@ LRESULT CALLBACK InputKeyboardHookProc(int code, WPARAM wParam, LPARAM lParam) {
         const auto* keyInfo = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
         if (keyInfo && (keyInfo->flags & LLKHF_INJECTED) == 0) {
             if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
-                DispatchHookHotkeysOnKeyDown(keyInfo->vkCode);
+                if (DispatchHookHotkeysOnKeyDown(keyInfo->vkCode)) {
+                    return 1;
+                }
                 HandleInputBufferKeyDown(keyInfo->vkCode, keyInfo->scanCode);
             } else if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
                 RearmHookHotkeysIfReleased();
@@ -1296,6 +1333,7 @@ bool Application::Initialize(HINSTANCE hInstance) {
     m_hInstance = hInstance;
     m_initializationError.clear();
     const std::wstring executableDirectory = GetExecutableDirectory();
+    m_logPath = executableDirectory + L"\\" + LOG_FILE_NAME;
 
     Localization::Initialize(executableDirectory + L"\\lang");
     const std::wstring settingsPath = GetLanguageSettingsPath(executableDirectory);
@@ -1313,6 +1351,7 @@ bool Application::Initialize(HINSTANCE hInstance) {
         m_initializationError = INIT_ERROR_ALREADY_RUNNING;
         return false;
     }
+    LogFile::Clear(m_logPath);
 
     Gdiplus::GdiplusStartupInput gdiplusStartupInput;
     if (Gdiplus::GdiplusStartup(&m_gdiplusToken, &gdiplusStartupInput, nullptr) != Gdiplus::Ok) {
@@ -1568,6 +1607,7 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         {
             std::unique_ptr<ScriptExecutionTaskResult> result(reinterpret_cast<ScriptExecutionTaskResult*>(wParam));
             m_scriptExecutionInProgress = false;
+            m_lastScriptCompletionTick = GetTickCount64();
             if (!result) {
                 return 0;
             }
@@ -1612,31 +1652,14 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 if (!m_textBridge.WaitForModifiersRelease(expectedTarget)
                     || !IsPreviousWordCaptureCurrent(capture)) {
                     ClearInputBuffer();
-                } else if (!m_textBridge.DeleteCharacters(expectedTarget, capturedText)) {
-                    ClearInputBuffer();
-                } else {
-                    size_t typedChars = 0;
-                    if (m_textBridge.TypeText(expectedTarget, replacement, &typedChars)) {
-                        replaceOk = CommitPreviousWordReplacement(capture, replacement);
-                        if (!replaceOk) {
-                            ClearInputBuffer();
-                        }
-                    } else {
+                } else if (m_textBridge.ReplaceText(
+                               expectedTarget, capturedText, replacement)) {
+                    replaceOk = CommitPreviousWordReplacement(capture, replacement);
+                    if (!replaceOk) {
                         ClearInputBuffer();
-                        const bool cleanupOk = m_textBridge.DeleteCharacters(
-                            expectedTarget,
-                            replacement.substr(0, typedChars)
-                        );
-                        size_t restoredChars = 0;
-                        const bool restored = m_textBridge.TypeText(
-                            expectedTarget,
-                            capture.word + capture.trailing,
-                            &restoredChars
-                        );
-                        if (!cleanupOk || !restored) {
-                            ClearInputBuffer();
-                        }
                     }
+                } else {
+                    ClearInputBuffer();
                 }
             } else {
                 replaceOk = m_textBridge.SetSelectedText(result->outputText);
@@ -1902,6 +1925,9 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             if (!dis) {
                 break;
             }
+            if (DrawPaddedListBoxItem(dis)) {
+                return TRUE;
+            }
             if (dis->CtlType == ODT_MENU && IsStyledMenuItem(ResolveStyledMenuItemId(dis->itemID, dis->itemData))) {
                 DrawStyledMenuItem(dis);
                 return TRUE;
@@ -2033,7 +2059,8 @@ void Application::CreateControls() {
         m_hWnd, reinterpret_cast<HMENU>(ID_HINT_LABEL), m_hInstance, nullptr);
 
     m_hScriptList = CreateWindowExW(0, L"LISTBOX", nullptr,
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | LBS_EXTENDEDSEL,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT
+            | LBS_EXTENDEDSEL | LBS_OWNERDRAWFIXED | LBS_HASSTRINGS,
         0, 0, 100, 100, m_hWnd, reinterpret_cast<HMENU>(ID_SCRIPTS_LIST), m_hInstance, nullptr);
     ApplyDarkScrollBar(m_hScriptList);
 
@@ -2056,6 +2083,7 @@ void Application::CreateControls() {
     SendMessageW(m_hTitleLabel, WM_SETFONT, reinterpret_cast<WPARAM>(m_hTitleFont), TRUE);
     SendMessageW(m_hHintLabel, WM_SETFONT, reinterpret_cast<WPARAM>(m_hFont), TRUE);
     SendMessageW(m_hScriptList, WM_SETFONT, reinterpret_cast<WPARAM>(m_hMonoFont), TRUE);
+    SendMessageW(m_hScriptList, LB_SETITEMHEIGHT, 0, LIST_ITEM_HEIGHT);
     SendMessageW(m_hReloadButton, WM_SETFONT, reinterpret_cast<WPARAM>(m_hFont), TRUE);
     SendMessageW(m_hOpenFolderButton, WM_SETFONT, reinterpret_cast<WPARAM>(m_hFont), TRUE);
     SendMessageW(m_hMoreButton, WM_SETFONT, reinterpret_cast<WPARAM>(m_hFont), TRUE);
@@ -3512,6 +3540,9 @@ void Application::ExecuteScriptByHotkeyId(int hotkeyId) {
         && FullscreenUtils::IsForegroundWindowFullscreen()) {
         return;
     }
+    if (!ScriptExecutionCooldown::CanStart(m_lastScriptCompletionTick, GetTickCount64())) {
+        return;
+    }
     const auto it = m_scriptIndexByHotkeyId.find(hotkeyId);
     if (it == m_scriptIndexByHotkeyId.end()) {
         return;
@@ -3884,16 +3915,7 @@ void Application::UpdateInfoWindowText(InfoWindowKind kind, const std::wstring& 
         return;
     }
     state->text = text;
-    if (state->usesListBox) {
-        const bool isLogs = state->kind == static_cast<int>(InfoWindowKind::Logs);
-        if (isLogs) {
-            FillListBoxWithWrappedText(state->textControl, state->text, true);
-        } else {
-            FillListBoxWithText(state->textControl, state->text);
-        }
-    } else {
-        SetWindowTextW(state->textControl, state->text.c_str());
-    }
+    SetWindowTextW(state->textControl, state->text.c_str());
 }
 
 int Application::ShowStyledMessageDialog(const wchar_t* title,
@@ -3993,17 +4015,41 @@ void Application::AppendLog(const std::wstring& line) {
 
     wchar_t prefix[32] = {};
     swprintf_s(prefix, L"[%02u:%02u:%02u] ", st.wHour, st.wMinute, st.wSecond);
-    m_executionLogs.push_back(std::wstring(prefix) + line);
-
-    if (m_executionLogs.size() > 1000) {
-        m_executionLogs.erase(m_executionLogs.begin(), m_executionLogs.begin() + 200);
+    const std::wstring persistedLine = std::wstring(prefix) + line;
+    if (!LogFile::Append(m_logPath, persistedLine)) {
+        return;
     }
 
-    UpdateInfoWindowText(InfoWindowKind::Logs, BuildLogText());
+    if (!m_hLogsWindow || !IsWindow(m_hLogsWindow)) {
+        return;
+    }
+    auto* state = reinterpret_cast<InfoWindowState*>(
+        GetWindowLongPtrW(m_hLogsWindow, GWLP_USERDATA));
+    if (!state || !state->textControl) {
+        return;
+    }
+
+    if (state->text.empty() || state->text == T(L"log.is_empty")) {
+        state->text = persistedLine;
+        SetWindowTextW(state->textControl, state->text.c_str());
+    } else {
+        const std::wstring addition = L"\r\n" + persistedLine;
+        state->text += addition;
+        SendMessageW(state->textControl, EM_SETSEL, static_cast<WPARAM>(-1), -1);
+        SendMessageW(
+            state->textControl,
+            EM_REPLACESEL,
+            FALSE,
+            reinterpret_cast<LPARAM>(addition.c_str())
+        );
+    }
+    SendMessageW(state->textControl, EM_SCROLLCARET, 0, 0);
 }
 
 void Application::ClearLogs() {
-    m_executionLogs.clear();
+    if (!LogFile::Clear(m_logPath)) {
+        return;
+    }
     UpdateInfoWindowText(InfoWindowKind::Logs, BuildLogText());
     SetStatusText(T(L"status.logs_cleared"));
 }
@@ -4018,16 +4064,9 @@ std::wstring Application::BuildAboutText() const {
 }
 
 std::wstring Application::BuildLogText() const {
-    if (m_executionLogs.empty()) {
+    const std::wstring text = LogFile::Read(m_logPath);
+    if (text.empty()) {
         return T(L"log.is_empty");
-    }
-
-    std::wstring text;
-    for (size_t i = 0; i < m_executionLogs.size(); ++i) {
-        text += m_executionLogs[i];
-        if (i + 1 < m_executionLogs.size()) {
-            text += L"\r\n";
-        }
     }
     return text;
 }
@@ -4063,15 +4102,21 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             );
 
             if (state->kind == static_cast<int>(Application::InfoWindowKind::Logs)) {
-                state->usesListBox = true;
                 state->textControl = CreateWindowExW(
-                    0, L"LISTBOX", nullptr,
-                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | LBS_NOINTEGRALHEIGHT,
+                    0, L"EDIT", state->text.c_str(),
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL
+                        | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_NOHIDESEL,
                     0, 0, 100, 100,
                     hWnd, reinterpret_cast<HMENU>(ID_INFO_TEXT), GetModuleHandleW(nullptr), nullptr
                 );
                 ApplyDarkScrollBar(state->textControl);
-                FillListBoxWithWrappedText(state->textControl, state->text, true);
+                SendMessageW(state->textControl, EM_SETLIMITTEXT, 0x7FFFFFFE, 0);
+                SendMessageW(
+                    state->textControl,
+                    EM_SETMARGINS,
+                    EC_LEFTMARGIN | EC_RIGHTMARGIN,
+                    MAKELPARAM(LIST_TEXT_PADDING, LIST_TEXT_PADDING)
+                );
             } else if (state->kind == static_cast<int>(Application::InfoWindowKind::HotkeyExclusions)) {
                 state->fullscreenCheckbox = CreateWindowExW(
                     0, L"BUTTON", T(L"hotkey_exclusions.disable_fullscreen"),
@@ -4116,7 +4161,8 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 );
             }
 
-            HFONT textFont = state->usesListBox ? state->owner->m_hMonoFont : state->owner->m_hFont;
+            const bool isLogs = state->kind == static_cast<int>(Application::InfoWindowKind::Logs);
+            HFONT textFont = isLogs ? state->owner->m_hMonoFont : state->owner->m_hFont;
             SendMessageW(state->titleLabel, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
             if (state->textControl) {
                 SendMessageW(state->textControl, WM_SETFONT, reinterpret_cast<WPARAM>(textFont), TRUE);
@@ -4159,19 +4205,7 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             const int textHeight = std::max(70, h - textTop - m - bh - footerGap);
             const int y = textTop + textHeight + footerGap;
 
-            if (state->usesListBox && state->kind == static_cast<int>(Application::InfoWindowKind::Logs)) {
-                MoveWindow(
-                    state->textControl,
-                    m + LIST_CONTENT_PADDING,
-                    textTop + LIST_CONTENT_PADDING,
-                    std::max(1, w - 2 * m - 2 * LIST_CONTENT_PADDING),
-                    std::max(1, textHeight - 2 * LIST_CONTENT_PADDING),
-                    TRUE
-                );
-                FillListBoxWithWrappedText(state->textControl, state->text, true);
-            } else {
-                MoveWindow(state->textControl, m, textTop, w - 2 * m, textHeight, TRUE);
-            }
+            MoveWindow(state->textControl, m, textTop, w - 2 * m, textHeight, TRUE);
             MoveWindow(state->closeButton, w - m - closeW, y, closeW, bh, TRUE);
             if (state->actionButton) {
                 MoveWindow(state->actionButton, w - m - closeW - gap - actionW, y, actionW, bh, TRUE);
@@ -4194,6 +4228,9 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
             if (!dis) {
                 break;
+            }
+            if (DrawPaddedListBoxItem(dis)) {
+                return TRUE;
             }
             if (dis->CtlType == ODT_MENU && IsStyledMenuItem(ResolveStyledMenuItemId(dis->itemID, dis->itemData))) {
                 DrawStyledMenuItem(dis);
@@ -4229,7 +4266,8 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             if (sourceControl == state->textControl) {
                 state->contextMenuTarget = sourceControl;
                 const POINT point = ResolveContextMenuPoint(sourceControl, lParam);
-                ShowStyledContextMenu(hWnd, point, state->usesListBox, state->usesListBox);
+                const bool isLogs = state->kind == static_cast<int>(Application::InfoWindowKind::Logs);
+                ShowStyledContextMenu(hWnd, point, isLogs, isLogs);
                 return 0;
             }
         }
@@ -4248,9 +4286,6 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             RECT card = { 8, 8, r.right - 8, r.bottom - 8 };
             UiRenderer::DrawCard(hdc, card);
             EndPaint(hWnd, &ps);
-            if (state && state->usesListBox) {
-                UiRenderer::DrawEditBorder(hWnd, state->textControl, LIST_CONTENT_PADDING);
-            }
         }
         return 0;
 
@@ -4287,12 +4322,6 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
         break;
 
     case WM_CTLCOLORLISTBOX:
-        if (state && state->usesListBox) {
-            HDC hdc = reinterpret_cast<HDC>(wParam);
-            SetBkColor(hdc, RGB(37, 37, 37));
-            SetTextColor(hdc, RGB(245, 245, 245));
-            return reinterpret_cast<INT_PTR>(state->owner->m_hListBrush);
-        }
         break;
 
     case WM_COMMAND:
@@ -4301,20 +4330,13 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             const UINT notifyCode = HIWORD(wParam);
             if (id == ID_MENU_CONTEXT_COPY) {
                 if (state->contextMenuTarget == state->textControl) {
-                    if (state->usesListBox) {
-                        std::wstring toCopy = GetSelectedListBoxText(state->textControl);
-                        if (toCopy.empty()) {
-                            toCopy = state->text;
-                        }
-                        ClipboardUtils::WriteText(hWnd, toCopy);
-                    } else {
-                        CopyEditSelectionOrAll(state->textControl);
-                    }
+                    CopyEditSelectionOrAll(state->textControl);
                 }
                 return 0;
             }
             if (id == ID_MENU_CONTEXT_SAVEAS) {
-                if (state->usesListBox && state->contextMenuTarget == state->textControl) {
+                const bool isLogs = state->kind == static_cast<int>(Application::InfoWindowKind::Logs);
+                if (isLogs && state->contextMenuTarget == state->textControl) {
                     std::wstring savedPath;
                     std::wstring saveError;
                     if (SaveTextWithDialog(hWnd, state->text, &savedPath, &saveError)) {
@@ -4328,7 +4350,8 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 return 0;
             }
             if (id == ID_MENU_CONTEXT_CLEAR_LOGS) {
-                if (state->usesListBox && state->owner) {
+                if (state->kind == static_cast<int>(Application::InfoWindowKind::Logs)
+                    && state->owner) {
                     state->owner->ClearLogs();
                 }
                 return 0;

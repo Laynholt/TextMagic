@@ -177,6 +177,7 @@ private:
     bool m_morePopupWindowClassRegistered = false;
     bool m_isExiting = false;
     bool m_scriptExecutionInProgress = false;
+    ULONGLONG m_lastScriptCompletionTick = 0;
     bool m_updateInProgress = false;
     bool m_archiveTaskInProgress = false;
     bool m_scriptInputAllText = false;
@@ -190,9 +191,9 @@ private:
 
     std::wstring m_initializationError;
     std::wstring m_scriptsDirectory;
+    std::wstring m_logPath;
     std::vector<RegisteredScript> m_scripts;
     std::map<int, size_t> m_scriptIndexByHotkeyId;
-    std::vector<std::wstring> m_executionLogs;
     std::vector<UiRenderer::PopupMenuItem> m_morePopupItems;
     std::vector<UiRenderer::PopupMenuItem> m_moreSubPopupItems;
 

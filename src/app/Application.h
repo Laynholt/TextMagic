@@ -42,7 +42,7 @@ private:
     enum class InfoWindowKind {
         About = 1,
         Logs = 2,
-        HotkeyExclusions = 3
+        ApplicationBlacklist = 3
     };
 
     struct RegisteredScript {
@@ -116,10 +116,16 @@ private:
     bool RegisterMessageWindowClass();
     void ShowAboutWindow();
     void ShowLogsWindow();
-    void ShowHotkeyExclusionsWindow();
+    void ShowApplicationBlacklistWindow();
     void CreateOrActivateInfoWindow(InfoWindowKind kind, HWND& targetHandle, const wchar_t* title, const std::wstring& bodyText);
     void OnInfoWindowClosed(InfoWindowKind kind);
     void UpdateInfoWindowText(InfoWindowKind kind, const std::wstring& text);
+    void RefreshApplicationBlacklistList();
+    void AddApplicationsToBlacklist(const std::vector<std::wstring>& paths);
+    void RemoveSelectedApplicationFromBlacklist();
+    bool PublishApplicationBlacklist(ApplicationBlacklist updated);
+    std::vector<std::wstring> SelectRunningApplications();
+    std::vector<std::wstring> SelectExecutableApplications();
 
     int ShowStyledMessageDialog(const wchar_t* title,
                                 const std::wstring& bodyText,
@@ -154,7 +160,7 @@ private:
 
     HWND m_hAboutWindow = nullptr;
     HWND m_hLogsWindow = nullptr;
-    HWND m_hHotkeyExclusionsWindow = nullptr;
+    HWND m_hApplicationBlacklistWindow = nullptr;
     HWND m_hMorePopupWindow = nullptr;
     HWND m_hMoreSubPopupWindow = nullptr;
 

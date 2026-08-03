@@ -11,6 +11,7 @@
 #include "InputBuffer.h"
 #include "LogFile.h"
 #include "PowerShellUtils.h"
+#include "RunningApplication.h"
 #include "resource.h"
 
 #include <windowsx.h>
@@ -19,6 +20,7 @@
 #include <gdiplus.h>
 #include <objbase.h>
 #include <shellapi.h>
+#include <shobjidl.h>
 #include <uxtheme.h>
 
 #include <algorithm>
@@ -67,7 +69,7 @@ enum MenuId {
     ID_MENU_INPUT_MODE_PREVIOUS_WORD = 2017,
     ID_MENU_INPUT_MODE_ALL_TEXT = 2018,
     ID_MENU_INPUT_MODE_LABEL = 2019,
-    ID_MENU_HOTKEY_EXCLUSIONS = 2020
+    ID_MENU_APPLICATION_BLACKLIST = 2020
 };
 
 constexpr UINT ID_MENU_LANGUAGE_DYNAMIC_FIRST = 2300;
@@ -77,7 +79,11 @@ enum InfoControlId {
     ID_INFO_TEXT = 2101,
     ID_INFO_CLOSE = 2102,
     ID_INFO_ACTION = 2103,
-    ID_INFO_FULLSCREEN_CHECKBOX = 2104
+    ID_INFO_FULLSCREEN_CHECKBOX = 2104,
+    ID_INFO_BLACKLIST_LIST = 2105,
+    ID_INFO_RUNNING_PICKER = 2106,
+    ID_INFO_EXE_PICKER = 2107,
+    ID_INFO_REMOVE_BLACKLIST = 2108
 };
 
 enum MessageControlId {
@@ -94,6 +100,10 @@ struct InfoWindowState {
     HWND closeButton = nullptr;
     HWND actionButton = nullptr;
     HWND fullscreenCheckbox = nullptr;
+    HWND blacklistList = nullptr;
+    HWND runningPickerButton = nullptr;
+    HWND exePickerButton = nullptr;
+    HWND removeButton = nullptr;
     HWND contextMenuTarget = nullptr;
     std::wstring title;
     std::wstring text;
@@ -114,6 +124,9 @@ struct MessageWindowState {
     bool hasSecondaryButton = false;
     bool useMonoFont = false;
     bool usesListBox = false;
+    bool runningApplicationSelection = false;
+    std::vector<RunningApplication> runningApplications;
+    std::vector<std::wstring>* selectedApplicationPathsOut = nullptr;
     int result = IDCANCEL;
     int* resultOut = nullptr;
     HBRUSH editBrush = nullptr;
@@ -153,6 +166,10 @@ constexpr int MORE_POPUP_ITEM_EXTRA_WIDTH = 34;
 constexpr int MORE_POPUP_WIDTH_PADDING = 14;
 constexpr int MORE_POPUP_TRACK_INTERVAL_MS = 25;
 constexpr ULONGLONG HOTKEY_DOUBLE_TAP_TIMEOUT_MS = 350;
+
+struct CheckboxVisualState {
+    bool hot = false;
+};
 
 bool DrawPaddedListBoxItem(const DRAWITEMSTRUCT* item) {
     if (!item || item->CtlType != ODT_LISTBOX || item->itemID == static_cast<UINT>(-1)) {
@@ -374,6 +391,39 @@ bool TryGetWindowExecutablePath(HWND window, std::wstring* path) {
     executablePath.resize(executablePathLength);
     *path = std::move(executablePath);
     return true;
+}
+
+BOOL CALLBACK CollectVisibleRunningApplication(HWND window, LPARAM parameter) {
+    if (!IsWindowVisible(window)) {
+        return TRUE;
+    }
+
+    const int titleLength = GetWindowTextLengthW(window);
+    if (titleLength <= 0) {
+        return TRUE;
+    }
+
+    std::wstring title(static_cast<size_t>(titleLength) + 1, L'\0');
+    const int copied = GetWindowTextW(window, title.data(), titleLength + 1);
+    if (copied <= 0) {
+        return TRUE;
+    }
+    title.resize(static_cast<size_t>(copied));
+
+    std::wstring path;
+    if (!TryGetWindowExecutablePath(window, &path)) {
+        return TRUE;
+    }
+
+    auto* applications = reinterpret_cast<std::vector<RunningApplication>*>(parameter);
+    applications->push_back({ fs::path(path).filename().wstring(), std::move(title), std::move(path) });
+    return TRUE;
+}
+
+std::vector<RunningApplication> EnumerateVisibleRunningApplications() {
+    std::vector<RunningApplication> applications;
+    EnumWindows(CollectVisibleRunningApplication, reinterpret_cast<LPARAM>(&applications));
+    return DeduplicateRunningApplications(applications);
 }
 
 bool IsForegroundHandlingBlocked() {
@@ -1212,8 +1262,8 @@ const wchar_t* GetMenuItemText(UINT itemId) {
         return T(L"menu.input_mode.previous_word");
     case ID_MENU_INPUT_MODE_ALL_TEXT:
         return T(L"menu.input_mode.all_text");
-    case ID_MENU_HOTKEY_EXCLUSIONS:
-        return T(L"menu.hotkey_exclusions");
+    case ID_MENU_APPLICATION_BLACKLIST:
+        return T(L"menu.application_blacklist");
     case ID_MENU_MORE_SEPARATOR:
         return L"";
     default:
@@ -1239,7 +1289,7 @@ bool IsStyledMenuItem(UINT itemId) {
         || itemId == ID_MENU_INPUT_MODE_LABEL
         || itemId == ID_MENU_INPUT_MODE_PREVIOUS_WORD
         || itemId == ID_MENU_INPUT_MODE_ALL_TEXT
-        || itemId == ID_MENU_HOTKEY_EXCLUSIONS
+        || itemId == ID_MENU_APPLICATION_BLACKLIST
         || itemId == ID_MENU_TRAY_EXIT
         || itemId == ID_MENU_MORE_SEPARATOR
         || IsDynamicLanguageMenuId(itemId);
@@ -1253,7 +1303,7 @@ const wchar_t* GetInfoWindowTitleByKind(int kind) {
         return GetMenuItemText(ID_MENU_MORE_LOGS);
     }
     if (kind == 3) {
-        return GetMenuItemText(ID_MENU_HOTKEY_EXCLUSIONS);
+        return T(L"application_blacklist.title");
     }
     return L"";
 }
@@ -1433,6 +1483,66 @@ LRESULT CALLBACK CopyOnlyContextSubclassProc(HWND hWnd, UINT message, WPARAM wPa
     }
     return DefSubclassProc(hWnd, message, wParam, lParam);
 }
+
+LRESULT CALLBACK CheckboxPaintSubclassProc(
+    HWND hWnd,
+    UINT message,
+    WPARAM wParam,
+    LPARAM lParam,
+    UINT_PTR subclassId,
+    DWORD_PTR refData
+) {
+    auto* visualState = reinterpret_cast<CheckboxVisualState*>(refData);
+    if (message == WM_MOUSEMOVE && visualState && !visualState->hot) {
+        visualState->hot = true;
+        TRACKMOUSEEVENT tracking = { sizeof(tracking), TME_LEAVE, hWnd, 0 };
+        TrackMouseEvent(&tracking);
+        InvalidateRect(hWnd, nullptr, FALSE);
+    } else if (message == WM_MOUSELEAVE && visualState) {
+        visualState->hot = false;
+        InvalidateRect(hWnd, nullptr, FALSE);
+    }
+
+    if (message == WM_PAINT) {
+        PAINTSTRUCT paint = {};
+        HDC hdc = BeginPaint(hWnd, &paint);
+        const int length = GetWindowTextLengthW(hWnd);
+        std::wstring label(static_cast<size_t>(length) + 1, L'\0');
+        if (length > 0) {
+            GetWindowTextW(hWnd, label.data(), length + 1);
+        }
+        label.resize(static_cast<size_t>(length));
+        const LRESULT state = SendMessageW(hWnd, BM_GETSTATE, 0, 0);
+        UiRenderer::DrawCustomCheckbox(
+            hdc,
+            hWnd,
+            label,
+            SendMessageW(hWnd, BM_GETCHECK, 0, 0) == BST_CHECKED,
+            visualState && visualState->hot,
+            (state & BST_PUSHED) != 0,
+            IsWindowEnabled(hWnd) != FALSE,
+            GetFocus() == hWnd
+        );
+        EndPaint(hWnd, &paint);
+        return 0;
+    }
+
+    if (message == WM_NCDESTROY) {
+        RemoveWindowSubclass(hWnd, CheckboxPaintSubclassProc, subclassId);
+        delete visualState;
+        return DefSubclassProc(hWnd, message, wParam, lParam);
+    }
+
+    const LRESULT result = DefSubclassProc(hWnd, message, wParam, lParam);
+    if (message == WM_LBUTTONDOWN || message == WM_LBUTTONUP
+        || message == WM_KEYDOWN || message == WM_KEYUP
+        || message == WM_SETFOCUS || message == WM_KILLFOCUS
+        || message == WM_ENABLE || message == WM_SETTEXT
+        || message == BM_SETCHECK || message == BM_SETSTATE) {
+        InvalidateRect(hWnd, nullptr, FALSE);
+    }
+    return result;
+}
 }
 
 Application::Application() = default;
@@ -1584,7 +1694,7 @@ int Application::Run() {
         if (activeInfoWindow
             && (activeInfoWindow == m_hAboutWindow
                 || activeInfoWindow == m_hLogsWindow
-                || activeInfoWindow == m_hHotkeyExclusionsWindow)
+                || activeInfoWindow == m_hApplicationBlacklistWindow)
             && IsDialogMessageW(activeInfoWindow, &msg)) {
             continue;
         }
@@ -1616,9 +1726,9 @@ void Application::Shutdown() {
         DestroyWindow(m_hLogsWindow);
         m_hLogsWindow = nullptr;
     }
-    if (m_hHotkeyExclusionsWindow && IsWindow(m_hHotkeyExclusionsWindow)) {
-        DestroyWindow(m_hHotkeyExclusionsWindow);
-        m_hHotkeyExclusionsWindow = nullptr;
+    if (m_hApplicationBlacklistWindow && IsWindow(m_hApplicationBlacklistWindow)) {
+        DestroyWindow(m_hApplicationBlacklistWindow);
+        m_hApplicationBlacklistWindow = nullptr;
     }
     CloseMorePopupWindows();
 
@@ -2384,8 +2494,8 @@ void Application::OnMenuCommand(UINT menuId) {
     case ID_MENU_INPUT_MODE_ALL_TEXT:
         SetScriptInputMode(true);
         break;
-    case ID_MENU_HOTKEY_EXCLUSIONS:
-        ShowHotkeyExclusionsWindow();
+    case ID_MENU_APPLICATION_BLACKLIST:
+        ShowApplicationBlacklistWindow();
         break;
     case ID_MENU_TRAY_EXIT:
         ExitApplication();
@@ -2664,7 +2774,7 @@ std::vector<UiRenderer::PopupMenuItem> Application::BuildMainMorePopupItems() co
         { ID_MENU_MORE_SEPARATOR, L"", true, false, false },
         { ID_MENU_INPUT_MODE_LABEL, GetMenuItemText(ID_MENU_INPUT_MODE_LABEL), false, false, true },
         { ID_MENU_MORE_SEPARATOR, L"", true, false, false },
-        { ID_MENU_HOTKEY_EXCLUSIONS, GetMenuItemText(ID_MENU_HOTKEY_EXCLUSIONS), false, false, false },
+        { ID_MENU_APPLICATION_BLACKLIST, GetMenuItemText(ID_MENU_APPLICATION_BLACKLIST), false, false, false },
         { ID_MENU_MORE_SEPARATOR, L"", true, false, false },
         { ID_MENU_MORE_ABOUT, GetMenuItemText(ID_MENU_MORE_ABOUT), false, false, false }
     };
@@ -2931,13 +3041,30 @@ void Application::ApplyLocalization() {
         if (state->fullscreenCheckbox) {
             SetWindowTextW(
                 state->fullscreenCheckbox,
-                T(L"hotkey_exclusions.disable_fullscreen")
+                T(L"application_blacklist.disable_fullscreen")
             );
+        }
+        if (state->blacklistList) {
+            LVCOLUMNW column = {};
+            column.mask = LVCF_TEXT;
+            column.pszText = const_cast<wchar_t*>(T(L"application_blacklist.column.application"));
+            ListView_SetColumn(state->blacklistList, 0, &column);
+            column.pszText = const_cast<wchar_t*>(T(L"application_blacklist.column.path"));
+            ListView_SetColumn(state->blacklistList, 1, &column);
+        }
+        if (state->runningPickerButton) {
+            SetWindowTextW(state->runningPickerButton, T(L"application_blacklist.running"));
+        }
+        if (state->exePickerButton) {
+            SetWindowTextW(state->exePickerButton, T(L"application_blacklist.add_exe"));
+        }
+        if (state->removeButton) {
+            SetWindowTextW(state->removeButton, T(L"application_blacklist.remove"));
         }
     };
     localizeInfoWindow(m_hAboutWindow, InfoWindowKind::About);
     localizeInfoWindow(m_hLogsWindow, InfoWindowKind::Logs);
-    localizeInfoWindow(m_hHotkeyExclusionsWindow, InfoWindowKind::HotkeyExclusions);
+    localizeInfoWindow(m_hApplicationBlacklistWindow, InfoWindowKind::ApplicationBlacklist);
     if (m_hAboutWindow && IsWindow(m_hAboutWindow)) {
         UpdateInfoWindowText(InfoWindowKind::About, BuildAboutText());
     }
@@ -3938,11 +4065,11 @@ void Application::ShowLogsWindow() {
     );
 }
 
-void Application::ShowHotkeyExclusionsWindow() {
+void Application::ShowApplicationBlacklistWindow() {
     CreateOrActivateInfoWindow(
-        InfoWindowKind::HotkeyExclusions,
-        m_hHotkeyExclusionsWindow,
-        GetInfoWindowTitleByKind(static_cast<int>(InfoWindowKind::HotkeyExclusions)),
+        InfoWindowKind::ApplicationBlacklist,
+        m_hApplicationBlacklistWindow,
+        GetInfoWindowTitleByKind(static_cast<int>(InfoWindowKind::ApplicationBlacklist)),
         L""
     );
 }
@@ -3952,7 +4079,7 @@ void Application::CreateOrActivateInfoWindow(InfoWindowKind kind, HWND& targetHa
         UpdateInfoWindowText(kind, bodyText);
         ShowWindow(targetHandle, SW_SHOWNORMAL);
         SetForegroundWindow(targetHandle);
-        if (kind == InfoWindowKind::HotkeyExclusions) {
+        if (kind == InfoWindowKind::ApplicationBlacklist) {
             SetFocus(GetDlgItem(targetHandle, ID_INFO_FULLSCREEN_CHECKBOX));
         }
         return;
@@ -3968,16 +4095,16 @@ void Application::CreateOrActivateInfoWindow(InfoWindowKind kind, HWND& targetHa
     RECT ownerRect = {};
     GetWindowRect(m_hWnd, &ownerRect);
     const bool isLogsWindow = kind == InfoWindowKind::Logs;
-    const bool isHotkeyExclusionsWindow = kind == InfoWindowKind::HotkeyExclusions;
-    const int width = isLogsWindow ? 700 : 560;
-    const int height = isLogsWindow ? 480 : (isHotkeyExclusionsWindow ? 200 : 360);
+    const bool isApplicationBlacklistWindow = kind == InfoWindowKind::ApplicationBlacklist;
+    const int width = isApplicationBlacklistWindow ? 760 : (isLogsWindow ? 700 : 560);
+    const int height = isApplicationBlacklistWindow ? 520 : (isLogsWindow ? 480 : 360);
     const int x = ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2;
     const int y = ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2;
 
     const DWORD infoStyle = isLogsWindow
         ? WS_OVERLAPPEDWINDOW
-        : (isHotkeyExclusionsWindow
-            ? (WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU)
+        : (isApplicationBlacklistWindow
+            ? WS_OVERLAPPEDWINDOW
             : (WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX));
 
     HWND infoWindow = CreateWindowExW(
@@ -4003,7 +4130,7 @@ void Application::CreateOrActivateInfoWindow(InfoWindowKind kind, HWND& targetHa
     targetHandle = infoWindow;
     ShowWindow(infoWindow, SW_SHOWNORMAL);
     UpdateWindow(infoWindow);
-    if (kind == InfoWindowKind::HotkeyExclusions) {
+    if (kind == InfoWindowKind::ApplicationBlacklist) {
         SetFocus(state->fullscreenCheckbox);
     }
 }
@@ -4013,8 +4140,8 @@ void Application::OnInfoWindowClosed(InfoWindowKind kind) {
         m_hAboutWindow = nullptr;
     } else if (kind == InfoWindowKind::Logs) {
         m_hLogsWindow = nullptr;
-    } else if (kind == InfoWindowKind::HotkeyExclusions) {
-        m_hHotkeyExclusionsWindow = nullptr;
+    } else if (kind == InfoWindowKind::ApplicationBlacklist) {
+        m_hApplicationBlacklistWindow = nullptr;
     }
 }
 
@@ -4024,8 +4151,8 @@ void Application::UpdateInfoWindowText(InfoWindowKind kind, const std::wstring& 
         target = m_hAboutWindow;
     } else if (kind == InfoWindowKind::Logs) {
         target = m_hLogsWindow;
-    } else if (kind == InfoWindowKind::HotkeyExclusions) {
-        target = m_hHotkeyExclusionsWindow;
+    } else if (kind == InfoWindowKind::ApplicationBlacklist) {
+        target = m_hApplicationBlacklistWindow;
     }
     if (!target || !IsWindow(target)) {
         return;
@@ -4037,6 +4164,238 @@ void Application::UpdateInfoWindowText(InfoWindowKind kind, const std::wstring& 
     }
     state->text = text;
     SetWindowTextW(state->textControl, state->text.c_str());
+}
+
+void Application::RefreshApplicationBlacklistList() {
+    if (!m_hApplicationBlacklistWindow || !IsWindow(m_hApplicationBlacklistWindow)) {
+        return;
+    }
+    auto* state = reinterpret_cast<InfoWindowState*>(
+        GetWindowLongPtrW(m_hApplicationBlacklistWindow, GWLP_USERDATA)
+    );
+    if (!state || !state->blacklistList) {
+        return;
+    }
+
+    ListView_DeleteAllItems(state->blacklistList);
+    int index = 0;
+    for (const std::wstring& path : m_applicationBlacklist.Paths()) {
+        std::wstring executableName = fs::path(path).filename().wstring();
+        LVITEMW item = {};
+        item.mask = LVIF_TEXT;
+        item.iItem = index;
+        item.pszText = executableName.data();
+        const int inserted = ListView_InsertItem(state->blacklistList, &item);
+        if (inserted >= 0) {
+            ListView_SetItemText(
+                state->blacklistList,
+                inserted,
+                1,
+                const_cast<wchar_t*>(path.c_str())
+            );
+            ++index;
+        }
+    }
+    EnableWindow(state->removeButton, FALSE);
+}
+
+bool Application::PublishApplicationBlacklist(ApplicationBlacklist updated) {
+    std::wstring error;
+    if (!updated.Save(m_blacklistPath, &error)) {
+        std::wstring message = T(L"application_blacklist.save_error");
+        if (!error.empty()) {
+            message += L"\r\n\r\n" + error;
+        }
+        ShowStyledMessage(T(L"application_blacklist.title"), message);
+        return false;
+    }
+
+    m_applicationBlacklist = std::move(updated);
+    InvalidateForegroundBlockCache();
+    RefreshApplicationBlacklistList();
+    return true;
+}
+
+void Application::AddApplicationsToBlacklist(const std::vector<std::wstring>& paths) {
+    ApplicationBlacklist updated = m_applicationBlacklist;
+    bool changed = false;
+    for (const std::wstring& path : paths) {
+        changed = updated.Add(path) || changed;
+    }
+    if (changed) {
+        PublishApplicationBlacklist(std::move(updated));
+    }
+}
+
+void Application::RemoveSelectedApplicationFromBlacklist() {
+    if (!m_hApplicationBlacklistWindow || !IsWindow(m_hApplicationBlacklistWindow)) {
+        return;
+    }
+    auto* state = reinterpret_cast<InfoWindowState*>(
+        GetWindowLongPtrW(m_hApplicationBlacklistWindow, GWLP_USERDATA)
+    );
+    if (!state || !state->blacklistList) {
+        return;
+    }
+
+    const int selected = ListView_GetNextItem(state->blacklistList, -1, LVNI_SELECTED);
+    if (selected < 0) {
+        return;
+    }
+    std::wstring path(32768, L'\0');
+    LVITEMW item = {};
+    item.iSubItem = 1;
+    item.pszText = path.data();
+    item.cchTextMax = static_cast<int>(path.size());
+    const int length = static_cast<int>(SendMessageW(
+        state->blacklistList,
+        LVM_GETITEMTEXTW,
+        selected,
+        reinterpret_cast<LPARAM>(&item)
+    ));
+    path.resize(static_cast<size_t>(std::max(0, length)));
+
+    ApplicationBlacklist updated = m_applicationBlacklist;
+    if (updated.Remove(path)) {
+        PublishApplicationBlacklist(std::move(updated));
+    }
+}
+
+std::vector<std::wstring> Application::SelectRunningApplications() {
+    std::vector<RunningApplication> applications = EnumerateVisibleRunningApplications();
+    std::vector<std::wstring> selectedPaths;
+    MessageWindowState* state = new MessageWindowState();
+    state->owner = this;
+    state->title = T(L"application_blacklist.running");
+    state->primaryButtonText = T(L"application_blacklist.add_selected");
+    state->secondaryButtonText = T(L"app.button.cancel");
+    state->hasSecondaryButton = true;
+    state->usesListBox = true;
+    state->runningApplicationSelection = true;
+    state->runningApplications = std::move(applications);
+    state->selectedApplicationPathsOut = &selectedPaths;
+    state->editBrush = CreateSolidBrush(RGB(45, 45, 45));
+
+    RECT ownerRect = {};
+    HWND dialogOwner = m_hApplicationBlacklistWindow;
+    GetWindowRect(dialogOwner, &ownerRect);
+    const int width = 760;
+    const int height = 520;
+    const int x = ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2;
+    const int y = ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2;
+    HWND messageWindow = CreateWindowExW(
+        0,
+        MESSAGE_WINDOW_CLASS_NAME,
+        state->title.c_str(),
+        WS_OVERLAPPEDWINDOW,
+        x, y, width, height,
+        dialogOwner,
+        nullptr,
+        m_hInstance,
+        state
+    );
+    if (!messageWindow) {
+        DeleteObject(state->editBrush);
+        delete state;
+        return selectedPaths;
+    }
+
+    EnableWindow(dialogOwner, FALSE);
+    ShowWindow(messageWindow, SW_SHOWNORMAL);
+    UpdateWindow(messageWindow);
+    MSG message = {};
+    while (IsWindow(messageWindow) && GetMessageW(&message, nullptr, 0, 0)) {
+        if (!IsDialogMessageW(messageWindow, &message)) {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+    EnableWindow(dialogOwner, TRUE);
+    SetForegroundWindow(dialogOwner);
+    return selectedPaths;
+}
+
+std::vector<std::wstring> Application::SelectExecutableApplications() {
+    std::vector<std::wstring> paths;
+    IFileOpenDialog* dialog = nullptr;
+    HRESULT result = CoCreateInstance(
+        CLSID_FileOpenDialog,
+        nullptr,
+        CLSCTX_INPROC_SERVER,
+        IID_PPV_ARGS(&dialog)
+    );
+    if (SUCCEEDED(result) && !dialog) {
+        result = E_UNEXPECTED;
+    }
+    if (SUCCEEDED(result)) {
+        DWORD options = 0;
+        result = dialog->GetOptions(&options);
+        if (SUCCEEDED(result)) {
+            result = dialog->SetOptions(
+                options | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST | FOS_ALLOWMULTISELECT
+            );
+        }
+        const COMDLG_FILTERSPEC filter = { L"Applications (*.exe)", L"*.exe" };
+        if (SUCCEEDED(result)) {
+            result = dialog->SetFileTypes(1, &filter);
+        }
+        if (SUCCEEDED(result)) {
+            result = dialog->Show(m_hApplicationBlacklistWindow);
+        }
+    }
+
+    if (result == HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
+        if (dialog) {
+            dialog->Release();
+        }
+        return paths;
+    }
+
+    IShellItemArray* items = nullptr;
+    if (SUCCEEDED(result)) {
+        result = dialog->GetResults(&items);
+    }
+    if (SUCCEEDED(result) && !items) {
+        result = E_UNEXPECTED;
+    }
+    DWORD count = 0;
+    if (SUCCEEDED(result)) {
+        result = items->GetCount(&count);
+    }
+    for (DWORD index = 0; SUCCEEDED(result) && index < count; ++index) {
+        IShellItem* item = nullptr;
+        result = items->GetItemAt(index, &item);
+        if (FAILED(result) || !item) {
+            if (item) {
+                item->Release();
+            } else if (SUCCEEDED(result)) {
+                result = E_UNEXPECTED;
+            }
+            break;
+        }
+        PWSTR path = nullptr;
+        result = item->GetDisplayName(SIGDN_FILESYSPATH, &path);
+        if (SUCCEEDED(result) && path) {
+            paths.emplace_back(path);
+        }
+        CoTaskMemFree(path);
+        item->Release();
+    }
+    if (items) {
+        items->Release();
+    }
+    if (dialog) {
+        dialog->Release();
+    }
+    if (FAILED(result)) {
+        paths.clear();
+        ShowStyledMessage(
+            T(L"application_blacklist.title"),
+            std::wstring(T(L"app.dialog.file_dialog_error_prefix"))
+                + std::to_wstring(static_cast<long>(result))
+        );
+    }
+    return paths;
 }
 
 int Application::ShowStyledMessageDialog(const wchar_t* title,
@@ -4206,9 +4565,10 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
     case WM_GETMINMAXINFO:
         if (state) {
             auto* info = reinterpret_cast<MINMAXINFO*>(lParam);
-            const bool isLogs = state->kind == static_cast<int>(Application::InfoWindowKind::Logs);
-            info->ptMinTrackSize.x = isLogs ? LOGS_MIN_WIDTH : INFO_MIN_WIDTH;
-            info->ptMinTrackSize.y = isLogs ? LOGS_MIN_HEIGHT : INFO_MIN_HEIGHT;
+            const bool usesLargeMinimum = state->kind == static_cast<int>(Application::InfoWindowKind::Logs)
+                || state->kind == static_cast<int>(Application::InfoWindowKind::ApplicationBlacklist);
+            info->ptMinTrackSize.x = usesLargeMinimum ? LOGS_MIN_WIDTH : INFO_MIN_WIDTH;
+            info->ptMinTrackSize.y = usesLargeMinimum ? LOGS_MIN_HEIGHT : INFO_MIN_HEIGHT;
             return 0;
         }
         break;
@@ -4238,9 +4598,9 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                     EC_LEFTMARGIN | EC_RIGHTMARGIN,
                     MAKELPARAM(LIST_TEXT_PADDING, LIST_TEXT_PADDING)
                 );
-            } else if (state->kind == static_cast<int>(Application::InfoWindowKind::HotkeyExclusions)) {
+            } else if (state->kind == static_cast<int>(Application::InfoWindowKind::ApplicationBlacklist)) {
                 state->fullscreenCheckbox = CreateWindowExW(
-                    0, L"BUTTON", T(L"hotkey_exclusions.disable_fullscreen"),
+                    0, L"BUTTON", T(L"application_blacklist.disable_fullscreen"),
                     WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
                     0, 0, 100, 28,
                     hWnd,
@@ -4254,6 +4614,61 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                     state->owner->m_disableHotkeysInFullscreen ? BST_CHECKED : BST_UNCHECKED,
                     0
                 );
+                auto* checkboxState = new CheckboxVisualState();
+                if (!SetWindowSubclass(
+                        state->fullscreenCheckbox,
+                        CheckboxPaintSubclassProc,
+                        1,
+                        reinterpret_cast<DWORD_PTR>(checkboxState))) {
+                    delete checkboxState;
+                }
+
+                state->blacklistList = CreateWindowExW(
+                    0, WC_LISTVIEWW, L"",
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+                    0, 0, 100, 100,
+                    hWnd,
+                    reinterpret_cast<HMENU>(ID_INFO_BLACKLIST_LIST),
+                    GetModuleHandleW(nullptr),
+                    nullptr
+                );
+                ListView_SetExtendedListViewStyle(
+                    state->blacklistList,
+                    LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER
+                );
+                ListView_SetBkColor(state->blacklistList, RGB(37, 37, 37));
+                ListView_SetTextBkColor(state->blacklistList, RGB(37, 37, 37));
+                ListView_SetTextColor(state->blacklistList, RGB(245, 245, 245));
+                ApplyDarkScrollBar(state->blacklistList);
+
+                LVCOLUMNW column = {};
+                column.mask = LVCF_TEXT | LVCF_WIDTH;
+                column.cx = 190;
+                column.pszText = const_cast<wchar_t*>(T(L"application_blacklist.column.application"));
+                ListView_InsertColumn(state->blacklistList, 0, &column);
+                column.cx = 500;
+                column.pszText = const_cast<wchar_t*>(T(L"application_blacklist.column.path"));
+                ListView_InsertColumn(state->blacklistList, 1, &column);
+
+                state->runningPickerButton = CreateWindowExW(
+                    0, L"BUTTON", T(L"application_blacklist.running"),
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+                    0, 0, 170, 34,
+                    hWnd, reinterpret_cast<HMENU>(ID_INFO_RUNNING_PICKER), GetModuleHandleW(nullptr), nullptr
+                );
+                state->exePickerButton = CreateWindowExW(
+                    0, L"BUTTON", T(L"application_blacklist.add_exe"),
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+                    0, 0, 130, 34,
+                    hWnd, reinterpret_cast<HMENU>(ID_INFO_EXE_PICKER), GetModuleHandleW(nullptr), nullptr
+                );
+                state->removeButton = CreateWindowExW(
+                    0, L"BUTTON", T(L"application_blacklist.remove"),
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+                    0, 0, 110, 34,
+                    hWnd, reinterpret_cast<HMENU>(ID_INFO_REMOVE_BLACKLIST), GetModuleHandleW(nullptr), nullptr
+                );
+                EnableWindow(state->removeButton, FALSE);
             } else {
                 state->textControl = CreateWindowExW(
                     0, L"EDIT", state->text.c_str(),
@@ -4300,6 +4715,14 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                     TRUE
                 );
             }
+            if (state->blacklistList) {
+                SendMessageW(state->blacklistList, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
+                SendMessageW(state->runningPickerButton, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
+                SendMessageW(state->exePickerButton, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
+                SendMessageW(state->removeButton, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
+                state->owner->m_hApplicationBlacklistWindow = hWnd;
+                state->owner->RefreshApplicationBlacklistList();
+            }
         }
         return 0;
 
@@ -4317,9 +4740,21 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
 
             const int textTop = m + titleH + 6;
             MoveWindow(state->titleLabel, m, m, w - 2 * m, titleH, TRUE);
-            if (state->kind == static_cast<int>(Application::InfoWindowKind::HotkeyExclusions)) {
+            if (state->kind == static_cast<int>(Application::InfoWindowKind::ApplicationBlacklist)) {
                 MoveWindow(state->fullscreenCheckbox, m, textTop, w - 2 * m, 28, TRUE);
+                const int listTop = textTop + 36;
+                const int listHeight = std::max(100, h - listTop - m - bh - footerGap);
+                const int y = listTop + listHeight + footerGap;
+                const int runningW = 180;
+                const int exeW = 130;
+                const int removeW = 110;
+                MoveWindow(state->blacklistList, m, listTop, w - 2 * m, listHeight, TRUE);
+                MoveWindow(state->runningPickerButton, m, y, runningW, bh, TRUE);
+                MoveWindow(state->exePickerButton, m + runningW + gap, y, exeW, bh, TRUE);
+                MoveWindow(state->removeButton, m + runningW + gap + exeW + gap, y, removeW, bh, TRUE);
                 MoveWindow(state->closeButton, w - m - closeW, h - m - bh, closeW, bh, TRUE);
+                ListView_SetColumnWidth(state->blacklistList, 0, 190);
+                ListView_SetColumnWidth(state->blacklistList, 1, std::max(240, w - 2 * m - 194));
                 return 0;
             }
 
@@ -4445,6 +4880,40 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
     case WM_CTLCOLORLISTBOX:
         break;
 
+    case WM_NOTIFY:
+        if (state) {
+            auto* header = reinterpret_cast<NMHDR*>(lParam);
+            if (header && header->hwndFrom == state->blacklistList) {
+                if (header->code == LVN_ITEMCHANGED) {
+                    EnableWindow(
+                        state->removeButton,
+                        ListView_GetNextItem(state->blacklistList, -1, LVNI_SELECTED) >= 0
+                    );
+                    return 0;
+                }
+                if (header->code == LVN_KEYDOWN) {
+                    const auto* key = reinterpret_cast<NMLVKEYDOWN*>(lParam);
+                    if (key->wVKey == VK_DELETE && state->owner) {
+                        state->owner->RemoveSelectedApplicationFromBlacklist();
+                    }
+                    return 0;
+                }
+                if (header->code == NM_CUSTOMDRAW) {
+                    auto* draw = reinterpret_cast<NMLVCUSTOMDRAW*>(lParam);
+                    if (draw->nmcd.dwDrawStage == CDDS_PREPAINT) {
+                        return CDRF_NOTIFYITEMDRAW;
+                    }
+                    if (draw->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
+                        const bool selected = (draw->nmcd.uItemState & CDIS_SELECTED) != 0;
+                        draw->clrText = RGB(245, 245, 245);
+                        draw->clrTextBk = selected ? RGB(58, 58, 58) : RGB(37, 37, 37);
+                        return CDRF_DODEFAULT;
+                    }
+                }
+            }
+        }
+        break;
+
     case WM_COMMAND:
         if (state) {
             const UINT id = LOWORD(wParam);
@@ -4490,6 +4959,22 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 );
                 return 0;
             }
+            if (id == ID_INFO_RUNNING_PICKER && state->owner) {
+                state->owner->AddApplicationsToBlacklist(
+                    state->owner->SelectRunningApplications()
+                );
+                return 0;
+            }
+            if (id == ID_INFO_EXE_PICKER && state->owner) {
+                state->owner->AddApplicationsToBlacklist(
+                    state->owner->SelectExecutableApplications()
+                );
+                return 0;
+            }
+            if (id == ID_INFO_REMOVE_BLACKLIST && state->owner) {
+                state->owner->RemoveSelectedApplicationFromBlacklist();
+                return 0;
+            }
             if (id == ID_INFO_CLOSE || id == IDOK || id == IDCANCEL) {
                 DestroyWindow(hWnd);
                 return 0;
@@ -4532,6 +5017,15 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
     }
 
     switch (message) {
+    case WM_GETMINMAXINFO:
+        if (state && state->runningApplicationSelection) {
+            auto* info = reinterpret_cast<MINMAXINFO*>(lParam);
+            info->ptMinTrackSize.x = LOGS_MIN_WIDTH;
+            info->ptMinTrackSize.y = LOGS_MIN_HEIGHT;
+            return 0;
+        }
+        break;
+
     case WM_CREATE:
         if (state) {
             state->titleLabel = CreateWindowExW(
@@ -4541,27 +5035,44 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
                 hWnd, nullptr, GetModuleHandleW(nullptr), nullptr
             );
             state->usesListBox = true;
+            const DWORD listStyle = state->runningApplicationSelection
+                ? (LBS_NOINTEGRALHEIGHT | LBS_EXTENDEDSEL | LBS_OWNERDRAWFIXED | LBS_HASSTRINGS)
+                : (LBS_NOINTEGRALHEIGHT | LBS_NOSEL);
             state->textControl = CreateWindowExW(
                 0, L"LISTBOX", nullptr,
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | LBS_NOINTEGRALHEIGHT | LBS_NOSEL,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | listStyle,
                 0, 0, 100, 100,
                 hWnd, reinterpret_cast<HMENU>(ID_MESSAGE_TEXT), GetModuleHandleW(nullptr), nullptr
             );
             if (state->textControl) {
                 ApplyDarkScrollBar(state->textControl);
-                FillListBoxWithWrappedText(state->textControl, state->text);
-                SetWindowSubclass(state->textControl, CopyOnlyContextSubclassProc, 1, reinterpret_cast<DWORD_PTR>(hWnd));
+                if (state->runningApplicationSelection) {
+                    SendMessageW(state->textControl, LB_SETITEMHEIGHT, 0, LIST_ITEM_HEIGHT);
+                    for (const RunningApplication& application : state->runningApplications) {
+                        const std::wstring row = application.executableName + L" — "
+                            + application.windowTitle + L" — " + application.path;
+                        SendMessageW(
+                            state->textControl,
+                            LB_ADDSTRING,
+                            0,
+                            reinterpret_cast<LPARAM>(row.c_str())
+                        );
+                    }
+                } else {
+                    FillListBoxWithWrappedText(state->textControl, state->text);
+                    SetWindowSubclass(state->textControl, CopyOnlyContextSubclassProc, 1, reinterpret_cast<DWORD_PTR>(hWnd));
+                }
             }
             state->primaryButton = CreateWindowExW(
                 0, L"BUTTON", state->primaryButtonText.c_str(),
-                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
                 0, 0, 120, 34,
                 hWnd, reinterpret_cast<HMENU>(ID_MESSAGE_PRIMARY), GetModuleHandleW(nullptr), nullptr
             );
             if (state->hasSecondaryButton) {
                 state->secondaryButton = CreateWindowExW(
                     0, L"BUTTON", state->secondaryButtonText.c_str(),
-                    WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
                     0, 0, 120, 34,
                     hWnd, reinterpret_cast<HMENU>(ID_MESSAGE_SECONDARY), GetModuleHandleW(nullptr), nullptr
                 );
@@ -4583,7 +5094,7 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
             const int m = 14;
             const int titleH = 24;
             const int bh = 34;
-            const int bw = 126;
+            const int bw = state->runningApplicationSelection ? 180 : 126;
             const int gap = 10;
             const int footerGap = 10;
 
@@ -4593,7 +5104,7 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
 
             MoveWindow(state->titleLabel, m, m, w - 2 * m, titleH, TRUE);
             MoveWindow(state->textControl, m, textTop, w - 2 * m, textHeight, TRUE);
-            if (state->usesListBox && state->textControl) {
+            if (state->usesListBox && state->textControl && !state->runningApplicationSelection) {
                 FillListBoxWithWrappedText(state->textControl, state->text);
             }
             if (state->hasSecondaryButton && state->secondaryButton) {
@@ -4621,6 +5132,9 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
             auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
             if (!dis) {
                 break;
+            }
+            if (state && state->runningApplicationSelection && DrawPaddedListBoxItem(dis)) {
+                return TRUE;
             }
             if (dis->CtlType == ODT_MENU && IsStyledMenuItem(ResolveStyledMenuItemId(dis->itemID, dis->itemData))) {
                 DrawStyledMenuItem(dis);
@@ -4653,7 +5167,7 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
     case WM_CONTEXTMENU:
         if (state) {
             HWND sourceControl = reinterpret_cast<HWND>(wParam);
-            if (sourceControl == state->textControl) {
+            if (sourceControl == state->textControl && !state->runningApplicationSelection) {
                 state->contextMenuTarget = sourceControl;
                 const POINT point = ResolveContextMenuPoint(sourceControl, lParam);
                 ShowStyledContextMenu(hWnd, point, false);
@@ -4723,6 +5237,25 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
                 return 0;
             }
             if (id == ID_MESSAGE_PRIMARY || id == IDOK) {
+                if (state->runningApplicationSelection && state->selectedApplicationPathsOut) {
+                    const LRESULT selectionCount = SendMessageW(state->textControl, LB_GETSELCOUNT, 0, 0);
+                    if (selectionCount > 0) {
+                        std::vector<int> selected(static_cast<size_t>(selectionCount));
+                        SendMessageW(
+                            state->textControl,
+                            LB_GETSELITEMS,
+                            static_cast<WPARAM>(selected.size()),
+                            reinterpret_cast<LPARAM>(selected.data())
+                        );
+                        for (const int index : selected) {
+                            if (index >= 0 && static_cast<size_t>(index) < state->runningApplications.size()) {
+                                state->selectedApplicationPathsOut->push_back(
+                                    state->runningApplications[static_cast<size_t>(index)].path
+                                );
+                            }
+                        }
+                    }
+                }
                 state->result = state->hasSecondaryButton ? IDYES : IDOK;
                 DestroyWindow(hWnd);
                 return 0;

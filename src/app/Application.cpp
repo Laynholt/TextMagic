@@ -19,6 +19,7 @@
 #include <commdlg.h>
 #include <gdiplus.h>
 #include <objbase.h>
+#include <richedit.h>
 #include <shellapi.h>
 #include <shobjidl.h>
 #include <uxtheme.h>
@@ -108,6 +109,8 @@ struct InfoWindowState {
     std::wstring title;
     std::wstring text;
     HBRUSH editBrush = nullptr;
+    bool richEdit = false;
+    bool logPlaceholderVisible = false;
 };
 
 struct MessageWindowState {
@@ -1599,6 +1602,7 @@ bool Application::Initialize(HINSTANCE hInstance) {
     icex.dwSize = sizeof(icex);
     icex.dwICC = ICC_WIN95_CLASSES;
     InitCommonControlsEx(&icex);
+    m_msfteditModule = LoadLibraryW(L"Msftedit.dll");
 
     m_hBackgroundBrush = CreateSolidBrush(RGB(26, 26, 26));
     m_hCardBrush = CreateSolidBrush(RGB(45, 45, 45));
@@ -1731,6 +1735,11 @@ void Application::Shutdown() {
         m_hApplicationBlacklistWindow = nullptr;
     }
     CloseMorePopupWindows();
+
+    if (m_msfteditModule) {
+        FreeLibrary(m_msfteditModule);
+        m_msfteditModule = nullptr;
+    }
 
     m_toolTip.reset();
 
@@ -3069,7 +3078,7 @@ void Application::ApplyLocalization() {
         UpdateInfoWindowText(InfoWindowKind::About, BuildAboutText());
     }
     if (m_hLogsWindow && IsWindow(m_hLogsWindow)) {
-        UpdateInfoWindowText(InfoWindowKind::Logs, BuildLogText());
+        UpdateInfoWindowText(InfoWindowKind::Logs, L"");
     }
 }
 
@@ -4061,7 +4070,7 @@ void Application::ShowLogsWindow() {
         InfoWindowKind::Logs,
         m_hLogsWindow,
         GetInfoWindowTitleByKind(static_cast<int>(InfoWindowKind::Logs)),
-        BuildLogText()
+        L""
     );
 }
 
@@ -4076,7 +4085,9 @@ void Application::ShowApplicationBlacklistWindow() {
 
 void Application::CreateOrActivateInfoWindow(InfoWindowKind kind, HWND& targetHandle, const wchar_t* title, const std::wstring& bodyText) {
     if (targetHandle && IsWindow(targetHandle)) {
-        UpdateInfoWindowText(kind, bodyText);
+        if (kind != InfoWindowKind::Logs) {
+            UpdateInfoWindowText(kind, bodyText);
+        }
         ShowWindow(targetHandle, SW_SHOWNORMAL);
         SetForegroundWindow(targetHandle);
         if (kind == InfoWindowKind::ApplicationBlacklist) {
@@ -4089,7 +4100,9 @@ void Application::CreateOrActivateInfoWindow(InfoWindowKind kind, HWND& targetHa
     state->owner = this;
     state->kind = static_cast<int>(kind);
     state->title = title ? title : L"";
-    state->text = bodyText;
+    if (kind != InfoWindowKind::Logs) {
+        state->text = bodyText;
+    }
     state->editBrush = CreateSolidBrush(RGB(45, 45, 45));
 
     RECT ownerRect = {};
@@ -4160,6 +4173,15 @@ void Application::UpdateInfoWindowText(InfoWindowKind kind, const std::wstring& 
 
     auto* state = reinterpret_cast<InfoWindowState*>(GetWindowLongPtrW(target, GWLP_USERDATA));
     if (!state || !state->textControl) {
+        return;
+    }
+    if (kind == InfoWindowKind::Logs) {
+        const std::wstring logText = LogFile::Read(m_logPath);
+        state->logPlaceholderVisible = logText.empty();
+        SetWindowTextW(
+            state->textControl,
+            state->logPlaceholderVisible ? T(L"log.is_empty") : logText.c_str()
+        );
         return;
     }
     state->text = text;
@@ -4509,18 +4531,25 @@ void Application::AppendLog(const std::wstring& line) {
         return;
     }
 
-    if (state->text.empty() || state->text == T(L"log.is_empty")) {
-        state->text = persistedLine;
-        SetWindowTextW(state->textControl, state->text.c_str());
+    if (state->logPlaceholderVisible) {
+        SetWindowTextW(state->textControl, persistedLine.c_str());
+        state->logPlaceholderVisible = false;
     } else {
         const std::wstring addition = L"\r\n" + persistedLine;
-        state->text += addition;
         SendMessageW(state->textControl, EM_SETSEL, static_cast<WPARAM>(-1), -1);
         SendMessageW(
             state->textControl,
             EM_REPLACESEL,
             FALSE,
             reinterpret_cast<LPARAM>(addition.c_str())
+        );
+    }
+    if (!state->richEdit) {
+        RedrawWindow(
+            state->textControl,
+            nullptr,
+            nullptr,
+            RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW
         );
     }
     SendMessageW(state->textControl, EM_SCROLLCARET, 0, 0);
@@ -4530,7 +4559,7 @@ void Application::ClearLogs() {
     if (!LogFile::Clear(m_logPath)) {
         return;
     }
-    UpdateInfoWindowText(InfoWindowKind::Logs, BuildLogText());
+    UpdateInfoWindowText(InfoWindowKind::Logs, L"");
     SetStatusText(T(L"status.logs_cleared"));
 }
 
@@ -4541,14 +4570,6 @@ std::wstring Application::BuildAboutText() const {
     stream << T(L"about.scripts_directory_prefix") << m_scriptsDirectory << L"\r\n\r\n";
     stream << T(L"about.check_updates_hint");
     return stream.str();
-}
-
-std::wstring Application::BuildLogText() const {
-    const std::wstring text = LogFile::Read(m_logPath);
-    if (text.empty()) {
-        return T(L"log.is_empty");
-    }
-    return text;
 }
 
 LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -4583,14 +4604,44 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             );
 
             if (state->kind == static_cast<int>(Application::InfoWindowKind::Logs)) {
-                state->textControl = CreateWindowExW(
-                    0, L"EDIT", state->text.c_str(),
-                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL
-                        | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_NOHIDESEL,
-                    0, 0, 100, 100,
-                    hWnd, reinterpret_cast<HMENU>(ID_INFO_TEXT), GetModuleHandleW(nullptr), nullptr
-                );
-                ApplyDarkScrollBar(state->textControl);
+                const std::wstring logText = LogFile::Read(state->owner->m_logPath);
+                state->logPlaceholderVisible = logText.empty();
+                const wchar_t* initialText = state->logPlaceholderVisible ? T(L"log.is_empty") : logText.c_str();
+                const DWORD logStyles = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL
+                    | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_NOHIDESEL;
+
+                if (state->owner->m_msfteditModule) {
+                    state->textControl = CreateWindowExW(
+                        0, MSFTEDIT_CLASS, initialText, logStyles,
+                        0, 0, 100, 100,
+                        hWnd, reinterpret_cast<HMENU>(ID_INFO_TEXT), GetModuleHandleW(nullptr), nullptr
+                    );
+                    if (state->textControl) {
+                        state->richEdit = true;
+                        SendMessageW(state->textControl, EM_SETBKGNDCOLOR, 0, RGB(45, 45, 45));
+                        CHARFORMAT2W textFormat = {};
+                        textFormat.cbSize = sizeof(textFormat);
+                        textFormat.dwMask = CFM_COLOR;
+                        textFormat.crTextColor = RGB(245, 245, 245);
+                        SendMessageW(
+                            state->textControl,
+                            EM_SETCHARFORMAT,
+                            SCF_ALL,
+                            reinterpret_cast<LPARAM>(&textFormat)
+                        );
+                    }
+                }
+                if (!state->textControl) {
+                    state->textControl = CreateWindowExW(
+                        0, L"EDIT", initialText, logStyles,
+                        0, 0, 100, 100,
+                        hWnd, reinterpret_cast<HMENU>(ID_INFO_TEXT), GetModuleHandleW(nullptr), nullptr
+                    );
+                    if (state->textControl) {
+                        SetWindowTheme(state->textControl, L"", L"");
+                        ApplyDarkScrollBar(state->textControl);
+                    }
+                }
                 SendMessageW(state->textControl, EM_SETLIMITTEXT, 0x7FFFFFFE, 0);
                 SendMessageW(
                     state->textControl,
@@ -4926,10 +4977,15 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             }
             if (id == ID_MENU_CONTEXT_SAVEAS) {
                 const bool isLogs = state->kind == static_cast<int>(Application::InfoWindowKind::Logs);
-                if (isLogs && state->contextMenuTarget == state->textControl) {
+                if (isLogs && state->owner && state->contextMenuTarget == state->textControl) {
                     std::wstring savedPath;
                     std::wstring saveError;
-                    if (SaveTextWithDialog(hWnd, state->text, &savedPath, &saveError)) {
+                    if (SaveTextWithDialog(
+                            hWnd,
+                            LogFile::Read(state->owner->m_logPath),
+                            &savedPath,
+                            &saveError
+                        )) {
                         if (state->owner) {
                             state->owner->AppendLog(std::wstring(T(L"app.log.logs.saved_prefix")) + savedPath);
                         }

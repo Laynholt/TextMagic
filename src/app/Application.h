@@ -137,7 +137,6 @@ private:
     void AppendLog(const std::wstring& line);
     void ClearLogs();
     std::wstring BuildAboutText() const;
-    std::wstring BuildLogText() const;
 
     void SetStatusText(const std::wstring& text);
     void OpenScriptsFolder() const;
@@ -171,6 +170,7 @@ private:
     HBRUSH m_hBackgroundBrush = nullptr;
     HBRUSH m_hCardBrush = nullptr;
     HBRUSH m_hListBrush = nullptr;
+    HMODULE m_msfteditModule = nullptr;
 
     RECT m_cardRect = { 0, 0, 0, 0 };
     RECT m_statusCardRect = { 0, 0, 0, 0 };

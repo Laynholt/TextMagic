@@ -1,5 +1,7 @@
 #pragma once
 
+#include <windows.h>
+
 #include <cstdint>
 
 class ScriptExecutionGate {
@@ -34,6 +36,39 @@ enum class Action {
     Consume,
     Dispatch,
 };
+
+constexpr bool MatchesVirtualKey(std::uint32_t inputVirtualKey, std::uint32_t hotkeyVirtualKey) noexcept {
+    if (hotkeyVirtualKey == VK_SHIFT) {
+        return inputVirtualKey == VK_SHIFT || inputVirtualKey == VK_LSHIFT || inputVirtualKey == VK_RSHIFT;
+    }
+    if (hotkeyVirtualKey == VK_CONTROL) {
+        return inputVirtualKey == VK_CONTROL || inputVirtualKey == VK_LCONTROL || inputVirtualKey == VK_RCONTROL;
+    }
+    if (hotkeyVirtualKey == VK_MENU) {
+        return inputVirtualKey == VK_MENU || inputVirtualKey == VK_LMENU || inputVirtualKey == VK_RMENU;
+    }
+    if (hotkeyVirtualKey == VK_LWIN || hotkeyVirtualKey == VK_RWIN) {
+        return inputVirtualKey == VK_LWIN || inputVirtualKey == VK_RWIN;
+    }
+    return inputVirtualKey == hotkeyVirtualKey;
+}
+
+constexpr Action BeginMatchedPress(bool& armed) noexcept {
+    armed = false;
+    return Action::Consume;
+}
+
+constexpr bool RearmOnReleasedKey(
+    bool& armed,
+    std::uint32_t hotkeyVirtualKey,
+    std::uint32_t releasedVirtualKey
+) noexcept {
+    if (armed || !MatchesVirtualKey(releasedVirtualKey, hotkeyVirtualKey)) {
+        return false;
+    }
+    armed = true;
+    return true;
+}
 
 constexpr bool ShouldTrackInput(bool blocked) noexcept {
     return !blocked;

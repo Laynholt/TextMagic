@@ -520,22 +520,6 @@ bool IsVirtualKeyPressed(int virtualKey) {
     return (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
 }
 
-bool MatchesVirtualKey(DWORD inputVkCode, UINT hotkeyVirtualKey) {
-    if (hotkeyVirtualKey == VK_SHIFT) {
-        return inputVkCode == VK_SHIFT || inputVkCode == VK_LSHIFT || inputVkCode == VK_RSHIFT;
-    }
-    if (hotkeyVirtualKey == VK_CONTROL) {
-        return inputVkCode == VK_CONTROL || inputVkCode == VK_LCONTROL || inputVkCode == VK_RCONTROL;
-    }
-    if (hotkeyVirtualKey == VK_MENU) {
-        return inputVkCode == VK_MENU || inputVkCode == VK_LMENU || inputVkCode == VK_RMENU;
-    }
-    if (hotkeyVirtualKey == VK_LWIN || hotkeyVirtualKey == VK_RWIN) {
-        return inputVkCode == VK_LWIN || inputVkCode == VK_RWIN;
-    }
-    return hotkeyVirtualKey == static_cast<UINT>(inputVkCode);
-}
-
 UINT GetCurrentHotkeyModifiers() {
     const bool controlDown = IsVirtualKeyPressed(VK_CONTROL);
     const bool altDown = IsVirtualKeyPressed(VK_MENU);
@@ -591,40 +575,13 @@ bool IsHotkeyMatchedByKeyEvent(UINT modifiers, UINT virtualKey, DWORD inputVkCod
     if ((modifiers & HOTKEY_MODIFIER_MASK) != currentModifiers) {
         return false;
     }
-    if (!MatchesVirtualKey(inputVkCode, virtualKey)) {
+    if (!HotkeyDispatch::MatchesVirtualKey(inputVkCode, virtualKey)) {
         return false;
     }
     if (IsDuplicateModifierHotkey(modifiers, virtualKey)) {
         return IsDualModifierPressed(virtualKey, inputVkCode);
     }
     return true;
-}
-
-bool IsHotkeyStillHeld(UINT modifiers, UINT virtualKey, UINT currentModifiers) {
-    if ((modifiers & HOTKEY_MODIFIER_MASK) != currentModifiers) {
-        return false;
-    }
-    if (virtualKey == VK_SHIFT) {
-        return (modifiers & MOD_SHIFT) != 0
-            ? (IsVirtualKeyPressed(VK_LSHIFT) && IsVirtualKeyPressed(VK_RSHIFT))
-            : IsVirtualKeyPressed(VK_SHIFT);
-    }
-    if (virtualKey == VK_CONTROL) {
-        return (modifiers & MOD_CONTROL) != 0
-            ? (IsVirtualKeyPressed(VK_LCONTROL) && IsVirtualKeyPressed(VK_RCONTROL))
-            : IsVirtualKeyPressed(VK_CONTROL);
-    }
-    if (virtualKey == VK_MENU) {
-        return (modifiers & MOD_ALT) != 0
-            ? (IsVirtualKeyPressed(VK_LMENU) && IsVirtualKeyPressed(VK_RMENU))
-            : IsVirtualKeyPressed(VK_MENU);
-    }
-    if (virtualKey == VK_LWIN || virtualKey == VK_RWIN) {
-        return (modifiers & MOD_WIN) != 0
-            ? (IsVirtualKeyPressed(VK_LWIN) && IsVirtualKeyPressed(VK_RWIN))
-            : (IsVirtualKeyPressed(VK_LWIN) || IsVirtualKeyPressed(VK_RWIN));
-    }
-    return IsVirtualKeyPressed(static_cast<int>(virtualKey));
 }
 
 HotkeyDispatch::Action DispatchHookHotkeysOnKeyDown(DWORD inputVkCode) {
@@ -644,7 +601,7 @@ HotkeyDispatch::Action DispatchHookHotkeysOnKeyDown(DWORD inputVkCode) {
             }
             const UINT effectiveModifiers = currentModifiers | GetModifierMaskForVirtualKey(hotkey.virtualKey);
             if ((hotkey.modifiers & HOTKEY_MODIFIER_MASK) != effectiveModifiers
-                || !MatchesVirtualKey(inputVkCode, hotkey.virtualKey)) {
+                || !HotkeyDispatch::MatchesVirtualKey(inputVkCode, hotkey.virtualKey)) {
                 ResetPendingModifierTap(&hotkey);
                 continue;
             }
@@ -662,29 +619,23 @@ HotkeyDispatch::Action DispatchHookHotkeysOnKeyDown(DWORD inputVkCode) {
         } else if (!IsHotkeyMatchedByKeyEvent(hotkey.modifiers, hotkey.virtualKey, inputVkCode, currentModifiers)) {
             continue;
         }
+        const HotkeyDispatch::Action consumeAction = HotkeyDispatch::BeginMatchedPress(hotkey.armed);
         if (!g_scriptExecutionGate || !g_scriptExecutionGate->TryReserve(nowTick)) {
-            return HotkeyDispatch::Action::Consume;
+            return consumeAction;
         }
         if (!PostMessageW(g_hotkeyDispatchWindow, WM_HOTKEY, static_cast<WPARAM>(hotkey.hotkeyId), 0)) {
             g_scriptExecutionGate->Release(nowTick);
-            return HotkeyDispatch::Action::Consume;
+            return consumeAction;
         }
-        hotkey.armed = false;
         return HotkeyDispatch::Action::Dispatch;
     }
     return HotkeyDispatch::Action::PassThrough;
 }
 
-void RearmHookHotkeysIfReleased() {
-    const UINT currentModifiers = GetCurrentHotkeyModifiers();
+void RearmHookHotkeysIfReleased(DWORD releasedVkCode) {
     std::lock_guard<std::mutex> lock(g_hookHotkeysMutex);
     for (auto& hotkey : g_hookHotkeys) {
-        if (hotkey.armed) {
-            continue;
-        }
-        if (!IsHotkeyStillHeld(hotkey.modifiers, hotkey.virtualKey, currentModifiers)) {
-            hotkey.armed = true;
-        }
+        HotkeyDispatch::RearmOnReleasedKey(hotkey.armed, hotkey.virtualKey, releasedVkCode);
     }
 }
 
@@ -813,7 +764,7 @@ LRESULT CALLBACK InputKeyboardHookProc(int code, WPARAM wParam, LPARAM lParam) {
             const bool keyUp = wParam == WM_KEYUP || wParam == WM_SYSKEYUP;
             if ((keyDown || keyUp) && IsForegroundHandlingBlocked()) {
                 if (HotkeyDispatch::ShouldRearmBlockedKeyEvent(keyUp)) {
-                    RearmHookHotkeysIfReleased();
+                    RearmHookHotkeysIfReleased(keyInfo->vkCode);
                 }
                 return CallNextHookEx(g_keyboardHook, code, wParam, lParam);
             }
@@ -824,7 +775,7 @@ LRESULT CALLBACK InputKeyboardHookProc(int code, WPARAM wParam, LPARAM lParam) {
                 }
                 HandleInputBufferKeyDown(keyInfo->vkCode, keyInfo->scanCode);
             } else if (keyUp) {
-                RearmHookHotkeysIfReleased();
+                RearmHookHotkeysIfReleased(keyInfo->vkCode);
             }
         }
     }
@@ -843,13 +794,17 @@ LRESULT CALLBACK InputMouseHookProc(int code, WPARAM wParam, LPARAM lParam) {
     return CallNextHookEx(g_mouseHook, code, wParam, lParam);
 }
 
-void InstallInputHooks(HINSTANCE hInstance) {
+bool InstallInputHooks(HINSTANCE hInstance) {
     if (!g_keyboardHook) {
         g_keyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, InputKeyboardHookProc, hInstance, 0);
+    }
+    if (!g_keyboardHook) {
+        return false;
     }
     if (!g_mouseHook) {
         g_mouseHook = SetWindowsHookExW(WH_MOUSE_LL, InputMouseHookProc, hInstance, 0);
     }
+    return true;
 }
 
 void UninstallInputHooks() {
@@ -1665,7 +1620,11 @@ bool Application::Initialize(HINSTANCE hInstance) {
     DragAcceptFiles(m_hWnd, TRUE);
     InitializeTrayIcon();
     SetHotkeyDispatchWindow(m_hWnd);
-    InstallInputHooks(m_hInstance);
+    if (!InstallInputHooks(m_hInstance)) {
+        m_initializationError = T(L"app.error.init.keyboard_hook");
+        Shutdown();
+        return false;
+    }
     ClearInputBuffer();
 
     CreateControls();

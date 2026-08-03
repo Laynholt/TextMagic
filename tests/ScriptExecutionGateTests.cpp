@@ -1,5 +1,7 @@
 #include "ScriptExecutionGate.h"
 
+#include <windows.h>
+
 #include <cstdlib>
 #include <iostream>
 
@@ -50,5 +52,19 @@ int main() {
            "blocked key-up must rearm before passing through");
     Expect(!HotkeyDispatch::ShouldRearmBlockedKeyEvent(false),
            "blocked key-down must not rearm");
+
+    bool armed = true;
+    Expect(HotkeyDispatch::BeginMatchedPress(armed) == HotkeyDispatch::Action::Consume,
+           "matched press must default to silent consume");
+    Expect(!armed, "matched busy press must disarm");
+    Expect(!HotkeyDispatch::RearmOnReleasedKey(armed, 'K', VK_CONTROL),
+           "modifier release must not rearm a held primary key");
+    Expect(!armed, "matched press must stay disarmed until primary release");
+    Expect(HotkeyDispatch::RearmOnReleasedKey(armed, 'K', 'K'),
+           "primary key-up must rearm while modifiers remain held");
+
+    armed = false;
+    Expect(HotkeyDispatch::RearmOnReleasedKey(armed, VK_CONTROL, VK_LCONTROL),
+           "generic modifier primary must rearm on physical-side key-up");
     return 0;
 }

@@ -53,6 +53,7 @@ set(SOURCES
     src/app/FullscreenUtils.cpp
     src/app/Localization.cpp
     src/core/common/ClipboardUtils.cpp
+    src/core/common/ApplicationBlacklist.cpp
     src/core/common/EncodingUtils.cpp
     src/core/common/LogFile.cpp
     src/core/common/PowerShellUtils.cpp
@@ -156,6 +157,20 @@ target_include_directories(TextMagicLogFileTests PRIVATE
 target_compile_features(TextMagicLogFileTests PRIVATE cxx_std_17)
 
 add_test(NAME TextMagicLogFileTests COMMAND TextMagicLogFileTests)
+
+add_executable(TextMagicApplicationBlacklistTests
+    src/core/common/ApplicationBlacklist.cpp
+    src/core/common/EncodingUtils.cpp
+    tests/ApplicationBlacklistTests.cpp
+)
+
+target_include_directories(TextMagicApplicationBlacklistTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
+)
+
+target_compile_features(TextMagicApplicationBlacklistTests PRIVATE cxx_std_17)
+
+add_test(NAME TextMagicApplicationBlacklistTests COMMAND TextMagicApplicationBlacklistTests)
 
 add_executable(TextMagicScriptExecutionCooldownTests
     tests/ScriptExecutionCooldownTests.cpp

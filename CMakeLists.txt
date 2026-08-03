@@ -172,17 +172,17 @@ target_compile_features(TextMagicApplicationBlacklistTests PRIVATE cxx_std_17)
 
 add_test(NAME TextMagicApplicationBlacklistTests COMMAND TextMagicApplicationBlacklistTests)
 
-add_executable(TextMagicScriptExecutionCooldownTests
-    tests/ScriptExecutionCooldownTests.cpp
+add_executable(TextMagicScriptExecutionGateTests
+    tests/ScriptExecutionGateTests.cpp
 )
 
-target_include_directories(TextMagicScriptExecutionCooldownTests PRIVATE
+target_include_directories(TextMagicScriptExecutionGateTests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/app
 )
 
-target_compile_features(TextMagicScriptExecutionCooldownTests PRIVATE cxx_std_17)
+target_compile_features(TextMagicScriptExecutionGateTests PRIVATE cxx_std_17)
 
-add_test(NAME TextMagicScriptExecutionCooldownTests COMMAND TextMagicScriptExecutionCooldownTests)
+add_test(NAME TextMagicScriptExecutionGateTests COMMAND TextMagicScriptExecutionGateTests)
 
 add_executable(TextMagicScriptInputSourceTests
     tests/ScriptInputSourceTests.cpp

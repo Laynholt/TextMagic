@@ -4639,7 +4639,6 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                     );
                     if (state->textControl) {
                         SetWindowTheme(state->textControl, L"", L"");
-                        ApplyDarkScrollBar(state->textControl);
                     }
                 }
                 SendMessageW(state->textControl, EM_SETLIMITTEXT, 0x7FFFFFFE, 0);

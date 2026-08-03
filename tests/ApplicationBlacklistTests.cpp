@@ -53,6 +53,15 @@ int main() {
            "UTF-8 Cyrillic executable path must round-trip case-insensitively");
     Expect(loaded.Paths().size() == 1, "round-trip must preserve one path");
 
+    const std::filesystem::path noBomPath = directory / L"without-bom.txt";
+    const std::string noBomLines =
+        "C:\\Apps\\\xD0\x9F\xD1\x80\xD0\xBE\xD0\xB3\xD1\x80\xD0\xB0\xD0\xBC\xD0\xBC\xD0\xB0.EXE\n";
+    WriteBytes(noBomPath, std::vector<char>(noBomLines.begin(), noBomLines.end()));
+    ApplicationBlacklist withoutBom;
+    Expect(withoutBom.Load(noBomPath.wstring(), &error), "UTF-8 blacklist without BOM must load successfully");
+    Expect(withoutBom.Contains(L"c:\\apps\\\u043f\u0440\u043e\u0433\u0440\u0430\u043c\u043c\u0430.exe"),
+           "UTF-8 Cyrillic executable path without BOM must load case-insensitively");
+
     const std::filesystem::path invalidPath = directory / L"invalid.txt";
     const std::string invalidLines =
         "\xEF\xBB\xBF\r\nrelative.exe\nC:\\Apps\\tool.dll\nC:\\Apps\\Tool.exe\nC:\\apps\\TOOL.EXE\n";

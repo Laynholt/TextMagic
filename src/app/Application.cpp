@@ -2,6 +2,7 @@
 
 #include "AppUiHelpers.h"
 #include "ClipboardUtils.h"
+#include "EncodingUtils.h"
 #include "FullscreenUtils.h"
 #include "Localization.h"
 #include "ScriptInputSource.h"
@@ -10,7 +11,6 @@
 #include "InputBuffer.h"
 #include "LogFile.h"
 #include "PowerShellUtils.h"
-#include "ScriptExecutionCooldown.h"
 #include "resource.h"
 
 #include <windowsx.h>
@@ -26,8 +26,9 @@
 #include <cwctype>
 #include <filesystem>
 #include <mutex>
-#include <thread>
 #include <sstream>
+#include <system_error>
+#include <thread>
 
 namespace fs = std::filesystem;
 
@@ -255,9 +256,23 @@ struct HookHotkey {
 };
 std::vector<HookHotkey> g_hookHotkeys;
 HWND g_hotkeyDispatchWindow = nullptr;
+ApplicationBlacklist* g_applicationBlacklist = nullptr;
+ScriptExecutionGate* g_scriptExecutionGate = nullptr;
+bool g_disableHotkeysInFullscreen = false;
 HHOOK g_keyboardHook = nullptr;
 HHOOK g_mouseHook = nullptr;
 constexpr UINT HOTKEY_MODIFIER_MASK = MOD_ALT | MOD_CONTROL | MOD_SHIFT | MOD_WIN;
+
+struct ForegroundBlockCache {
+    HWND window = nullptr;
+    std::uint64_t blacklistGeneration = 0;
+    bool blocked = false;
+};
+
+ForegroundBlockCache& GetForegroundBlockCache() {
+    static ForegroundBlockCache cache;
+    return cache;
+}
 
 InputBuffer::ContextId CurrentInputContext() {
     return reinterpret_cast<InputBuffer::ContextId>(GetForegroundWindow());
@@ -306,12 +321,74 @@ void AddHookHotkey(int hotkeyId, UINT modifiers, UINT virtualKey) {
     g_hookHotkeys.push_back({ hotkeyId, modifiers & HOTKEY_MODIFIER_MASK, virtualKey, true });
 }
 
-bool IsModifierVirtualKey(UINT virtualKey) {
-    return virtualKey == VK_SHIFT
-        || virtualKey == VK_CONTROL
-        || virtualKey == VK_MENU
-        || virtualKey == VK_LWIN
-        || virtualKey == VK_RWIN;
+bool TryGetWindowExecutablePath(HWND window, std::wstring* path) {
+    if (!window || !path) {
+        return false;
+    }
+
+    DWORD processId = 0;
+    GetWindowThreadProcessId(window, &processId);
+    if (processId == 0) {
+        return false;
+    }
+
+    const HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
+    if (!process) {
+        return false;
+    }
+
+    std::wstring executablePath(32768, L'\0');
+    DWORD executablePathLength = static_cast<DWORD>(executablePath.size());
+    const bool queried = QueryFullProcessImageNameW(
+        process,
+        0,
+        executablePath.data(),
+        &executablePathLength
+    ) != FALSE;
+    CloseHandle(process);
+    if (!queried) {
+        return false;
+    }
+
+    executablePath.resize(executablePathLength);
+    *path = std::move(executablePath);
+    return true;
+}
+
+bool IsForegroundHandlingBlocked() {
+    if (g_disableHotkeysInFullscreen
+        && FullscreenUtils::IsForegroundWindowFullscreen()) {
+        return true;
+    }
+    if (!g_applicationBlacklist) {
+        return false;
+    }
+
+    const HWND foregroundWindow = GetForegroundWindow();
+    if (!foregroundWindow) {
+        return false;
+    }
+
+    ForegroundBlockCache& cache = GetForegroundBlockCache();
+    const std::uint64_t generation = g_applicationBlacklist->Generation();
+    if (cache.window == foregroundWindow
+        && cache.blacklistGeneration == generation) {
+        return cache.blocked;
+    }
+
+    std::wstring executablePath;
+    if (!TryGetWindowExecutablePath(foregroundWindow, &executablePath)) {
+        return false;
+    }
+
+    cache.window = foregroundWindow;
+    cache.blacklistGeneration = generation;
+    cache.blocked = g_applicationBlacklist->Contains(executablePath);
+    return cache.blocked;
+}
+
+void InvalidateForegroundBlockCache() {
+    GetForegroundBlockCache() = {};
 }
 
 bool IsDuplicateModifierHotkey(UINT modifiers, UINT virtualKey) {
@@ -475,12 +552,12 @@ bool IsHotkeyStillHeld(UINT modifiers, UINT virtualKey, UINT currentModifiers) {
     return IsVirtualKeyPressed(static_cast<int>(virtualKey));
 }
 
-bool DispatchHookHotkeysOnKeyDown(DWORD inputVkCode) {
+HotkeyDispatch::Action DispatchHookHotkeysOnKeyDown(DWORD inputVkCode) {
     const UINT currentModifiers = GetCurrentHotkeyModifiers();
     const ULONGLONG nowTick = GetTickCount64();
     std::lock_guard<std::mutex> lock(g_hookHotkeysMutex);
     if (!g_hotkeyDispatchWindow || !IsWindow(g_hotkeyDispatchWindow)) {
-        return false;
+        return HotkeyDispatch::Action::PassThrough;
     }
     for (auto& hotkey : g_hookHotkeys) {
         if (!hotkey.armed) {
@@ -510,12 +587,17 @@ bool DispatchHookHotkeysOnKeyDown(DWORD inputVkCode) {
         } else if (!IsHotkeyMatchedByKeyEvent(hotkey.modifiers, hotkey.virtualKey, inputVkCode, currentModifiers)) {
             continue;
         }
-        if (PostMessageW(g_hotkeyDispatchWindow, WM_HOTKEY, static_cast<WPARAM>(hotkey.hotkeyId), 0)) {
-            hotkey.armed = false;
-            return true;
+        if (!g_scriptExecutionGate || !g_scriptExecutionGate->TryReserve(nowTick)) {
+            return HotkeyDispatch::Action::Consume;
         }
+        if (!PostMessageW(g_hotkeyDispatchWindow, WM_HOTKEY, static_cast<WPARAM>(hotkey.hotkeyId), 0)) {
+            g_scriptExecutionGate->Release(nowTick);
+            return HotkeyDispatch::Action::Consume;
+        }
+        hotkey.armed = false;
+        return HotkeyDispatch::Action::Dispatch;
     }
-    return false;
+    return HotkeyDispatch::Action::PassThrough;
 }
 
 void RearmHookHotkeysIfReleased() {
@@ -652,12 +734,18 @@ LRESULT CALLBACK InputKeyboardHookProc(int code, WPARAM wParam, LPARAM lParam) {
     if (code == HC_ACTION) {
         const auto* keyInfo = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
         if (keyInfo && (keyInfo->flags & LLKHF_INJECTED) == 0) {
-            if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
-                if (DispatchHookHotkeysOnKeyDown(keyInfo->vkCode)) {
+            const bool keyDown = wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN;
+            const bool keyUp = wParam == WM_KEYUP || wParam == WM_SYSKEYUP;
+            if ((keyDown || keyUp) && IsForegroundHandlingBlocked()) {
+                return CallNextHookEx(g_keyboardHook, code, wParam, lParam);
+            }
+            if (keyDown) {
+                const HotkeyDispatch::Action action = DispatchHookHotkeysOnKeyDown(keyInfo->vkCode);
+                if (action != HotkeyDispatch::Action::PassThrough) {
                     return 1;
                 }
                 HandleInputBufferKeyDown(keyInfo->vkCode, keyInfo->scanCode);
-            } else if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
+            } else if (keyUp) {
                 RearmHookHotkeysIfReleased();
             }
         }
@@ -1353,6 +1441,14 @@ bool Application::Initialize(HINSTANCE hInstance) {
     }
     LogFile::Clear(m_logPath);
 
+    m_blacklistPath = executableDirectory + L"\\TextMagic.blacklist";
+    std::wstring blacklistLoadError;
+    const bool blacklistLoaded = m_applicationBlacklist.Load(m_blacklistPath, &blacklistLoadError);
+    g_applicationBlacklist = &m_applicationBlacklist;
+    g_scriptExecutionGate = &m_scriptExecutionGate;
+    g_disableHotkeysInFullscreen = m_disableHotkeysInFullscreen;
+    InvalidateForegroundBlockCache();
+
     Gdiplus::GdiplusStartupInput gdiplusStartupInput;
     if (Gdiplus::GdiplusStartup(&m_gdiplusToken, &gdiplusStartupInput, nullptr) != Gdiplus::Ok) {
         m_initializationError = T(L"app.error.init.gdiplus");
@@ -1445,6 +1541,9 @@ bool Application::Initialize(HINSTANCE hInstance) {
     fs::create_directories(fs::path(m_scriptsDirectory), createDirError);
 
     AppendLog(std::wstring(T(L"app.log.starting_prefix")) + WINDOW_TITLE + L" " + APP_VERSION + L".");
+    if (!blacklistLoaded) {
+        AppendLog(std::wstring(T(L"app.log.blacklist_load_warning_prefix")) + L" " + blacklistLoadError);
+    }
     AppendLog(std::wstring(T(L"app.log.scripts_dir_prefix")) + m_scriptsDirectory);
     ReloadScripts(true);
     return true;
@@ -1472,6 +1571,10 @@ int Application::Run() {
 
 void Application::Shutdown() {
     SetHotkeyDispatchWindow(nullptr);
+    g_applicationBlacklist = nullptr;
+    g_scriptExecutionGate = nullptr;
+    g_disableHotkeysInFullscreen = false;
+    InvalidateForegroundBlockCache();
     UninstallInputHooks();
     ClearInputBuffer();
     UnregisterHotkeys();
@@ -1604,12 +1707,10 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         return 0;
 
     case WM_SCRIPT_EXECUTION_COMPLETE:
-        {
+        [&]() {
             std::unique_ptr<ScriptExecutionTaskResult> result(reinterpret_cast<ScriptExecutionTaskResult*>(wParam));
-            m_scriptExecutionInProgress = false;
-            m_lastScriptCompletionTick = GetTickCount64();
             if (!result) {
-                return 0;
+                return;
             }
 
             std::wstring sourceName = result->clipboardMode
@@ -1626,7 +1727,7 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                     const std::wstring msg = T(L"app.status.no_text_available");
                     SetStatusText(msg);
                     AppendLog(std::wstring(T(L"app.log.script.error_prefix2")) + msg);
-                    return 0;
+                    return;
                 }
                 if (result->inputBufferMode && !result->allTextInputMode) {
                     AppendLog(T(L"app.log.script.previous_word_not_changed"));
@@ -1637,7 +1738,7 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 SetStatusText(statusMessage);
                 AppendLog(std::wstring(T(L"app.log.script.error_prefix")) + result->scriptName + L"\": " + result->executionError);
                 ShowStyledMessage(T(L"app.title.execution_error"), dialogMessage);
-                return 0;
+                return;
             }
 
             bool replaceOk = false;
@@ -1671,7 +1772,7 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 SetStatusText(msg);
                 AppendLog(std::wstring(T(L"app.log.script.error_prefix")) + result->scriptName + L"\": " + msg);
                 ShowStyledMessage(T(L"app.title.paste_error"), msg);
-                return 0;
+                return;
             }
             std::wstring status = std::wstring(T(L"app.status.script_applied_prefix")) + result->scriptName + T(L"app.status.script_applied_middle");
             if (result->clipboardMode) {
@@ -1689,7 +1790,8 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             AppendLog(std::wstring(T(L"app.log.script.done_prefix")) + result->scriptName + T(L"app.log.script.result_prefix")
                 + std::to_wstring(result->outputText.size()) + T(L"app.log.script.result_suffix"));
             AppendLog(std::wstring(T(L"app.log.script.prefix")) + status);
-        }
+        }();
+        m_scriptExecutionGate.Release(GetTickCount64());
         return 0;
 
     case WM_UPDATE_CHECK_COMPLETE:
@@ -3060,30 +3162,7 @@ void Application::RegisterHotkeys() {
             continue;
         }
 
-        bool useHookFallback = IsModifierVirtualKey(script.manifest.virtualKey);
-        if (!useHookFallback) {
-            const UINT modifiers = currentHotkey.modifiers | MOD_NOREPEAT;
-            if (!RegisterHotKey(m_hWnd, script.hotkeyId, modifiers, script.manifest.virtualKey)) {
-                const DWORD errorCode = GetLastError();
-                if (errorCode == 1422 /* ERROR_INVALID_HOTKEY */) {
-                    useHookFallback = true;
-                } else {
-                    if (errorCode == ERROR_HOTKEY_ALREADY_REGISTERED) {
-                        script.hotkeyError = T(L"app.status.hotkey_taken");
-                    } else {
-                        script.hotkeyError = std::wstring(T(L"app.error.register_hotkey_prefix")) + std::to_wstring(errorCode);
-                    }
-                    AppendLog(std::wstring(T(L"app.log.hotkey.error_prefix")) + script.manifest.name + L" [" + script.manifest.hotkeyText + L"]: "
-                        + script.hotkeyError + T(L"app.log.code_prefix") + std::to_wstring(errorCode) + L")");
-                    continue;
-                }
-            }
-        }
-
-        if (useHookFallback) {
-            AddHookHotkey(script.hotkeyId, currentHotkey.modifiers, currentHotkey.virtualKey);
-        }
-
+        AddHookHotkey(script.hotkeyId, currentHotkey.modifiers, currentHotkey.virtualKey);
         script.hotkeyRegistered = true;
         m_scriptIndexByHotkeyId[script.hotkeyId] = &script - m_scripts.data();
         AddTrackedHotkey(currentHotkey.modifiers, currentHotkey.virtualKey);
@@ -3092,11 +3171,6 @@ void Application::RegisterHotkeys() {
 }
 
 void Application::UnregisterHotkeys() {
-    for (const auto& script : m_scripts) {
-        if (script.hotkeyRegistered) {
-            UnregisterHotKey(m_hWnd, script.hotkeyId);
-        }
-    }
     m_scriptIndexByHotkeyId.clear();
     ClearTrackedHotkeys();
     ClearHookHotkeys();
@@ -3532,32 +3606,28 @@ void Application::ExecuteSelectedScript() {
         SetStatusText(T(L"app.status.script_disabled"));
         return;
     }
-    ExecuteScript(m_scripts[selectedIndex], true);
+    ExecuteScript(m_scripts[selectedIndex], true, false);
 }
 
 void Application::ExecuteScriptByHotkeyId(int hotkeyId) {
-    if (m_disableHotkeysInFullscreen
-        && FullscreenUtils::IsForegroundWindowFullscreen()) {
-        return;
-    }
-    if (!ScriptExecutionCooldown::CanStart(m_lastScriptCompletionTick, GetTickCount64())) {
-        return;
-    }
     const auto it = m_scriptIndexByHotkeyId.find(hotkeyId);
     if (it == m_scriptIndexByHotkeyId.end()) {
+        m_scriptExecutionGate.Release(GetTickCount64());
         return;
     }
     if (it->second >= m_scripts.size()) {
+        m_scriptExecutionGate.Release(GetTickCount64());
         return;
     }
     if (!m_scripts[it->second].manifest.enabled) {
+        m_scriptExecutionGate.Release(GetTickCount64());
         return;
     }
-    ExecuteScript(m_scripts[it->second], false);
+    ExecuteScript(m_scripts[it->second], false, true);
 }
 
-void Application::ExecuteScript(const RegisteredScript& script, bool clipboardOnly) {
-    if (m_scriptExecutionInProgress) {
+void Application::ExecuteScript(const RegisteredScript& script, bool clipboardOnly, bool reservationHeld) {
+    if (!reservationHeld && !m_scriptExecutionGate.TryReserve(GetTickCount64())) {
         SetStatusText(T(L"app.status.script_already_running"));
         return;
     }
@@ -3570,7 +3640,6 @@ void Application::ExecuteScript(const RegisteredScript& script, bool clipboardOn
         AppendLog(std::wstring(T(L"app.log.script.command_prefix")) + script.manifest.commandLine);
     }
 
-    m_scriptExecutionInProgress = true;
     const std::wstring scriptName = script.manifest.name;
     const std::wstring scriptBody = script.manifest.scriptBody;
     const std::wstring commandLine = script.manifest.commandLine;
@@ -3590,83 +3659,100 @@ void Application::ExecuteScript(const RegisteredScript& script, bool clipboardOn
             : PeekPreviousWordFromInputBuffer(inputContext, &inputCapture))
         && !inputCapture.word.empty();
 
-    std::thread([scriptName,
-                 scriptBody,
-                 commandLine,
-                 allTextInputMode,
-                 useClipboardOnly,
-                 textBridge,
-                 scriptRunner,
-                 windowHandle,
-                 inputTargetWindow,
-                 hasInputCapture,
-                 inputCapture]() {
-        auto* result = new ScriptExecutionTaskResult();
-        result->scriptName = scriptName;
-        result->clipboardMode = useClipboardOnly;
-        result->inputTargetWindow = hasInputCapture ? inputTargetWindow : nullptr;
+    try {
+        std::thread worker([scriptName,
+                            scriptBody,
+                            commandLine,
+                            allTextInputMode,
+                            useClipboardOnly,
+                            textBridge,
+                            scriptRunner,
+                            windowHandle,
+                            inputTargetWindow,
+                            hasInputCapture,
+                            inputCapture]() {
+            try {
+                auto result = std::make_unique<ScriptExecutionTaskResult>();
+                result->scriptName = scriptName;
+                result->clipboardMode = useClipboardOnly;
+                result->inputTargetWindow = hasInputCapture ? inputTargetWindow : nullptr;
 
-        std::wstring selectedText;
-        bool hasSelection = false;
-        bool inputBufferMode = false;
-        std::wstring sourceText;
+                try {
+                    std::wstring selectedText;
+                    bool hasSelection = false;
+                    bool inputBufferMode = false;
+                    std::wstring sourceText;
 
-        if (!useClipboardOnly && !hasInputCapture) {
-            selectedText = textBridge.GetSelectedText();
-            hasSelection = !selectedText.empty();
-        }
+                    if (!useClipboardOnly && !hasInputCapture) {
+                        selectedText = textBridge.GetSelectedText();
+                        hasSelection = !selectedText.empty();
+                    }
 
-        switch (ScriptInputSource::Choose(
-            useClipboardOnly,
-            hasSelection,
-            hasInputCapture
-        )) {
-        case ScriptInputSource::Type::Clipboard:
-            ClipboardUtils::ReadText(windowHandle, &sourceText);
-            break;
-        case ScriptInputSource::Type::Selection:
-            sourceText = selectedText;
-            break;
-        case ScriptInputSource::Type::TrackedInput:
-            sourceText = inputCapture.word;
-            inputBufferMode = true;
-            break;
-        case ScriptInputSource::Type::None:
-            break;
-        }
+                    switch (ScriptInputSource::Choose(
+                        useClipboardOnly,
+                        hasSelection,
+                        hasInputCapture
+                    )) {
+                    case ScriptInputSource::Type::Clipboard:
+                        ClipboardUtils::ReadText(windowHandle, &sourceText);
+                        break;
+                    case ScriptInputSource::Type::Selection:
+                        sourceText = selectedText;
+                        break;
+                    case ScriptInputSource::Type::TrackedInput:
+                        sourceText = inputCapture.word;
+                        inputBufferMode = true;
+                        break;
+                    case ScriptInputSource::Type::None:
+                        break;
+                    }
 
-        result->sourceText = sourceText;
-        result->hasSelection = hasSelection;
-        result->inputBufferMode = inputBufferMode;
-        result->allTextInputMode = allTextInputMode;
-        result->inputCapture = inputCapture;
+                    result->sourceText = sourceText;
+                    result->hasSelection = hasSelection;
+                    result->inputBufferMode = inputBufferMode;
+                    result->allTextInputMode = allTextInputMode;
+                    result->inputCapture = inputCapture;
 
-        if (sourceText.empty()) {
-            result->noTextAvailable = true;
-            result->executeOk = false;
-            result->executionError = T(L"app.status.no_text_available");
-            PostOwnedMessage(windowHandle, WM_SCRIPT_EXECUTION_COMPLETE, result);
-            return;
-        }
+                    if (sourceText.empty()) {
+                        result->noTextAvailable = true;
+                        result->executeOk = false;
+                        result->executionError = T(L"app.status.no_text_available");
+                    } else if (!scriptBody.empty()) {
+                        result->executeOk = scriptRunner.ExecutePowerShellScript(
+                            scriptBody,
+                            sourceText,
+                            &result->outputText,
+                            &result->executionError
+                        );
+                    } else {
+                        result->executeOk = scriptRunner.Execute(
+                            commandLine,
+                            sourceText,
+                            &result->outputText,
+                            &result->executionError
+                        );
+                    }
+                } catch (const std::exception& error) {
+                    result->executeOk = false;
+                    result->executionError = std::wstring(T(L"app.error.script_worker_exception_prefix"))
+                        + L" " + EncodingUtils::Utf8ToWide(error.what());
+                } catch (...) {
+                    result->executeOk = false;
+                    result->executionError = T(L"app.error.script_worker_unknown_exception");
+                }
 
-        if (!scriptBody.empty()) {
-            result->executeOk = scriptRunner.ExecutePowerShellScript(
-                scriptBody,
-                sourceText,
-                &result->outputText,
-                &result->executionError
-            );
-        } else {
-            result->executeOk = scriptRunner.Execute(
-                commandLine,
-                sourceText,
-                &result->outputText,
-                &result->executionError
-            );
-        }
-
-        PostOwnedMessage(windowHandle, WM_SCRIPT_EXECUTION_COMPLETE, result);
-    }).detach();
+                PostOwnedMessage(windowHandle, WM_SCRIPT_EXECUTION_COMPLETE, result.release());
+            } catch (...) {
+                PostMessageW(windowHandle, WM_SCRIPT_EXECUTION_COMPLETE, 0, 0);
+            }
+        });
+        worker.detach();
+    } catch (const std::system_error&) {
+        m_scriptExecutionGate.Release(GetTickCount64());
+        const std::wstring message = T(L"app.status.script_thread_start_failed");
+        SetStatusText(message);
+        AppendLog(std::wstring(T(L"app.log.script.error_prefix2")) + message);
+    }
 }
 
 void Application::SetStatusText(const std::wstring& text) {
@@ -4362,6 +4448,7 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 && state->fullscreenCheckbox) {
                 state->owner->m_disableHotkeysInFullscreen =
                     SendMessageW(state->fullscreenCheckbox, BM_GETCHECK, 0, 0) == BST_CHECKED;
+                g_disableHotkeysInFullscreen = state->owner->m_disableHotkeysInFullscreen;
                 SaveDisableFullscreenHotkeysSetting(
                     GetLanguageSettingsPath(state->owner->GetExecutableDirectory()),
                     state->owner->m_disableHotkeysInFullscreen

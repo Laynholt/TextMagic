@@ -14,11 +14,24 @@ void Expect(bool condition, const char* message) {
 
 int main() {
     ScriptExecutionGate gate;
-    Expect(gate.TryReserve(100), "first dispatch must reserve");
-    Expect(!gate.TryReserve(101), "busy dispatch must be suppressed");
-    gate.Release(200);
-    Expect(!gate.TryReserve(449), "cooldown dispatch must be suppressed");
-    Expect(gate.TryReserve(450), "dispatch after cooldown must reserve");
+    constexpr std::uint64_t reserveTick = 100;
+    constexpr std::uint64_t releaseTick = 200;
+    Expect(gate.TryReserve(reserveTick), "first dispatch must reserve");
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        Expect(!gate.TryReserve(reserveTick), "same-tick spam must be suppressed");
+    }
+
+    gate.Release(releaseTick);
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        Expect(!gate.TryReserve(releaseTick + ScriptExecutionGate::CooldownMs - 1),
+               "cooldown spam must be suppressed");
+    }
+
+    int boundaryReservations = 0;
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        boundaryReservations += gate.TryReserve(releaseTick + ScriptExecutionGate::CooldownMs) ? 1 : 0;
+    }
+    Expect(boundaryReservations == 1, "cooldown boundary must reserve exactly once");
 
     ScriptExecutionGate zeroReleaseGate;
     Expect(zeroReleaseGate.TryReserve(0), "zero-time dispatch must reserve");

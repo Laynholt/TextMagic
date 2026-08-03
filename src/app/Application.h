@@ -6,7 +6,9 @@
 
 #include <windows.h>
 
+#include "ApplicationBlacklist.h"
 #include "AppVersion.h"
+#include "ScriptExecutionGate.h"
 #include "ScriptManifest.h"
 #include "ScriptRunner.h"
 #include "TextBridge.h"
@@ -108,7 +110,7 @@ private:
 
     void ExecuteSelectedScript();
     void ExecuteScriptByHotkeyId(int hotkeyId);
-    void ExecuteScript(const RegisteredScript& script, bool clipboardOnly);
+    void ExecuteScript(const RegisteredScript& script, bool clipboardOnly, bool reservationHeld = false);
 
     bool RegisterInfoWindowClass();
     bool RegisterMessageWindowClass();
@@ -176,8 +178,6 @@ private:
     bool m_messageWindowClassRegistered = false;
     bool m_morePopupWindowClassRegistered = false;
     bool m_isExiting = false;
-    bool m_scriptExecutionInProgress = false;
-    ULONGLONG m_lastScriptCompletionTick = 0;
     bool m_updateInProgress = false;
     bool m_archiveTaskInProgress = false;
     bool m_scriptInputAllText = false;
@@ -192,6 +192,7 @@ private:
     std::wstring m_initializationError;
     std::wstring m_scriptsDirectory;
     std::wstring m_logPath;
+    std::wstring m_blacklistPath;
     std::vector<RegisteredScript> m_scripts;
     std::map<int, size_t> m_scriptIndexByHotkeyId;
     std::vector<UiRenderer::PopupMenuItem> m_morePopupItems;
@@ -201,6 +202,8 @@ private:
     UpdateService m_updateService;
     TextBridge m_textBridge;
     ScriptRunner m_scriptRunner;
+    ApplicationBlacklist m_applicationBlacklist;
+    ScriptExecutionGate m_scriptExecutionGate;
 
     static Application* s_morePopupMouseHookOwner;
 

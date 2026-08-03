@@ -3,10 +3,13 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <thread>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -87,6 +90,57 @@ void TestEmbeddedLanguagesContainHotkeyExclusionKeys() {
            L"\u043F\u043E\u043B\u043D\u043E\u044D\u043A\u0440\u0430\u043D\u043D\u044B\u0445 "
            L"\u043F\u0440\u0438\u043B\u043E\u0436\u0435\u043D\u0438\u044F\u0445");
 }
+
+void TestCurrentLanguageIsSafeDuringConcurrentSwitches(const fs::path& root) {
+    const fs::path languageDirectory = root / L"concurrent-language";
+    fs::create_directories(languageDirectory);
+    const std::wstring alphaCode(64, L'a');
+    const std::wstring bravoCode(64, L'b');
+    WriteUtf8(languageDirectory / (alphaCode + L".ini"), "status.ready=Alpha ready\n");
+    WriteUtf8(languageDirectory / (bravoCode + L".ini"), "status.ready=Bravo ready\n");
+    Localization::Initialize(languageDirectory.wstring());
+
+    Localization::SetCurrentLanguageCode(alphaCode);
+    const std::wstring& stableLanguageCode = Localization::GetCurrentLanguageCode();
+    const wchar_t* stableText = Localization::GetTextByName(L"status.ready");
+
+    std::atomic<bool> start{false};
+    std::atomic<bool> sawUnexpectedText{false};
+    std::thread writer([&]() {
+        while (!start.load(std::memory_order_acquire)) {
+        }
+        for (int iteration = 0; iteration < 50000; ++iteration) {
+            Localization::SetCurrentLanguageCode(
+                (iteration % 2 == 0) ? alphaCode : bravoCode
+            );
+        }
+    });
+
+    std::vector<std::thread> readers;
+    for (int reader = 0; reader < 3; ++reader) {
+        readers.emplace_back([&]() {
+            while (!start.load(std::memory_order_acquire)) {
+            }
+            for (int iteration = 0; iteration < 50000; ++iteration) {
+                const std::wstring text = Localization::GetTextByName(L"status.ready");
+                if (text != L"Alpha ready" && text != L"Bravo ready") {
+                    sawUnexpectedText.store(true, std::memory_order_relaxed);
+                }
+            }
+        });
+    }
+
+    start.store(true, std::memory_order_release);
+    writer.join();
+    for (std::thread& reader : readers) {
+        reader.join();
+    }
+
+    Localization::SetCurrentLanguageCode(bravoCode);
+    CHECK(!sawUnexpectedText.load(std::memory_order_relaxed));
+    CHECK(stableLanguageCode == alphaCode);
+    CHECK(std::wstring(stableText) == L"Alpha ready");
+}
 }
 
 int main() {
@@ -98,6 +152,7 @@ int main() {
     TestExternalFileOverridesEmbeddedKeys(root);
     TestExternalLanguageIsAvailable(root);
     TestEmbeddedLanguagesContainHotkeyExclusionKeys();
+    TestCurrentLanguageIsSafeDuringConcurrentSwitches(root);
 
     fs::remove_all(root, cleanupError);
     return g_allChecksPassed ? 0 : 1;

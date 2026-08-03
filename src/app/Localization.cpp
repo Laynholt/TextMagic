@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -18,6 +19,7 @@ namespace fs = std::filesystem;
 
 bool g_isInitialized = false;
 std::wstring g_currentLanguageCode = L"ru";
+std::mutex g_currentLanguageMutex;
 std::unordered_map<std::wstring, std::unordered_map<std::wstring, std::wstring>> g_embeddedLanguageTexts;
 std::unordered_map<std::wstring, std::unordered_map<std::wstring, std::wstring>> g_allLanguageTexts;
 
@@ -350,16 +352,27 @@ void SetCurrentLanguageCode(const std::wstring& languageCode) {
     if (normalized.empty()) {
         normalized = L"ru";
     }
+
+    const std::lock_guard<std::mutex> lock(g_currentLanguageMutex);
     g_currentLanguageCode = normalized;
 }
 
 const std::wstring& GetCurrentLanguageCode() {
-    return g_currentLanguageCode;
+    thread_local std::wstring languageCode;
+    const std::lock_guard<std::mutex> lock(g_currentLanguageMutex);
+    languageCode = g_currentLanguageCode;
+    return languageCode;
 }
 
 const wchar_t* GetTextByName(const std::wstring& key) {
     EnsureInitialized();
-    return FindTextInLanguage(key, g_currentLanguageCode);
+
+    std::wstring languageCode;
+    {
+        const std::lock_guard<std::mutex> lock(g_currentLanguageMutex);
+        languageCode = g_currentLanguageCode;
+    }
+    return FindTextInLanguage(key, languageCode);
 }
 
 const wchar_t* GetTextByName(const std::wstring& key, const std::wstring& languageCode) {

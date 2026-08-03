@@ -1,7 +1,17 @@
 #include "RunningApplication.h"
 
-#include <cassert>
+#include <cstdlib>
+#include <iostream>
 #include <vector>
+
+namespace {
+void Expect(bool condition, const char* message) {
+    if (!condition) {
+        std::cerr << message << "\n";
+        std::exit(1);
+    }
+}
+}
 
 int main() {
     const std::vector<RunningApplication> applications = {
@@ -14,20 +24,28 @@ int main() {
     const std::vector<RunningApplication> deduplicated =
         DeduplicateRunningApplications(applications);
 
-    assert(deduplicated.size() == 2);
-    assert(deduplicated[0].executableName == L"Alpha.exe");
-    assert(deduplicated[0].windowTitle == L"First Alpha Window");
-    assert(deduplicated[0].path == L"C:\\Apps\\Alpha.exe");
-    assert(ApplicationBlacklist::PathsEqual(
+    Expect(deduplicated.size() == 2,
+        "empty paths and case-variant duplicates must be skipped");
+    Expect(deduplicated[0].executableName == L"Alpha.exe",
+        "first application name and order must be preserved");
+    Expect(deduplicated[0].windowTitle == L"First Alpha Window",
+        "first application title must be preserved");
+    Expect(deduplicated[0].path == L"C:\\Apps\\Alpha.exe",
+        "first application path must be preserved");
+    Expect(ApplicationBlacklist::PathsEqual(
         deduplicated[0].path,
         L"c:\\apps\\alpha.exe"
-    ));
-    assert(deduplicated[1].executableName == L"Beta.exe");
-    assert(deduplicated[1].windowTitle == L"Beta Window");
-    assert(ApplicationBlacklist::PathsEqual(
+    ), "same-path case variants must compare equal");
+    Expect(deduplicated[1].executableName == L"Beta.exe",
+        "second application name and order must be preserved");
+    Expect(deduplicated[1].windowTitle == L"Beta Window",
+        "second application title must be preserved");
+    Expect(deduplicated[1].path == L"D:\\Tools\\Beta.exe",
+        "second application path must be preserved");
+    Expect(ApplicationBlacklist::PathsEqual(
         deduplicated[1].path,
         L"D:\\TOOLS\\BETA.EXE"
-    ));
+    ), "deduplicated paths must retain ordinal case-insensitive comparison");
 
     return 0;
 }

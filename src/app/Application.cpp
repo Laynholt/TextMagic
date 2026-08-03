@@ -122,6 +122,7 @@ struct MessageWindowState {
 constexpr int HOTKEY_BASE = 5000;
 constexpr UINT WM_TRAYICON = WM_APP + 1;
 constexpr UINT WM_SCRIPT_EXECUTION_COMPLETE = WM_APP + 2;
+constexpr LRESULT SCRIPT_EXECUTION_COMPLETE_HANDLED = 1;
 constexpr UINT WM_UPDATE_CHECK_COMPLETE = WM_APP + 3;
 constexpr UINT WM_UPDATE_INSTALL_COMPLETE = WM_APP + 4;
 constexpr UINT WM_IMPORT_ZIP_COMPLETE = WM_APP + 5;
@@ -220,6 +221,26 @@ struct ExportZipTaskResult {
     std::wstring archivePath;
     int scriptFileCount = 0;
 };
+
+void SendScriptExecutionCompletion(
+    HWND windowHandle,
+    std::unique_ptr<ScriptExecutionTaskResult> result
+) {
+    DWORD processId = 0;
+    GetWindowThreadProcessId(windowHandle, &processId);
+    if (processId != GetCurrentProcessId()) {
+        return;
+    }
+
+    ScriptExecutionTaskResult* payload = result.release();
+    if (SendMessageW(
+            windowHandle,
+            WM_SCRIPT_EXECUTION_COMPLETE,
+            reinterpret_cast<WPARAM>(payload),
+            0) != SCRIPT_EXECUTION_COMPLETE_HANDLED) {
+        delete payload;
+    }
+}
 
 const wchar_t* T(const wchar_t* key) {
     return Localization::GetTextByName(key);
@@ -377,12 +398,13 @@ bool IsForegroundHandlingBlocked() {
     }
 
     std::wstring executablePath;
-    if (!TryGetWindowExecutablePath(foregroundWindow, &executablePath)) {
-        return false;
-    }
-
     cache.window = foregroundWindow;
     cache.blacklistGeneration = generation;
+    cache.blocked = false;
+    if (!TryGetWindowExecutablePath(foregroundWindow, &executablePath)) {
+        return cache.blocked;
+    }
+
     cache.blocked = g_applicationBlacklist->Contains(executablePath);
     return cache.blocked;
 }
@@ -737,6 +759,9 @@ LRESULT CALLBACK InputKeyboardHookProc(int code, WPARAM wParam, LPARAM lParam) {
             const bool keyDown = wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN;
             const bool keyUp = wParam == WM_KEYUP || wParam == WM_SYSKEYUP;
             if ((keyDown || keyUp) && IsForegroundHandlingBlocked()) {
+                if (HotkeyDispatch::ShouldRearmBlockedKeyEvent(keyUp)) {
+                    RearmHookHotkeysIfReleased();
+                }
                 return CallNextHookEx(g_keyboardHook, code, wParam, lParam);
             }
             if (keyDown) {
@@ -1792,7 +1817,7 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             AppendLog(std::wstring(T(L"app.log.script.prefix")) + status);
         }();
         m_scriptExecutionGate.Release(GetTickCount64());
-        return 0;
+        return SCRIPT_EXECUTION_COMPLETE_HANDLED;
 
     case WM_UPDATE_CHECK_COMPLETE:
         {
@@ -3648,6 +3673,10 @@ void Application::ExecuteScript(const RegisteredScript& script, bool clipboardOn
     const TextBridge textBridge = m_textBridge;
     const ScriptRunner scriptRunner = m_scriptRunner;
     const HWND windowHandle = m_hWnd;
+    const std::wstring noTextAvailableMessage = T(L"app.status.no_text_available");
+    const std::wstring workerExceptionPrefix =
+        std::wstring(T(L"app.error.script_worker_exception_prefix")) + L" ";
+    const std::wstring unknownWorkerException = T(L"app.error.script_worker_unknown_exception");
     const HWND inputTargetWindow = useClipboardOnly ? nullptr : GetForegroundWindow();
     const InputBuffer::ContextId inputContext =
         reinterpret_cast<InputBuffer::ContextId>(inputTargetWindow);
@@ -3668,6 +3697,9 @@ void Application::ExecuteScript(const RegisteredScript& script, bool clipboardOn
                             textBridge,
                             scriptRunner,
                             windowHandle,
+                            noTextAvailableMessage,
+                            workerExceptionPrefix,
+                            unknownWorkerException,
                             inputTargetWindow,
                             hasInputCapture,
                             inputCapture]() {
@@ -3716,7 +3748,7 @@ void Application::ExecuteScript(const RegisteredScript& script, bool clipboardOn
                     if (sourceText.empty()) {
                         result->noTextAvailable = true;
                         result->executeOk = false;
-                        result->executionError = T(L"app.status.no_text_available");
+                        result->executionError = noTextAvailableMessage;
                     } else if (!scriptBody.empty()) {
                         result->executeOk = scriptRunner.ExecutePowerShellScript(
                             scriptBody,
@@ -3734,16 +3766,19 @@ void Application::ExecuteScript(const RegisteredScript& script, bool clipboardOn
                     }
                 } catch (const std::exception& error) {
                     result->executeOk = false;
-                    result->executionError = std::wstring(T(L"app.error.script_worker_exception_prefix"))
-                        + L" " + EncodingUtils::Utf8ToWide(error.what());
+                    result->executionError = workerExceptionPrefix
+                        + EncodingUtils::Utf8ToWide(error.what());
                 } catch (...) {
                     result->executeOk = false;
-                    result->executionError = T(L"app.error.script_worker_unknown_exception");
+                    result->executionError = unknownWorkerException;
                 }
 
-                PostOwnedMessage(windowHandle, WM_SCRIPT_EXECUTION_COMPLETE, result.release());
+                SendScriptExecutionCompletion(windowHandle, std::move(result));
             } catch (...) {
-                PostMessageW(windowHandle, WM_SCRIPT_EXECUTION_COMPLETE, 0, 0);
+                SendScriptExecutionCompletion(
+                    windowHandle,
+                    std::unique_ptr<ScriptExecutionTaskResult>()
+                );
             }
         });
         worker.detach();

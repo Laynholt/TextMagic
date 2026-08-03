@@ -46,5 +46,9 @@ int main() {
            "busy matched hotkey must be consumed");
     Expect(HotkeyDispatch::Decide(false, true, true) == HotkeyDispatch::Action::Dispatch,
            "reserved matched hotkey must dispatch");
+    Expect(HotkeyDispatch::ShouldRearmBlockedKeyEvent(true),
+           "blocked key-up must rearm before passing through");
+    Expect(!HotkeyDispatch::ShouldRearmBlockedKeyEvent(false),
+           "blocked key-down must not rearm");
     return 0;
 }

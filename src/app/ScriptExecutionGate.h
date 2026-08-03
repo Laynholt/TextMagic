@@ -39,6 +39,10 @@ constexpr bool ShouldTrackInput(bool blocked) noexcept {
     return !blocked;
 }
 
+constexpr bool ShouldRearmBlockedKeyEvent(bool keyUp) noexcept {
+    return keyUp;
+}
+
 constexpr Action Decide(bool blocked, bool matched, bool reservationSucceeded) noexcept {
     if (blocked || !matched) {
         return Action::PassThrough;

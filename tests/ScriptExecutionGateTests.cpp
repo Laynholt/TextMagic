@@ -20,6 +20,12 @@ int main() {
     Expect(!gate.TryReserve(449), "cooldown dispatch must be suppressed");
     Expect(gate.TryReserve(450), "dispatch after cooldown must reserve");
 
+    ScriptExecutionGate zeroReleaseGate;
+    Expect(zeroReleaseGate.TryReserve(0), "zero-time dispatch must reserve");
+    zeroReleaseGate.Release(0);
+    Expect(!zeroReleaseGate.TryReserve(1), "release at zero must start cooldown");
+    Expect(zeroReleaseGate.TryReserve(250), "zero-time cooldown boundary must reserve");
+
     Expect(!HotkeyDispatch::ShouldTrackInput(true), "blocked input must bypass tracking");
     Expect(HotkeyDispatch::Decide(true, true, false) == HotkeyDispatch::Action::PassThrough,
            "blocked hotkey must pass through");

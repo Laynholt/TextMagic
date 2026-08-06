@@ -47,5 +47,29 @@ int main() {
         L"D:\\TOOLS\\BETA.EXE"
     ), "deduplicated paths must retain ordinal case-insensitive comparison");
 
+    const RunningApplication alpha = {
+        L"Alpha.exe", L"Zulu window", L"C:\\Apps\\Alpha.exe"
+    };
+    const RunningApplication beta = {
+        L"beta.exe", L"alpha window", L"D:\\Tools\\beta.exe"
+    };
+
+    Expect(CompareRunningApplications(
+        alpha, beta, RunningApplicationColumn::ExecutableName
+    ) < 0, "application-name comparison must be case-insensitive ascending");
+    Expect(CompareRunningApplications(
+        alpha, beta, RunningApplicationColumn::WindowTitle
+    ) > 0, "window-title comparison must use the selected column");
+    Expect(CompareRunningApplications(
+        alpha, beta, RunningApplicationColumn::Path
+    ) < 0, "path comparison must use the selected column");
+    Expect(CompareRunningApplications(
+        beta, alpha, RunningApplicationColumn::ExecutableName
+    ) > 0, "reversed arguments must support descending sorting");
+    Expect(CompareRunningApplications(
+        alpha, { L"ALPHA.EXE", L"ignored", L"ignored" },
+        RunningApplicationColumn::ExecutableName
+    ) == 0, "case variants must compare equal");
+
     return 0;
 }

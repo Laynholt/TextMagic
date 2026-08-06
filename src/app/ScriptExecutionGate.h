@@ -58,6 +58,14 @@ constexpr Action BeginMatchedPress(bool& armed) noexcept {
     return Action::Consume;
 }
 
+constexpr bool ShouldConsumeHeldRepeat(
+    bool armed,
+    std::uint32_t inputVirtualKey,
+    std::uint32_t hotkeyVirtualKey
+) noexcept {
+    return !armed && MatchesVirtualKey(inputVirtualKey, hotkeyVirtualKey);
+}
+
 constexpr bool RearmOnReleasedKey(
     bool& armed,
     std::uint32_t hotkeyVirtualKey,

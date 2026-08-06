@@ -57,11 +57,15 @@ int main() {
     Expect(HotkeyDispatch::BeginMatchedPress(armed) == HotkeyDispatch::Action::Consume,
            "matched press must default to silent consume");
     Expect(!armed, "matched busy press must disarm");
+    Expect(HotkeyDispatch::ShouldConsumeHeldRepeat(armed, 'K', 'K'),
+           "repeat key-down before primary key-up must stay consumed");
     Expect(!HotkeyDispatch::RearmOnReleasedKey(armed, 'K', VK_CONTROL),
            "modifier release must not rearm a held primary key");
     Expect(!armed, "matched press must stay disarmed until primary release");
     Expect(HotkeyDispatch::RearmOnReleasedKey(armed, 'K', 'K'),
            "primary key-up must rearm while modifiers remain held");
+    Expect(!HotkeyDispatch::ShouldConsumeHeldRepeat(armed, 'K', 'K'),
+           "primary key-up must end held-repeat consumption");
 
     armed = false;
     Expect(HotkeyDispatch::RearmOnReleasedKey(armed, VK_CONTROL, VK_LCONTROL),

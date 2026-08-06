@@ -647,8 +647,13 @@ HotkeyDispatch::Action DispatchHookHotkeysOnKeyDown(DWORD inputVkCode) {
     if (!g_hotkeyDispatchWindow || !IsWindow(g_hotkeyDispatchWindow)) {
         return HotkeyDispatch::Action::PassThrough;
     }
+    bool heldRepeat = false;
     for (auto& hotkey : g_hookHotkeys) {
         if (!hotkey.armed) {
+            heldRepeat = heldRepeat || HotkeyDispatch::ShouldConsumeHeldRepeat(
+                hotkey.armed,
+                inputVkCode,
+                hotkey.virtualKey);
             continue;
         }
         if (IsDuplicateModifierHotkey(hotkey.modifiers, hotkey.virtualKey)) {
@@ -685,7 +690,7 @@ HotkeyDispatch::Action DispatchHookHotkeysOnKeyDown(DWORD inputVkCode) {
         }
         return HotkeyDispatch::Action::Dispatch;
     }
-    return HotkeyDispatch::Action::PassThrough;
+    return heldRepeat ? HotkeyDispatch::Action::Consume : HotkeyDispatch::Action::PassThrough;
 }
 
 void RearmHookHotkeysIfReleased(DWORD releasedVkCode) {
@@ -1561,6 +1566,11 @@ LRESULT CALLBACK CheckboxPaintSubclassProc(
 }
 
 void PaintDarkListViewHeader(HWND header, HDC hdc) {
+    const HFONT headerFont = reinterpret_cast<HFONT>(SendMessageW(header, WM_GETFONT, 0, 0));
+    const HGDIOBJ previousFont = headerFont ? SelectObject(hdc, headerFont) : nullptr;
+    const HGDIOBJ previousBrush = SelectObject(hdc, GetStockObject(DC_BRUSH));
+    const HGDIOBJ previousPen = SelectObject(hdc, GetStockObject(DC_PEN));
+
     RECT clientRect = {};
     GetClientRect(header, &clientRect);
     SetDCBrushColor(hdc, RGB(45, 45, 45));
@@ -1611,6 +1621,7 @@ void PaintDarkListViewHeader(HWND header, HDC hdc) {
                 { centerX, sortedUp ? centerY - 2 : centerY + 2 }
             };
             SetDCBrushColor(hdc, RGB(245, 245, 245));
+            SetDCPenColor(hdc, RGB(245, 245, 245));
             Polygon(hdc, triangle, 3);
         }
 
@@ -1622,6 +1633,12 @@ void PaintDarkListViewHeader(HWND header, HDC hdc) {
     SetDCBrushColor(hdc, RGB(72, 72, 72));
     RECT border = { clientRect.left, clientRect.bottom - 1, clientRect.right, clientRect.bottom };
     FillRect(hdc, &border, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+
+    SelectObject(hdc, previousPen);
+    SelectObject(hdc, previousBrush);
+    if (previousFont) {
+        SelectObject(hdc, previousFont);
+    }
 }
 
 LRESULT CALLBACK DarkHeaderSubclassProc(

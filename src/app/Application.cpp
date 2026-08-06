@@ -1117,7 +1117,7 @@ void EnsureDarkScrollBarHookInstalled() {
     VirtualProtect(address, sizeof(IMAGE_THUNK_DATA), oldProtect, &oldProtect);
 }
 
-void ApplyDarkScrollBar(HWND control) {
+void ApplyDarkScrollBar(HWND control, bool applyExplorerTheme = true) {
     if (!control) {
         return;
     }
@@ -1125,7 +1125,9 @@ void ApplyDarkScrollBar(HWND control) {
     if (g_allowDarkModeForWindow) {
         g_allowDarkModeForWindow(control, true);
     }
-    SetWindowTheme(control, L"Explorer", nullptr);
+    if (applyExplorerTheme) {
+        SetWindowTheme(control, L"Explorer", nullptr);
+    }
     SendMessageW(control, WM_THEMECHANGED, 0, 0);
     SetWindowPos(
         control,
@@ -4745,17 +4747,6 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                     );
                     if (state->textControl) {
                         state->richEdit = true;
-                        SendMessageW(state->textControl, EM_SETBKGNDCOLOR, 0, RGB(45, 45, 45));
-                        CHARFORMAT2W textFormat = {};
-                        textFormat.cbSize = sizeof(textFormat);
-                        textFormat.dwMask = CFM_COLOR;
-                        textFormat.crTextColor = RGB(245, 245, 245);
-                        SendMessageW(
-                            state->textControl,
-                            EM_SETCHARFORMAT,
-                            SCF_ALL,
-                            reinterpret_cast<LPARAM>(&textFormat)
-                        );
                     }
                 }
                 if (!state->textControl) {
@@ -4880,6 +4871,23 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             SendMessageW(state->titleLabel, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
             if (state->textControl) {
                 SendMessageW(state->textControl, WM_SETFONT, reinterpret_cast<WPARAM>(textFont), TRUE);
+            }
+            if (isLogs && state->richEdit && state->textControl) {
+                SendMessageW(
+                    state->textControl,
+                    EM_SETBKGNDCOLOR,
+                    0,
+                    static_cast<LPARAM>(RGB(45, 45, 45))
+                );
+                CHARFORMAT2W format = {};
+                format.cbSize = sizeof(format);
+                format.dwMask = CFM_COLOR;
+                format.crTextColor = RGB(245, 245, 245);
+                SendMessageW(state->textControl, EM_SETCHARFORMAT, SCF_DEFAULT,
+                    reinterpret_cast<LPARAM>(&format));
+                SendMessageW(state->textControl, EM_SETCHARFORMAT, SCF_ALL,
+                    reinterpret_cast<LPARAM>(&format));
+                ApplyDarkScrollBar(state->textControl, false);
             }
             SendMessageW(state->closeButton, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
             if (state->actionButton) {

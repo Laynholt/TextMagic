@@ -152,6 +152,7 @@ constexpr int INFO_MIN_HEIGHT = 300;
 constexpr int LIST_CONTENT_PADDING = 6;
 constexpr int LIST_ITEM_HEIGHT = 24;
 constexpr int LIST_TEXT_PADDING = 9;
+constexpr UINT_PTR DARK_HEADER_SUBCLASS_ID = 1;
 constexpr const wchar_t* LOG_FILE_NAME = TM_APP_NAME_W L".log";
 constexpr const wchar_t* LANGUAGE_SETTINGS_FILE_NAME = TM_APP_NAME_W L".settings.ini";
 constexpr const wchar_t* LANGUAGE_SETTINGS_SECTION = L"ui";
@@ -173,6 +174,19 @@ constexpr ULONGLONG HOTKEY_DOUBLE_TAP_TIMEOUT_MS = 350;
 struct CheckboxVisualState {
     bool hot = false;
 };
+
+void PaintDarkListViewHeader(HWND header, HDC hdc);
+
+LRESULT CALLBACK DarkHeaderSubclassProc(
+    HWND hWnd,
+    UINT message,
+    WPARAM wParam,
+    LPARAM lParam,
+    UINT_PTR subclassId,
+    DWORD_PTR referenceData
+);
+
+void ApplyDarkListViewHeader(HWND listView);
 
 bool DrawPaddedListBoxItem(const DRAWITEMSTRUCT* item) {
     if (!item || item->CtlType != ODT_LISTBOX || item->itemID == static_cast<UINT>(-1)) {
@@ -1500,6 +1514,118 @@ LRESULT CALLBACK CheckboxPaintSubclassProc(
         InvalidateRect(hWnd, nullptr, FALSE);
     }
     return result;
+}
+
+void PaintDarkListViewHeader(HWND header, HDC hdc) {
+    RECT clientRect = {};
+    GetClientRect(header, &clientRect);
+    SetDCBrushColor(hdc, RGB(45, 45, 45));
+    FillRect(hdc, &clientRect, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+
+    POINT cursor = {};
+    GetCursorPos(&cursor);
+    ScreenToClient(header, &cursor);
+    const bool pressed = (GetKeyState(VK_LBUTTON) & 0x8000) != 0;
+    const int count = Header_GetItemCount(header);
+    for (int index = 0; index < count; ++index) {
+        RECT cellRect = {};
+        if (!Header_GetItemRect(header, index, &cellRect)) {
+            continue;
+        }
+
+        std::wstring text(1024, L'\0');
+        HDITEMW item = {};
+        item.mask = HDI_TEXT | HDI_FORMAT;
+        item.pszText = text.data();
+        item.cchTextMax = static_cast<int>(text.size());
+        Header_GetItem(header, index, &item);
+        text.resize(wcslen(text.c_str()));
+
+        const bool hot = PtInRect(&cellRect, cursor) != FALSE;
+        SetDCBrushColor(hdc, hot ? (pressed ? RGB(68, 68, 68) : RGB(58, 58, 58)) : RGB(45, 45, 45));
+        FillRect(hdc, &cellRect, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+
+        RECT textRect = cellRect;
+        textRect.left += LIST_TEXT_PADDING;
+        textRect.right -= LIST_TEXT_PADDING;
+        const bool sortedUp = (item.fmt & HDF_SORTUP) != 0;
+        const bool sortedDown = (item.fmt & HDF_SORTDOWN) != 0;
+        if (sortedUp || sortedDown) {
+            textRect.right -= 16;
+        }
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, RGB(245, 245, 245));
+        DrawTextW(hdc, text.c_str(), static_cast<int>(text.size()), &textRect,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+        if (sortedUp || sortedDown) {
+            const int centerX = cellRect.right - LIST_TEXT_PADDING - 4;
+            const int centerY = (cellRect.top + cellRect.bottom) / 2;
+            POINT triangle[3] = {
+                { centerX - 3, sortedUp ? centerY + 2 : centerY - 2 },
+                { centerX + 3, sortedUp ? centerY + 2 : centerY - 2 },
+                { centerX, sortedUp ? centerY - 2 : centerY + 2 }
+            };
+            SetDCBrushColor(hdc, RGB(245, 245, 245));
+            Polygon(hdc, triangle, 3);
+        }
+
+        SetDCBrushColor(hdc, RGB(72, 72, 72));
+        RECT separator = { cellRect.right - 1, cellRect.top, cellRect.right, cellRect.bottom };
+        FillRect(hdc, &separator, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+    }
+
+    SetDCBrushColor(hdc, RGB(72, 72, 72));
+    RECT border = { clientRect.left, clientRect.bottom - 1, clientRect.right, clientRect.bottom };
+    FillRect(hdc, &border, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+}
+
+LRESULT CALLBACK DarkHeaderSubclassProc(
+    HWND hWnd,
+    UINT message,
+    WPARAM wParam,
+    LPARAM lParam,
+    UINT_PTR subclassId,
+    DWORD_PTR
+) {
+    if (message == WM_PAINT) {
+        PAINTSTRUCT paint = {};
+        HDC hdc = BeginPaint(hWnd, &paint);
+        PaintDarkListViewHeader(hWnd, hdc);
+        EndPaint(hWnd, &paint);
+        return 0;
+    }
+    if (message == WM_ERASEBKGND) {
+        return 1;
+    }
+    if (message == WM_NCDESTROY) {
+        RemoveWindowSubclass(hWnd, DarkHeaderSubclassProc, subclassId);
+        return DefSubclassProc(hWnd, message, wParam, lParam);
+    }
+
+    if (message == WM_MOUSEMOVE) {
+        TRACKMOUSEEVENT tracking = { sizeof(tracking), TME_LEAVE, hWnd, 0 };
+        TrackMouseEvent(&tracking);
+    }
+    const LRESULT result = DefSubclassProc(hWnd, message, wParam, lParam);
+    if (message == WM_MOUSEMOVE || message == WM_MOUSELEAVE
+        || message == WM_LBUTTONDOWN || message == WM_LBUTTONUP) {
+        InvalidateRect(hWnd, nullptr, FALSE);
+    }
+    return result;
+}
+
+void ApplyDarkListViewHeader(HWND listView) {
+    if (!listView) {
+        return;
+    }
+    HWND header = ListView_GetHeader(listView);
+    if (!header) {
+        return;
+    }
+    SendMessageW(header, WM_SETFONT, SendMessageW(listView, WM_GETFONT, 0, 0), TRUE);
+    SetWindowSubclass(header, DarkHeaderSubclassProc, DARK_HEADER_SUBCLASS_ID, 0);
+    InvalidateRect(header, nullptr, TRUE);
 }
 }
 
@@ -4658,6 +4784,7 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 column.cx = 500;
                 column.pszText = const_cast<wchar_t*>(T(L"application_blacklist.column.path"));
                 ListView_InsertColumn(state->blacklistList, 1, &column);
+                ApplyDarkListViewHeader(state->blacklistList);
 
                 state->runningPickerButton = CreateWindowExW(
                     0, L"BUTTON", T(L"application_blacklist.running"),

@@ -128,12 +128,54 @@ struct MessageWindowState {
     bool useMonoFont = false;
     bool usesListBox = false;
     bool runningApplicationSelection = false;
+    int runningSortColumn = -1;
+    bool runningSortAscending = true;
     std::vector<RunningApplication> runningApplications;
     std::vector<std::wstring>* selectedApplicationPathsOut = nullptr;
     int result = IDCANCEL;
     int* resultOut = nullptr;
     HBRUSH editBrush = nullptr;
 };
+
+int CALLBACK CompareRunningApplicationRows(
+    LPARAM leftRow,
+    LPARAM rightRow,
+    LPARAM context
+) {
+    auto* state = reinterpret_cast<MessageWindowState*>(context);
+    LVITEMW leftItem = {};
+    leftItem.mask = LVIF_PARAM;
+    leftItem.iItem = static_cast<int>(leftRow);
+    LVITEMW rightItem = {};
+    rightItem.mask = LVIF_PARAM;
+    rightItem.iItem = static_cast<int>(rightRow);
+    ListView_GetItem(state->textControl, &leftItem);
+    ListView_GetItem(state->textControl, &rightItem);
+    const auto& left = state->runningApplications[static_cast<size_t>(leftItem.lParam)];
+    const auto& right = state->runningApplications[static_cast<size_t>(rightItem.lParam)];
+    const int result = CompareRunningApplications(
+        left,
+        right,
+        static_cast<RunningApplicationColumn>(state->runningSortColumn)
+    );
+    return state->runningSortAscending ? result : -result;
+}
+
+void SetRunningApplicationSortIndicator(HWND listView, int column, bool ascending) {
+    HWND header = ListView_GetHeader(listView);
+    const int count = Header_GetItemCount(header);
+    for (int index = 0; index < count; ++index) {
+        HDITEMW item = {};
+        item.mask = HDI_FORMAT;
+        Header_GetItem(header, index, &item);
+        item.fmt &= ~(HDF_SORTUP | HDF_SORTDOWN);
+        if (index == column) {
+            item.fmt |= ascending ? HDF_SORTUP : HDF_SORTDOWN;
+        }
+        Header_SetItem(header, index, &item);
+    }
+    InvalidateRect(header, nullptr, TRUE);
+}
 
 constexpr int HOTKEY_BASE = 5000;
 constexpr UINT WM_TRAYICON = WM_APP + 1;
@@ -5175,31 +5217,69 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
                 0, 0, 100, 24,
                 hWnd, nullptr, GetModuleHandleW(nullptr), nullptr
             );
-            state->usesListBox = true;
-            const DWORD listStyle = state->runningApplicationSelection
-                ? (LBS_NOINTEGRALHEIGHT | LBS_EXTENDEDSEL | LBS_OWNERDRAWFIXED | LBS_HASSTRINGS)
-                : (LBS_NOINTEGRALHEIGHT | LBS_NOSEL);
-            state->textControl = CreateWindowExW(
-                0, L"LISTBOX", nullptr,
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | listStyle,
-                0, 0, 100, 100,
-                hWnd, reinterpret_cast<HMENU>(ID_MESSAGE_TEXT), GetModuleHandleW(nullptr), nullptr
-            );
-            if (state->textControl) {
-                ApplyDarkScrollBar(state->textControl);
-                if (state->runningApplicationSelection) {
-                    SendMessageW(state->textControl, LB_SETITEMHEIGHT, 0, LIST_ITEM_HEIGHT);
-                    for (const RunningApplication& application : state->runningApplications) {
-                        const std::wstring row = application.executableName + L" — "
-                            + application.windowTitle + L" — " + application.path;
-                        SendMessageW(
+            state->usesListBox = !state->runningApplicationSelection;
+            if (state->runningApplicationSelection) {
+                state->textControl = CreateWindowExW(
+                    0, WC_LISTVIEWW, nullptr,
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL |
+                        LVS_REPORT | LVS_SHOWSELALWAYS,
+                    0, 0, 100, 100,
+                    hWnd, reinterpret_cast<HMENU>(ID_MESSAGE_TEXT), GetModuleHandleW(nullptr), nullptr
+                );
+                ListView_SetExtendedListViewStyle(
+                    state->textControl,
+                    LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_HEADERDRAGDROP
+                );
+                ListView_SetBkColor(state->textControl, RGB(37, 37, 37));
+                ListView_SetTextBkColor(state->textControl, RGB(37, 37, 37));
+                ListView_SetTextColor(state->textControl, RGB(245, 245, 245));
+
+                LVCOLUMNW column = {};
+                column.mask = LVCF_TEXT | LVCF_WIDTH;
+                column.cx = 170;
+                column.pszText = const_cast<wchar_t*>(T(L"application_blacklist.column.application"));
+                ListView_InsertColumn(state->textControl, 0, &column);
+                column.cx = 280;
+                column.pszText = const_cast<wchar_t*>(T(L"application_blacklist.column.window_title"));
+                ListView_InsertColumn(state->textControl, 1, &column);
+                column.cx = 520;
+                column.pszText = const_cast<wchar_t*>(T(L"application_blacklist.column.path"));
+                ListView_InsertColumn(state->textControl, 2, &column);
+
+                for (size_t index = 0; index < state->runningApplications.size(); ++index) {
+                    const RunningApplication& application = state->runningApplications[index];
+                    LVITEMW item = {};
+                    item.mask = LVIF_TEXT | LVIF_PARAM;
+                    item.iItem = static_cast<int>(index);
+                    item.pszText = const_cast<wchar_t*>(application.executableName.c_str());
+                    item.lParam = static_cast<LPARAM>(index);
+                    const int inserted = ListView_InsertItem(state->textControl, &item);
+                    if (inserted >= 0) {
+                        ListView_SetItemText(
                             state->textControl,
-                            LB_ADDSTRING,
-                            0,
-                            reinterpret_cast<LPARAM>(row.c_str())
+                            inserted,
+                            1,
+                            const_cast<wchar_t*>(application.windowTitle.c_str())
+                        );
+                        ListView_SetItemText(
+                            state->textControl,
+                            inserted,
+                            2,
+                            const_cast<wchar_t*>(application.path.c_str())
                         );
                     }
-                } else {
+                }
+                ApplyDarkScrollBar(state->textControl);
+            } else {
+                const DWORD listStyle = LBS_NOINTEGRALHEIGHT | LBS_NOSEL;
+                state->textControl = CreateWindowExW(
+                    0, L"LISTBOX", nullptr,
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | listStyle,
+                    0, 0, 100, 100,
+                    hWnd, reinterpret_cast<HMENU>(ID_MESSAGE_TEXT), GetModuleHandleW(nullptr), nullptr
+                );
+                if (state->textControl) {
+                    ApplyDarkScrollBar(state->textControl);
                     FillListBoxWithWrappedText(state->textControl, state->text);
                     SetWindowSubclass(state->textControl, CopyOnlyContextSubclassProc, 1, reinterpret_cast<DWORD_PTR>(hWnd));
                 }
@@ -5221,6 +5301,9 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
             SendMessageW(state->titleLabel, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
             HFONT textFont = state->useMonoFont ? state->owner->m_hMonoFont : state->owner->m_hFont;
             SendMessageW(state->textControl, WM_SETFONT, reinterpret_cast<WPARAM>(textFont), TRUE);
+            if (state->runningApplicationSelection) {
+                ApplyDarkListViewHeader(state->textControl);
+            }
             SendMessageW(state->primaryButton, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
             if (state->secondaryButton) {
                 SendMessageW(state->secondaryButton, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
@@ -5273,9 +5356,6 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
             auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
             if (!dis) {
                 break;
-            }
-            if (state && state->runningApplicationSelection && DrawPaddedListBoxItem(dis)) {
-                return TRUE;
             }
             if (dis->CtlType == ODT_MENU && IsStyledMenuItem(ResolveStyledMenuItemId(dis->itemID, dis->itemData))) {
                 DrawStyledMenuItem(dis);
@@ -5330,7 +5410,7 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
             RECT card = { 8, 8, r.right - 8, r.bottom - 8 };
             UiRenderer::DrawCard(hdc, card);
             EndPaint(hWnd, &ps);
-            if (state && state->usesListBox && state->textControl) {
+            if (state && state->textControl) {
                 UiRenderer::DrawEditBorder(hWnd, state->textControl);
             }
         }
@@ -5368,6 +5448,33 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
         }
         break;
 
+    case WM_NOTIFY:
+        {
+            auto* click = reinterpret_cast<NMLISTVIEW*>(lParam);
+            if (state && state->runningApplicationSelection && click
+                && click->hdr.hwndFrom == state->textControl
+                && click->hdr.code == LVN_COLUMNCLICK) {
+                if (state->runningSortColumn == click->iSubItem) {
+                    state->runningSortAscending = !state->runningSortAscending;
+                } else {
+                    state->runningSortColumn = click->iSubItem;
+                    state->runningSortAscending = true;
+                }
+                SetRunningApplicationSortIndicator(
+                    state->textControl,
+                    state->runningSortColumn,
+                    state->runningSortAscending
+                );
+                ListView_SortItemsEx(
+                    state->textControl,
+                    CompareRunningApplicationRows,
+                    reinterpret_cast<LPARAM>(state)
+                );
+                return 0;
+            }
+        }
+        break;
+
     case WM_COMMAND:
         if (state) {
             const UINT id = LOWORD(wParam);
@@ -5379,19 +5486,17 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
             }
             if (id == ID_MESSAGE_PRIMARY || id == IDOK) {
                 if (state->runningApplicationSelection && state->selectedApplicationPathsOut) {
-                    const LRESULT selectionCount = SendMessageW(state->textControl, LB_GETSELCOUNT, 0, 0);
-                    if (selectionCount > 0) {
-                        std::vector<int> selected(static_cast<size_t>(selectionCount));
-                        SendMessageW(
-                            state->textControl,
-                            LB_GETSELITEMS,
-                            static_cast<WPARAM>(selected.size()),
-                            reinterpret_cast<LPARAM>(selected.data())
-                        );
-                        for (const int index : selected) {
-                            if (index >= 0 && static_cast<size_t>(index) < state->runningApplications.size()) {
+                    for (int row = ListView_GetNextItem(state->textControl, -1, LVNI_SELECTED);
+                         row != -1;
+                         row = ListView_GetNextItem(state->textControl, row, LVNI_SELECTED)) {
+                        LVITEMW item = {};
+                        item.mask = LVIF_PARAM;
+                        item.iItem = row;
+                        if (ListView_GetItem(state->textControl, &item)) {
+                            const size_t sourceIndex = static_cast<size_t>(item.lParam);
+                            if (sourceIndex < state->runningApplications.size()) {
                                 state->selectedApplicationPathsOut->push_back(
-                                    state->runningApplications[static_cast<size_t>(index)].path
+                                    state->runningApplications[sourceIndex].path
                                 );
                             }
                         }

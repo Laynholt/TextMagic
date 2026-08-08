@@ -5,6 +5,13 @@
 #include <string>
 
 namespace TextBridgeInputUtils {
+inline bool WaitForInputReady(
+    bool inputBufferMode,
+    const std::function<bool()>& waitForModifiersRelease
+) {
+    return !inputBufferMode || waitForModifiersRelease();
+}
+
 struct AtomicReplacementOperations {
     std::function<bool()> isTargetCurrent;
     std::function<bool(size_t, const std::wstring&)> sendBatch;

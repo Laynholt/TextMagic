@@ -6,6 +6,7 @@
 #include "FullscreenUtils.h"
 #include "Localization.h"
 #include "ScriptInputSource.h"
+#include "TextBridgeInputUtils.h"
 #include "ToolTip.h"
 #include "UiRenderer.h"
 #include "InputBuffer.h"
@@ -270,6 +271,7 @@ struct ScriptExecutionTaskResult {
     bool clipboardMode = false;
     bool noTextAvailable = false;
     bool executeOk = false;
+    bool inputReady = true;
     std::wstring outputText;
     std::wstring executionError;
 };
@@ -2031,8 +2033,7 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 const std::wstring capturedText = capture.word + capture.trailing;
                 const HWND expectedTarget = result->inputTargetWindow;
 
-                if (!m_textBridge.WaitForModifiersRelease(expectedTarget)
-                    || !IsPreviousWordCaptureCurrent(capture)) {
+                if (!result->inputReady || !IsPreviousWordCaptureCurrent(capture)) {
                     ClearInputBuffer();
                 } else if (m_textBridge.ReplaceText(
                                expectedTarget, capturedText, replacement)) {
@@ -4045,6 +4046,13 @@ void Application::ExecuteScript(const RegisteredScript& script, bool clipboardOn
                     result->executeOk = false;
                     result->executionError = unknownWorkerException;
                 }
+
+                result->inputReady = TextBridgeInputUtils::WaitForInputReady(
+                    result->executeOk && result->inputBufferMode,
+                    [&]() {
+                        return textBridge.WaitForModifiersRelease(inputTargetWindow);
+                    }
+                );
 
                 SendScriptExecutionCompletion(windowHandle, std::move(result));
             } catch (...) {

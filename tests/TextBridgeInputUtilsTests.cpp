@@ -14,6 +14,29 @@ void Expect(bool condition, const char* message) {
 }
 
 int main() {
+    std::string completionOrder;
+    const bool inputReady = TextBridgeInputUtils::WaitForInputReady(
+        true,
+        [&]() {
+            completionOrder += "wait";
+            return true;
+        }
+    );
+    completionOrder += "complete";
+    Expect(inputReady && completionOrder == "waitcomplete",
+           "modifier release must be checked before input-buffer completion");
+
+    bool unnecessaryWaitCalled = false;
+    Expect(TextBridgeInputUtils::WaitForInputReady(
+               false,
+               [&]() {
+                   unnecessaryWaitCalled = true;
+                   return false;
+               }),
+           "non-input-buffer completion must be ready immediately");
+    Expect(!unnecessaryWaitCalled,
+           "non-input-buffer completion must not wait for modifiers");
+
     int replacementBatches = 0;
     size_t deletedCharacters = 0;
     std::wstring insertedText;

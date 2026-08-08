@@ -67,6 +67,30 @@ int main() {
     Expect(!HotkeyDispatch::ShouldConsumeHeldRepeat(armed, 'K', 'K'),
            "primary key-up must end held-repeat consumption");
 
+    struct TestHookHotkey {
+        bool armed;
+        UINT modifiers;
+        UINT virtualKey;
+    };
+    constexpr TestHookHotkey samePrimaryKey[] = {
+        {false, MOD_CONTROL, 'K'},
+        {true, MOD_ALT, 'K'},
+    };
+    bool heldRepeat = false;
+    for (const TestHookHotkey& hotkey : samePrimaryKey) {
+        heldRepeat = heldRepeat || HotkeyDispatch::ShouldConsumeHeldRepeat(
+            hotkey.armed,
+            'K',
+            hotkey.virtualKey);
+    }
+    const bool competingArmedMatch = samePrimaryKey[1].armed
+        && samePrimaryKey[1].modifiers == MOD_ALT
+        && HotkeyDispatch::MatchesVirtualKey('K', samePrimaryKey[1].virtualKey);
+    Expect(heldRepeat, "disarmed Ctrl+K must claim a held K repeat");
+    Expect(HotkeyDispatch::DecideHeldRepeat(heldRepeat, competingArmedMatch, true)
+               == HotkeyDispatch::Action::Consume,
+           "held K repeat must consume before reservable Alt+K dispatch");
+
     armed = false;
     Expect(HotkeyDispatch::RearmOnReleasedKey(armed, VK_CONTROL, VK_LCONTROL),
            "generic modifier primary must rearm on physical-side key-up");

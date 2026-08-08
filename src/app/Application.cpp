@@ -647,13 +647,16 @@ HotkeyDispatch::Action DispatchHookHotkeysOnKeyDown(DWORD inputVkCode) {
     if (!g_hotkeyDispatchWindow || !IsWindow(g_hotkeyDispatchWindow)) {
         return HotkeyDispatch::Action::PassThrough;
     }
-    bool heldRepeat = false;
-    for (auto& hotkey : g_hookHotkeys) {
-        if (!hotkey.armed) {
-            heldRepeat = heldRepeat || HotkeyDispatch::ShouldConsumeHeldRepeat(
+    for (const auto& hotkey : g_hookHotkeys) {
+        if (HotkeyDispatch::ShouldConsumeHeldRepeat(
                 hotkey.armed,
                 inputVkCode,
-                hotkey.virtualKey);
+                hotkey.virtualKey)) {
+            return HotkeyDispatch::DecideHeldRepeat(true, false, false);
+        }
+    }
+    for (auto& hotkey : g_hookHotkeys) {
+        if (!hotkey.armed) {
             continue;
         }
         if (IsDuplicateModifierHotkey(hotkey.modifiers, hotkey.virtualKey)) {
@@ -690,7 +693,7 @@ HotkeyDispatch::Action DispatchHookHotkeysOnKeyDown(DWORD inputVkCode) {
         }
         return HotkeyDispatch::Action::Dispatch;
     }
-    return heldRepeat ? HotkeyDispatch::Action::Consume : HotkeyDispatch::Action::PassThrough;
+    return HotkeyDispatch::Action::PassThrough;
 }
 
 void RearmHookHotkeysIfReleased(DWORD releasedVkCode) {

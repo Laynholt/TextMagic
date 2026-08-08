@@ -92,4 +92,8 @@ constexpr Action Decide(bool blocked, bool matched, bool reservationSucceeded) n
     }
     return reservationSucceeded ? Action::Dispatch : Action::Consume;
 }
+
+constexpr Action DecideHeldRepeat(bool heldRepeat, bool matched, bool reservationSucceeded) noexcept {
+    return heldRepeat ? Action::Consume : Decide(false, matched, reservationSucceeded);
+}
 }

@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <array>
 #include <cstdint>
 
 class ScriptExecutionGate {
@@ -31,6 +32,60 @@ private:
 };
 
 namespace HotkeyDispatch {
+constexpr std::uint32_t NormalizeHookVirtualKey(
+    std::uint32_t virtualKey,
+    std::uint32_t scanCode,
+    std::uint32_t flags
+) noexcept {
+    if (virtualKey == VK_SHIFT) {
+        return scanCode == 0x36 ? VK_RSHIFT : VK_LSHIFT;
+    }
+    if (virtualKey == VK_CONTROL) {
+        return (flags & LLKHF_EXTENDED) != 0 ? VK_RCONTROL : VK_LCONTROL;
+    }
+    if (virtualKey == VK_MENU) {
+        return (flags & LLKHF_EXTENDED) != 0 ? VK_RMENU : VK_LMENU;
+    }
+    return virtualKey;
+}
+
+constexpr bool IsModifierVirtualKey(std::uint32_t virtualKey) noexcept {
+    return virtualKey == VK_SHIFT || virtualKey == VK_LSHIFT || virtualKey == VK_RSHIFT
+        || virtualKey == VK_CONTROL || virtualKey == VK_LCONTROL || virtualKey == VK_RCONTROL
+        || virtualKey == VK_MENU || virtualKey == VK_LMENU || virtualKey == VK_RMENU
+        || virtualKey == VK_LWIN || virtualKey == VK_RWIN
+        || virtualKey == VK_CAPITAL;
+}
+
+class PressedKeyState {
+public:
+    void Update(std::uint32_t virtualKey, bool pressed) noexcept {
+        if (virtualKey < m_pressed.size()) {
+            m_pressed[virtualKey] = pressed;
+        }
+    }
+
+    bool IsPressed(std::uint32_t virtualKey) const noexcept {
+        return virtualKey < m_pressed.size() && m_pressed[virtualKey];
+    }
+
+    UINT Modifiers() const noexcept {
+        const bool control = IsPressed(VK_CONTROL) || IsPressed(VK_LCONTROL) || IsPressed(VK_RCONTROL);
+        const bool alt = IsPressed(VK_MENU) || IsPressed(VK_LMENU) || IsPressed(VK_RMENU);
+        const bool shift = IsPressed(VK_SHIFT) || IsPressed(VK_LSHIFT) || IsPressed(VK_RSHIFT);
+        const bool win = IsPressed(VK_LWIN) || IsPressed(VK_RWIN);
+        return (control ? MOD_CONTROL : 0)
+            | (alt ? MOD_ALT : 0)
+            | (shift ? MOD_SHIFT : 0)
+            | (win ? MOD_WIN : 0);
+    }
+
+    void Clear() noexcept { m_pressed = {}; }
+
+private:
+    std::array<bool, 256> m_pressed{};
+};
+
 enum class Action {
     PassThrough,
     Consume,

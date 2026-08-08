@@ -352,6 +352,7 @@ struct HookHotkey {
     DWORD pendingTapVkCode = 0;
 };
 std::vector<HookHotkey> g_hookHotkeys;
+HotkeyDispatch::PressedKeyState g_hookKeyState;
 HWND g_hotkeyDispatchWindow = nullptr;
 ApplicationBlacklist* g_applicationBlacklist = nullptr;
 ScriptExecutionGate* g_scriptExecutionGate = nullptr;
@@ -572,57 +573,42 @@ void ResetPendingModifierTap(HookHotkey* hotkey) {
     hotkey->pendingTapVkCode = 0;
 }
 
-bool IsVirtualKeyPressed(int virtualKey) {
-    return (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
-}
-
-UINT GetCurrentHotkeyModifiers() {
-    const bool controlDown = IsVirtualKeyPressed(VK_CONTROL);
-    const bool altDown = IsVirtualKeyPressed(VK_MENU);
-    const bool shiftDown = IsVirtualKeyPressed(VK_SHIFT);
-    const bool winDown = IsVirtualKeyPressed(VK_LWIN) || IsVirtualKeyPressed(VK_RWIN);
-    return (controlDown ? MOD_CONTROL : 0)
-        | (altDown ? MOD_ALT : 0)
-        | (shiftDown ? MOD_SHIFT : 0)
-        | (winDown ? MOD_WIN : 0);
-}
-
 bool IsDualModifierPressed(UINT hotkeyVirtualKey, DWORD inputVkCode) {
     if (hotkeyVirtualKey == VK_SHIFT) {
         if (inputVkCode == VK_LSHIFT) {
-            return IsVirtualKeyPressed(VK_RSHIFT);
+            return g_hookKeyState.IsPressed(VK_RSHIFT);
         }
         if (inputVkCode == VK_RSHIFT) {
-            return IsVirtualKeyPressed(VK_LSHIFT);
+            return g_hookKeyState.IsPressed(VK_LSHIFT);
         }
-        return IsVirtualKeyPressed(VK_LSHIFT) && IsVirtualKeyPressed(VK_RSHIFT);
+        return g_hookKeyState.IsPressed(VK_LSHIFT) && g_hookKeyState.IsPressed(VK_RSHIFT);
     }
     if (hotkeyVirtualKey == VK_CONTROL) {
         if (inputVkCode == VK_LCONTROL) {
-            return IsVirtualKeyPressed(VK_RCONTROL);
+            return g_hookKeyState.IsPressed(VK_RCONTROL);
         }
         if (inputVkCode == VK_RCONTROL) {
-            return IsVirtualKeyPressed(VK_LCONTROL);
+            return g_hookKeyState.IsPressed(VK_LCONTROL);
         }
-        return IsVirtualKeyPressed(VK_LCONTROL) && IsVirtualKeyPressed(VK_RCONTROL);
+        return g_hookKeyState.IsPressed(VK_LCONTROL) && g_hookKeyState.IsPressed(VK_RCONTROL);
     }
     if (hotkeyVirtualKey == VK_MENU) {
         if (inputVkCode == VK_LMENU) {
-            return IsVirtualKeyPressed(VK_RMENU);
+            return g_hookKeyState.IsPressed(VK_RMENU);
         }
         if (inputVkCode == VK_RMENU) {
-            return IsVirtualKeyPressed(VK_LMENU);
+            return g_hookKeyState.IsPressed(VK_LMENU);
         }
-        return IsVirtualKeyPressed(VK_LMENU) && IsVirtualKeyPressed(VK_RMENU);
+        return g_hookKeyState.IsPressed(VK_LMENU) && g_hookKeyState.IsPressed(VK_RMENU);
     }
     if (hotkeyVirtualKey == VK_LWIN || hotkeyVirtualKey == VK_RWIN) {
         if (inputVkCode == VK_LWIN) {
-            return IsVirtualKeyPressed(VK_RWIN);
+            return g_hookKeyState.IsPressed(VK_RWIN);
         }
         if (inputVkCode == VK_RWIN) {
-            return IsVirtualKeyPressed(VK_LWIN);
+            return g_hookKeyState.IsPressed(VK_LWIN);
         }
-        return IsVirtualKeyPressed(VK_LWIN) && IsVirtualKeyPressed(VK_RWIN);
+        return g_hookKeyState.IsPressed(VK_LWIN) && g_hookKeyState.IsPressed(VK_RWIN);
     }
     return true;
 }
@@ -640,8 +626,7 @@ bool IsHotkeyMatchedByKeyEvent(UINT modifiers, UINT virtualKey, DWORD inputVkCod
     return true;
 }
 
-HotkeyDispatch::Action DispatchHookHotkeysOnKeyDown(DWORD inputVkCode) {
-    const UINT currentModifiers = GetCurrentHotkeyModifiers();
+HotkeyDispatch::Action DispatchHookHotkeysOnKeyDown(DWORD inputVkCode, UINT currentModifiers) {
     const ULONGLONG nowTick = GetTickCount64();
     std::lock_guard<std::mutex> lock(g_hookHotkeysMutex);
     if (!g_hotkeyDispatchWindow || !IsWindow(g_hotkeyDispatchWindow)) {
@@ -703,13 +688,7 @@ void RearmHookHotkeysIfReleased(DWORD releasedVkCode) {
     }
 }
 
-bool IsTrackedHotkeyPressed(DWORD vkCode, bool controlDown, bool altDown, bool shiftDown, bool winDown) {
-    const UINT currentModifiers =
-        (controlDown ? MOD_CONTROL : 0)
-        | (altDown ? MOD_ALT : 0)
-        | (shiftDown ? MOD_SHIFT : 0)
-        | (winDown ? MOD_WIN : 0);
-
+bool IsTrackedHotkeyPressed(DWORD vkCode, UINT currentModifiers) {
     std::lock_guard<std::mutex> lock(g_registeredHotkeysMutex);
     for (const TrackedHotkey& hotkey : g_trackedHotkeys) {
         if (IsHotkeyMatchedByKeyEvent(hotkey.modifiers, hotkey.virtualKey, vkCode, currentModifiers)) {
@@ -764,14 +743,12 @@ void AppendKeyToInputBuffer(DWORD vkCode, DWORD scanCode) {
     }
 }
 
-void HandleInputBufferKeyDown(DWORD vkCode, DWORD scanCode) {
-    const bool controlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-    const bool altDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-    const bool shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-    const bool winDown = (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0
-        || (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
+void HandleInputBufferKeyDown(DWORD vkCode, DWORD scanCode, UINT currentModifiers) {
+    const bool controlDown = (currentModifiers & MOD_CONTROL) != 0;
+    const bool altDown = (currentModifiers & MOD_ALT) != 0;
+    const bool winDown = (currentModifiers & MOD_WIN) != 0;
 
-    if (IsTrackedHotkeyPressed(vkCode, controlDown, altDown, shiftDown, winDown)) {
+    if (IsTrackedHotkeyPressed(vkCode, currentModifiers)) {
         return;
     }
 
@@ -802,9 +779,7 @@ void HandleInputBufferKeyDown(DWORD vkCode, DWORD scanCode) {
         break;
     }
 
-    if (vkCode == VK_SHIFT || vkCode == VK_CONTROL || vkCode == VK_MENU
-        || vkCode == VK_LWIN || vkCode == VK_RWIN
-        || vkCode == VK_CAPITAL) {
+    if (HotkeyDispatch::IsModifierVirtualKey(vkCode)) {
         return;
     }
     if (vkCode >= VK_F1 && vkCode <= VK_F24) {
@@ -826,6 +801,14 @@ LRESULT CALLBACK InputKeyboardHookProc(int code, WPARAM wParam, LPARAM lParam) {
         if (keyInfo && (keyInfo->flags & LLKHF_INJECTED) == 0) {
             const bool keyDown = wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN;
             const bool keyUp = wParam == WM_KEYUP || wParam == WM_SYSKEYUP;
+            if (keyDown || keyUp) {
+                g_hookKeyState.Update(
+                    HotkeyDispatch::NormalizeHookVirtualKey(
+                        keyInfo->vkCode,
+                        keyInfo->scanCode,
+                        keyInfo->flags),
+                    keyDown);
+            }
             if ((keyDown || keyUp) && IsForegroundHandlingBlocked()) {
                 if (HotkeyDispatch::ShouldRearmBlockedKeyEvent(keyUp)) {
                     RearmHookHotkeysIfReleased(keyInfo->vkCode);
@@ -833,11 +816,14 @@ LRESULT CALLBACK InputKeyboardHookProc(int code, WPARAM wParam, LPARAM lParam) {
                 return CallNextHookEx(g_keyboardHook, code, wParam, lParam);
             }
             if (keyDown) {
-                const HotkeyDispatch::Action action = DispatchHookHotkeysOnKeyDown(keyInfo->vkCode);
+                const UINT currentModifiers = g_hookKeyState.Modifiers();
+                const HotkeyDispatch::Action action = DispatchHookHotkeysOnKeyDown(
+                    keyInfo->vkCode,
+                    currentModifiers);
                 if (action != HotkeyDispatch::Action::PassThrough) {
                     return 1;
                 }
-                HandleInputBufferKeyDown(keyInfo->vkCode, keyInfo->scanCode);
+                HandleInputBufferKeyDown(keyInfo->vkCode, keyInfo->scanCode, currentModifiers);
             } else if (keyUp) {
                 RearmHookHotkeysIfReleased(keyInfo->vkCode);
             }
@@ -860,6 +846,7 @@ LRESULT CALLBACK InputMouseHookProc(int code, WPARAM wParam, LPARAM lParam) {
 
 bool InstallInputHooks(HINSTANCE hInstance) {
     if (!g_keyboardHook) {
+        g_hookKeyState.Clear();
         g_keyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, InputKeyboardHookProc, hInstance, 0);
     }
     if (!g_keyboardHook) {
@@ -875,6 +862,7 @@ void UninstallInputHooks() {
     if (g_keyboardHook) {
         UnhookWindowsHookEx(g_keyboardHook);
         g_keyboardHook = nullptr;
+        g_hookKeyState.Clear();
     }
     if (g_mouseHook) {
         UnhookWindowsHookEx(g_mouseHook);

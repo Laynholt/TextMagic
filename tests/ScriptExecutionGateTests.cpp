@@ -53,6 +53,32 @@ int main() {
     Expect(!HotkeyDispatch::ShouldRearmBlockedKeyEvent(false),
            "blocked key-down must not rearm");
 
+    HotkeyDispatch::PressedKeyState hookKeys;
+    hookKeys.Update(VK_LCONTROL, true);
+    hookKeys.Update(VK_RMENU, true);
+    Expect(hookKeys.Modifiers() == (MOD_CONTROL | MOD_ALT),
+           "hook events must provide Ctrl+Alt before the async key state updates");
+    Expect(HotkeyDispatch::MatchesVirtualKey('U', 'U')
+               && hookKeys.Modifiers() == (MOD_CONTROL | MOD_ALT),
+           "Ctrl+Alt+U must remain matchable from hook-owned key state");
+    hookKeys.Update(VK_RMENU, false);
+    Expect(hookKeys.Modifiers() == MOD_CONTROL,
+           "modifier key-up must immediately update hook-owned state");
+    Expect(HotkeyDispatch::NormalizeHookVirtualKey(VK_SHIFT, 0x2A, 0) == VK_LSHIFT,
+           "left Shift hook events must retain their physical side");
+    Expect(HotkeyDispatch::NormalizeHookVirtualKey(VK_SHIFT, 0x36, 0) == VK_RSHIFT,
+           "right Shift hook events must retain their physical side");
+    Expect(HotkeyDispatch::NormalizeHookVirtualKey(VK_CONTROL, 0, LLKHF_EXTENDED) == VK_RCONTROL,
+           "extended Control hook events must map to right Control");
+    Expect(HotkeyDispatch::NormalizeHookVirtualKey(VK_MENU, 0, LLKHF_EXTENDED) == VK_RMENU,
+           "extended Alt hook events must map to right Alt");
+    Expect(HotkeyDispatch::IsModifierVirtualKey(VK_LCONTROL)
+               && HotkeyDispatch::IsModifierVirtualKey(VK_RMENU)
+               && HotkeyDispatch::IsModifierVirtualKey(VK_RSHIFT),
+           "physical-side modifier events must not clear tracked input");
+    Expect(!HotkeyDispatch::IsModifierVirtualKey('U'),
+           "ordinary hotkey primaries must not be classified as modifiers");
+
     bool armed = true;
     Expect(HotkeyDispatch::BeginMatchedPress(armed) == HotkeyDispatch::Action::Consume,
            "matched press must default to silent consume");

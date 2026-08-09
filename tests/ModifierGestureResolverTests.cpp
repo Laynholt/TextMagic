@@ -1,0 +1,131 @@
+#include "ModifierGestureResolver.h"
+
+#include <windows.h>
+
+#include <cstdlib>
+#include <iostream>
+
+namespace {
+void Check(bool condition, const char* message) {
+    if (!condition) {
+        std::cerr << message << '\n';
+        std::exit(1);
+    }
+}
+
+ModifierGestureResolver MakeResolver() {
+    ModifierGestureResolver resolver;
+    resolver.SetBindings({
+        {1, ScriptManifest::HotkeyKind::ModifierGesture, MOD_SHIFT, VK_SHIFT},
+        {2, ScriptManifest::HotkeyKind::ModifierDoubleTap, MOD_SHIFT, VK_SHIFT},
+        {3, ScriptManifest::HotkeyKind::ModifierGesture, MOD_CONTROL, VK_CONTROL},
+        {4, ScriptManifest::HotkeyKind::ModifierGesture, MOD_CONTROL | MOD_SHIFT, 0},
+    });
+    return resolver;
+}
+
+void CheckNoDispatch(const ModifierGestureResolver::Decision& decision, const char* message) {
+    Check(decision.hotkeyId == 0, message);
+}
+}
+
+int main() {
+    {
+        auto resolver = MakeResolver();
+        CheckNoDispatch(resolver.OnKeyDown(VK_SHIFT, MOD_SHIFT, 0, 100),
+                        "single Shift starts without dispatch");
+        const auto completed = resolver.OnKeyUp(VK_SHIFT, 0, 50, 100);
+        Check(completed.pending && completed.dueTick == 350,
+              "single Shift waits for the resolution timeout");
+        Check(resolver.HasPending() && resolver.DueTick() == 350,
+              "single Shift exposes its due tick");
+        CheckNoDispatch(resolver.OnTimeout(349, 100),
+                        "single Shift does not dispatch before 350 ms");
+        const auto dispatched = resolver.OnTimeout(350, 100);
+        Check(dispatched.hotkeyId == 1 && !dispatched.pending,
+              "single Shift dispatches at 350 ms");
+        Check(!resolver.HasPending(), "single Shift clears after dispatch");
+    }
+
+    {
+        auto resolver = MakeResolver();
+        resolver.OnKeyDown(VK_SHIFT, MOD_SHIFT, 1000, 100);
+        CheckNoDispatch(resolver.OnKeyUp(VK_SHIFT, 0, 1301, 100),
+                        "a long Shift hold is canceled");
+        CheckNoDispatch(resolver.OnTimeout(2000, 100),
+                        "a long Shift hold never dispatches");
+    }
+
+    {
+        auto resolver = MakeResolver();
+        resolver.OnKeyDown(VK_SHIFT, MOD_SHIFT, 0, 100);
+        CheckNoDispatch(resolver.OnKeyDown('A', MOD_SHIFT, 10, 100),
+                        "Shift plus A cancels the modifier gesture");
+        CheckNoDispatch(resolver.OnTimeout(350, 100),
+                        "Shift plus A leaves no pending dispatch");
+    }
+
+    {
+        auto resolver = MakeResolver();
+        resolver.OnKeyDown(VK_SHIFT, MOD_SHIFT, 0, 100);
+        resolver.OnKeyUp(VK_SHIFT, 0, 50, 100);
+        Check(resolver.Cancel().hotkeyId == 0 && !resolver.HasPending(),
+              "mouse cancellation clears the pending gesture");
+        CheckNoDispatch(resolver.OnTimeout(350, 100),
+                        "mouse cancellation prevents dispatch");
+    }
+
+    {
+        auto resolver = MakeResolver();
+        resolver.OnKeyDown(VK_SHIFT, MOD_SHIFT, 0, 100);
+        resolver.OnKeyUp(VK_SHIFT, 0, 50, 100);
+        CheckNoDispatch(resolver.OnTimeout(350, 200),
+                        "a foreground change cancels the pending gesture");
+        Check(!resolver.HasPending(), "foreground change clears pending state");
+    }
+
+    {
+        auto resolver = MakeResolver();
+        resolver.OnKeyDown(VK_SHIFT, MOD_SHIFT, 0, 100);
+        resolver.OnKeyUp(VK_SHIFT, 0, 50, 100);
+        const auto doubleTap = resolver.OnKeyDown(VK_SHIFT, MOD_SHIFT, 200, 100);
+        Check(doubleTap.hotkeyId == 2 && !doubleTap.pending,
+              "Shift double tap wins over the pending single gesture");
+        CheckNoDispatch(resolver.OnTimeout(350, 100),
+                        "a resolved Shift double tap suppresses the single action");
+    }
+
+    {
+        auto resolver = MakeResolver();
+        resolver.OnKeyDown(VK_CONTROL, MOD_CONTROL, 0, 100);
+        resolver.OnKeyDown(VK_SHIFT, MOD_CONTROL | MOD_SHIFT, 50, 100);
+        resolver.OnKeyUp(VK_SHIFT, MOD_CONTROL, 100, 100);
+        const auto completed = resolver.OnKeyUp(VK_CONTROL, 0, 120, 100);
+        Check(completed.pending && completed.dueTick == 350,
+              "Ctrl plus Shift keeps the original first-press tick");
+        const auto dispatched = resolver.OnTimeout(350, 100);
+        Check(dispatched.hotkeyId == 4,
+              "the specific Ctrl plus Shift chord dispatches");
+    }
+
+    {
+        auto resolver = MakeResolver();
+        resolver.OnKeyDown(VK_CONTROL, MOD_CONTROL, 0, 100);
+        CheckNoDispatch(resolver.OnKeyDown(VK_CONTROL, MOD_CONTROL, 10, 100),
+                        "a held modifier repeat does not create a candidate");
+        resolver.OnKeyUp(VK_CONTROL, 0, 50, 100);
+        Check(resolver.OnTimeout(350, 100).hotkeyId == 3,
+              "the original Ctrl candidate remains intact after a repeat");
+    }
+
+    {
+        auto resolver = MakeResolver();
+        resolver.OnKeyDown(VK_SHIFT, MOD_SHIFT, 0, 100);
+        CheckNoDispatch(resolver.OnKeyDown(VK_CAPITAL, MOD_SHIFT, 10, 100),
+                        "Caps Lock is not a resolver modifier");
+        CheckNoDispatch(resolver.OnTimeout(350, 100),
+                        "Caps Lock cancels the pending modifier gesture");
+    }
+
+    return 0;
+}

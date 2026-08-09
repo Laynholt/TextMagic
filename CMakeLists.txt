@@ -357,3 +357,16 @@ target_include_directories(TextMagicOutputLayoutTests PRIVATE
 target_compile_features(TextMagicOutputLayoutTests PRIVATE cxx_std_17)
 
 add_test(NAME TextMagicOutputLayoutTests COMMAND TextMagicOutputLayoutTests)
+
+add_executable(TextMagicModifierGestureResolverTests
+    tests/ModifierGestureResolverTests.cpp
+)
+
+target_include_directories(TextMagicModifierGestureResolverTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/scripts
+)
+
+target_compile_features(TextMagicModifierGestureResolverTests PRIVATE cxx_std_17)
+
+add_test(NAME TextMagicModifierGestureResolverTests COMMAND TextMagicModifierGestureResolverTests)

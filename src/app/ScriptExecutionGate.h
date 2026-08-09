@@ -32,6 +32,14 @@ private:
 };
 
 namespace HotkeyDispatch {
+inline void ApplyHookShiftState(BYTE* keyboardState, bool shiftDown) noexcept {
+    if (!keyboardState) {
+        return;
+    }
+    keyboardState[VK_SHIFT] = static_cast<BYTE>(
+        (keyboardState[VK_SHIFT] & 0x7f) | (shiftDown ? 0x80 : 0));
+}
+
 constexpr std::uint32_t NormalizeHookVirtualKey(
     std::uint32_t virtualKey,
     std::uint32_t scanCode,

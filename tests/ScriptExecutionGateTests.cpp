@@ -72,6 +72,17 @@ int main() {
            "extended Control hook events must map to right Control");
     Expect(HotkeyDispatch::NormalizeHookVirtualKey(VK_MENU, 0, LLKHF_EXTENDED) == VK_RMENU,
            "extended Alt hook events must map to right Alt");
+    BYTE keyboardState[256] = {};
+    keyboardState[VK_SHIFT] = 0x01;
+    HotkeyDispatch::ApplyHookShiftState(keyboardState, true);
+    Expect((keyboardState[VK_SHIFT] & 0x80) != 0,
+           "hook Shift-down must reach ToUnicodeEx state");
+    Expect((keyboardState[VK_SHIFT] & 0x01) != 0,
+           "Shift overlay must preserve existing toggle bits");
+
+    HotkeyDispatch::ApplyHookShiftState(keyboardState, false);
+    Expect((keyboardState[VK_SHIFT] & 0x80) == 0,
+           "hook Shift-up must clear stale GetKeyboardState state");
     Expect(HotkeyDispatch::IsModifierVirtualKey(VK_LCONTROL)
                && HotkeyDispatch::IsModifierVirtualKey(VK_RMENU)
                && HotkeyDispatch::IsModifierVirtualKey(VK_RSHIFT),

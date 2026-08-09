@@ -733,11 +733,15 @@ bool IsTrackedHotkeyPressed(DWORD vkCode, UINT currentModifiers) {
     return false;
 }
 
-void AppendKeyToInputBuffer(DWORD vkCode, DWORD scanCode) {
+void AppendKeyToInputBuffer(DWORD vkCode, DWORD scanCode, UINT currentModifiers) {
     BYTE keyboardState[256] = {};
     if (!GetKeyboardState(keyboardState)) {
         return;
     }
+
+    HotkeyDispatch::ApplyHookShiftState(
+        keyboardState,
+        (currentModifiers & MOD_SHIFT) != 0);
 
     if (vkCode < 256) {
         keyboardState[vkCode] |= 0x80;
@@ -827,7 +831,7 @@ void HandleInputBufferKeyDown(DWORD vkCode, DWORD scanCode, UINT currentModifier
         return;
     }
 
-    AppendKeyToInputBuffer(vkCode, scanCode);
+    AppendKeyToInputBuffer(vkCode, scanCode, currentModifiers);
 }
 
 LRESULT CALLBACK InputKeyboardHookProc(int code, WPARAM wParam, LPARAM lParam) {

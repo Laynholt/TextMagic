@@ -92,6 +92,19 @@ void TestEmbeddedLanguagesContainApplicationBlacklistKeys() {
            L"\u043F\u0440\u0438\u043B\u043E\u0436\u0435\u043D\u0438\u044F\u0445");
 }
 
+void TestEmbeddedLanguagesContainScriptActionKeys() {
+    CHECK(std::wstring(Localization::GetTextByName(
+        L"manifest.error.unknown_action_prefix", L"en"))
+        == L"Unsupported script action: ");
+    CHECK(std::wstring(Localization::GetTextByName(
+        L"manifest.error.unknown_action_prefix", L"ru"))
+        == L"\u041D\u0435\u043F\u043E\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u043C\u043E\u0435 \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0435 \u0441\u043A\u0440\u0438\u043F\u0442\u0430: ");
+    CHECK(!std::wstring(Localization::GetTextByName(
+        L"manifest.warning.required_fields", L"en")).empty());
+    CHECK(!std::wstring(Localization::GetTextByName(
+        L"manifest.warning.required_fields", L"ru")).empty());
+}
+
 void TestCurrentLanguageIsSafeDuringConcurrentSwitches(const fs::path& root) {
     const fs::path languageDirectory = root / L"concurrent-language";
     fs::create_directories(languageDirectory);
@@ -153,6 +166,7 @@ int main() {
     TestExternalFileOverridesEmbeddedKeys(root);
     TestExternalLanguageIsAvailable(root);
     TestEmbeddedLanguagesContainApplicationBlacklistKeys();
+    TestEmbeddedLanguagesContainScriptActionKeys();
     TestCurrentLanguageIsSafeDuringConcurrentSwitches(root);
 
     fs::remove_all(root, cleanupError);

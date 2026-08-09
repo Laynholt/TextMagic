@@ -128,6 +128,35 @@ bool ParseVirtualKey(const std::wstring& token, UINT* virtualKey) {
     return false;
 }
 
+struct ModifierToken {
+    UINT mask;
+    UINT virtualKey;
+};
+
+bool ParseModifierToken(const std::wstring& token, ModifierToken* modifier) {
+    if (!modifier) {
+        return false;
+    }
+
+    if (token == L"CTRL" || token == L"CONTROL") {
+        *modifier = { MOD_CONTROL, VK_CONTROL };
+        return true;
+    }
+    if (token == L"ALT") {
+        *modifier = { MOD_ALT, VK_MENU };
+        return true;
+    }
+    if (token == L"SHIFT") {
+        *modifier = { MOD_SHIFT, VK_SHIFT };
+        return true;
+    }
+    if (token == L"WIN" || token == L"WINDOWS") {
+        *modifier = { MOD_WIN, VK_LWIN };
+        return true;
+    }
+    return false;
+}
+
 bool ParseEnabledValue(const std::wstring& value, bool defaultValue) {
     const std::wstring normalized = ToUpperAscii(Trim(value));
     if (normalized.empty()) {
@@ -278,17 +307,36 @@ ScriptManifest::LoadResult ScriptManifest::LoadFromDirectory(const std::wstring&
         manifest.enabled = ParseEnabledValue(fields[L"ENABLED"], true);
         manifest.autoOutputLayout = ToUpperAscii(Trim(fields[L"OUTPUT_LAYOUT"])) == L"AUTO";
 
+        const std::wstring actionText = ToUpperAscii(Trim(fields[L"ACTION"]));
+        if (actionText == L"CYCLE_KEYBOARD_LAYOUT") {
+            manifest.action = ScriptManifest::Action::CycleKeyboardLayout;
+        } else if (actionText.empty()) {
+            manifest.action = ScriptManifest::Action::TransformText;
+        } else {
+            warnings << T(L"manifest.warning.parse_skip_prefix") << path.filename().wstring()
+                     << L": " << T(L"manifest.error.unknown_action_prefix")
+                     << fields[L"ACTION"] << L"\n";
+            continue;
+        }
+
         const bool hasInlineScript = !Trim(manifest.scriptBody).empty();
         const bool hasCommandLine = !Trim(manifest.commandLine).empty();
 
-        if (manifest.name.empty() || manifest.hotkeyText.empty() || (!hasInlineScript && !hasCommandLine)) {
+        if (manifest.name.empty() || manifest.hotkeyText.empty()
+            || (manifest.action == ScriptManifest::Action::TransformText
+                && !hasInlineScript && !hasCommandLine)) {
             warnings << T(L"manifest.warning.parse_skip_prefix") << path.filename().wstring()
                      << T(L"manifest.warning.required_fields");
             continue;
         }
 
         std::wstring hotkeyError;
-        if (!ScriptManifest::ParseHotkey(manifest.hotkeyText, &manifest.modifiers, &manifest.virtualKey, &hotkeyError)) {
+        if (!ScriptManifest::ParseHotkey(
+                manifest.hotkeyText,
+                &manifest.hotkeyKind,
+                &manifest.modifiers,
+                &manifest.virtualKey,
+                &hotkeyError)) {
             warnings << T(L"manifest.warning.parse_skip_prefix") << path.filename().wstring()
                      << L": " << hotkeyError << L"\n";
             continue;
@@ -381,19 +429,30 @@ bool ScriptManifest::SetEnabledInFile(const std::wstring& manifestPath, bool ena
     return WriteUtf8TextFile(path, updated, error);
 }
 
-bool ScriptManifest::ParseHotkey(const std::wstring& hotkeyText, UINT* modifiers, UINT* virtualKey, std::wstring* error) {
-    if (!modifiers || !virtualKey) {
+bool ScriptManifest::ParseHotkey(
+    const std::wstring& hotkeyText,
+    HotkeyKind* kind,
+    UINT* modifiers,
+    UINT* virtualKey,
+    std::wstring* error) {
+    if (!kind || !modifiers || !virtualKey) {
         if (error) {
             *error = T(L"manifest.error.internal_null_output");
         }
         return false;
     }
 
+    if (error) {
+        error->clear();
+    }
+    *kind = HotkeyKind::KeyChord;
     *modifiers = 0;
     *virtualKey = 0;
 
     const std::vector<std::wstring> parts = Split(hotkeyText, L'+');
-    bool keyFound = false;
+    std::vector<ModifierToken> modifierTokens;
+    bool primaryFound = false;
+    UINT primaryVirtualKey = 0;
 
     for (const std::wstring& rawToken : parts) {
         const std::wstring token = ToUpperAscii(Trim(rawToken));
@@ -401,96 +460,84 @@ bool ScriptManifest::ParseHotkey(const std::wstring& hotkeyText, UINT* modifiers
             continue;
         }
 
-        if (token == L"CTRL" || token == L"CONTROL") {
-            if ((*modifiers & MOD_CONTROL) != 0) {
-                if (keyFound) {
-                    if (error) {
-                        *error = T(L"manifest.error.one_primary_key");
-                    }
-                    return false;
-                }
-                *virtualKey = VK_CONTROL;
-                keyFound = true;
-                continue;
-            }
-            *modifiers |= MOD_CONTROL;
-            continue;
-        }
-        if (token == L"ALT") {
-            if ((*modifiers & MOD_ALT) != 0) {
-                if (keyFound) {
-                    if (error) {
-                        *error = T(L"manifest.error.one_primary_key");
-                    }
-                    return false;
-                }
-                *virtualKey = VK_MENU;
-                keyFound = true;
-                continue;
-            }
-            *modifiers |= MOD_ALT;
-            continue;
-        }
-        if (token == L"SHIFT") {
-            if ((*modifiers & MOD_SHIFT) != 0) {
-                if (keyFound) {
-                    if (error) {
-                        *error = T(L"manifest.error.one_primary_key");
-                    }
-                    return false;
-                }
-                *virtualKey = VK_SHIFT;
-                keyFound = true;
-                continue;
-            }
-            *modifiers |= MOD_SHIFT;
-            continue;
-        }
-        if (token == L"WIN" || token == L"WINDOWS") {
-            if ((*modifiers & MOD_WIN) != 0) {
-                if (keyFound) {
-                    if (error) {
-                        *error = T(L"manifest.error.one_primary_key");
-                    }
-                    return false;
-                }
-                *virtualKey = VK_LWIN;
-                keyFound = true;
-                continue;
-            }
-            *modifiers |= MOD_WIN;
+        ModifierToken modifier{};
+        if (ParseModifierToken(token, &modifier)) {
+            modifierTokens.push_back(modifier);
             continue;
         }
 
-        if (keyFound) {
+        if (primaryFound) {
             if (error) {
                 *error = T(L"manifest.error.one_primary_key");
             }
             return false;
         }
 
-        if (!ParseVirtualKey(token, virtualKey)) {
+        if (!ParseVirtualKey(token, &primaryVirtualKey)) {
             if (error) {
                 *error = std::wstring(T(L"manifest.error.unknown_primary_key_prefix")) + token;
             }
             return false;
         }
-        keyFound = true;
+        primaryFound = true;
     }
 
-    if (!keyFound) {
+    if (!primaryFound && modifierTokens.empty()) {
         if (error) {
             *error = T(L"manifest.error.primary_key_missing");
         }
         return false;
     }
 
-    if (*modifiers == 0) {
+    for (const auto& modifier : modifierTokens) {
+        *modifiers |= modifier.mask;
+    }
+
+    if (modifierTokens.empty()) {
         if (error) {
             *error = T(L"manifest.error.modifier_required");
         }
         return false;
     }
 
+    if (primaryFound) {
+        for (size_t first = 0; first < modifierTokens.size(); ++first) {
+            for (size_t second = first + 1; second < modifierTokens.size(); ++second) {
+                if (modifierTokens[first].mask == modifierTokens[second].mask) {
+                    if (error) {
+                        *error = T(L"manifest.error.one_primary_key");
+                    }
+                    return false;
+                }
+            }
+        }
+        *kind = HotkeyKind::KeyChord;
+        *virtualKey = primaryVirtualKey;
+        return true;
+    }
+
+    if (modifierTokens.size() == 1) {
+        *kind = HotkeyKind::ModifierGesture;
+        *virtualKey = modifierTokens.front().virtualKey;
+        return true;
+    }
+
+    for (size_t first = 0; first < modifierTokens.size(); ++first) {
+        for (size_t second = first + 1; second < modifierTokens.size(); ++second) {
+            if (modifierTokens[first].mask == modifierTokens[second].mask) {
+                if (modifierTokens.size() == 2) {
+                    *kind = HotkeyKind::ModifierDoubleTap;
+                    *virtualKey = modifierTokens[first].virtualKey;
+                    return true;
+                }
+                if (error) {
+                    *error = T(L"manifest.error.one_primary_key");
+                }
+                return false;
+            }
+        }
+    }
+
+    *kind = HotkeyKind::ModifierGesture;
     return true;
 }

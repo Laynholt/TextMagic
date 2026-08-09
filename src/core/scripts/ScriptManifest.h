@@ -7,6 +7,17 @@
 
 class ScriptManifest {
 public:
+    enum class Action {
+        TransformText,
+        CycleKeyboardLayout,
+    };
+
+    enum class HotkeyKind {
+        KeyChord,
+        ModifierGesture,
+        ModifierDoubleTap,
+    };
+
     struct Entry {
         std::wstring name;
         std::wstring description;
@@ -16,6 +27,8 @@ public:
         std::wstring manifestPath;
         UINT modifiers = 0;
         UINT virtualKey = 0;
+        Action action = Action::TransformText;
+        HotkeyKind hotkeyKind = HotkeyKind::KeyChord;
         bool enabled = true;
         bool autoOutputLayout = false;
     };
@@ -27,5 +40,10 @@ public:
 
     static LoadResult LoadFromDirectory(const std::wstring& directoryPath);
     static bool SetEnabledInFile(const std::wstring& manifestPath, bool enabled, std::wstring* error);
-    static bool ParseHotkey(const std::wstring& hotkeyText, UINT* modifiers, UINT* virtualKey, std::wstring* error);
+    static bool ParseHotkey(
+        const std::wstring& hotkeyText,
+        HotkeyKind* kind,
+        UINT* modifiers,
+        UINT* virtualKey,
+        std::wstring* error);
 };

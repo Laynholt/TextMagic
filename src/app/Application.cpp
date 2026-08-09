@@ -662,7 +662,10 @@ void CancelModifierGesture() {
 
 void ResolveDueModifierGesture(std::uintptr_t context, ULONGLONG now) {
     if (!g_modifierGestureResolver.HasPending()
-        || g_modifierGestureResolver.DueTick() > now) {
+        || !ModifierGestureResolver::IsTimeoutDue(
+            g_modifierGestureResolver.DueTick(),
+            now
+        )) {
         return;
     }
     ApplyModifierGestureDecision(

@@ -96,6 +96,17 @@ int main() {
     }
 
     {
+        auto resolver = MakeResolver();
+        resolver.OnKeyDown(VK_SHIFT, MOD_SHIFT, 0, 100);
+        resolver.OnKeyUp(VK_SHIFT, 0, 50, 100);
+        Check(!ModifierGestureResolver::IsTimeoutDue(resolver.DueTick(), 350),
+              "the pre-event timeout stays pending at the exact double-tap boundary");
+        const auto doubleTap = resolver.OnKeyDown(VK_SHIFT, MOD_SHIFT, 350, 100);
+        Check(doubleTap.hotkeyId == 2 && !doubleTap.pending,
+              "the exact 350 ms second tap wins before pre-event timeout resolution");
+    }
+
+    {
         ModifierGestureResolver resolver;
         resolver.SetBindings({
             {7, ScriptManifest::HotkeyKind::ModifierDoubleTap, MOD_SHIFT, VK_SHIFT},

@@ -11,6 +11,10 @@ public:
     static constexpr ULONGLONG MaxHoldMs = 300;
     static constexpr ULONGLONG ResolveMs = 350;
 
+    static constexpr bool IsTimeoutDue(ULONGLONG dueTick, ULONGLONG now) noexcept {
+        return dueTick < now;
+    }
+
     static UINT ModifierMaskForHookVirtualKey(DWORD virtualKey) noexcept {
         return ModifierMaskForVirtualKey(virtualKey);
     }

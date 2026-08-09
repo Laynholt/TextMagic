@@ -5,6 +5,7 @@
 #include "EncodingUtils.h"
 #include "FullscreenUtils.h"
 #include "Localization.h"
+#include "OutputLayout.h"
 #include "ScriptInputSource.h"
 #include "TextBridgeInputUtils.h"
 #include "ToolTip.h"
@@ -266,6 +267,7 @@ struct ScriptExecutionTaskResult {
     std::wstring sourceText;
     InputBuffer::PreviousWordCapture inputCapture;
     HWND inputTargetWindow = nullptr;
+    bool autoOutputLayout = false;
     bool hasSelection = false;
     bool inputBufferMode = false;
     bool allTextInputMode = false;
@@ -276,6 +278,36 @@ struct ScriptExecutionTaskResult {
     std::wstring outputText;
     std::wstring executionError;
 };
+
+void RequestKeyboardLayout(HWND targetWindow, OutputLayout outputLayout) {
+    if (outputLayout == OutputLayout::Unchanged || !IsWindow(targetWindow)) {
+        return;
+    }
+
+    const int layoutCount = GetKeyboardLayoutList(0, nullptr);
+    if (layoutCount <= 0) {
+        return;
+    }
+
+    std::vector<HKL> layouts(static_cast<size_t>(layoutCount));
+    const int copiedLayoutCount = GetKeyboardLayoutList(layoutCount, layouts.data());
+    if (copiedLayoutCount <= 0) {
+        return;
+    }
+    layouts.resize(static_cast<size_t>(copiedLayoutCount));
+
+    const HKL keyboardLayout = FindInstalledOutputLayout(outputLayout, layouts);
+    if (!keyboardLayout) {
+        return;
+    }
+
+    PostMessageW(
+        targetWindow,
+        WM_INPUTLANGCHANGEREQUEST,
+        0,
+        reinterpret_cast<LPARAM>(keyboardLayout)
+    );
+}
 
 struct UpdateCheckTaskResult {
     UpdateCheckResult check;
@@ -2062,6 +2094,13 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 ShowStyledMessage(T(L"app.title.paste_error"), msg);
                 return;
             }
+            const OutputLayout outputLayout = ChooseOutputLayoutForAppliedScript(
+                result->autoOutputLayout,
+                result->clipboardMode,
+                replaceOk,
+                result->outputText
+            );
+            RequestKeyboardLayout(result->inputTargetWindow, outputLayout);
             std::wstring status = std::wstring(T(L"app.status.script_applied_prefix")) + result->scriptName + T(L"app.status.script_applied_middle");
             if (result->clipboardMode) {
                 status += T(L"app.status.clipboard_text");
@@ -4082,6 +4121,7 @@ void Application::ExecuteScript(const RegisteredScript& script, bool clipboardOn
     const std::wstring commandLine = script.manifest.commandLine;
     const bool allTextInputMode = m_scriptInputAllText;
     const bool useClipboardOnly = clipboardOnly;
+    const bool autoOutputLayout = script.manifest.autoOutputLayout;
     const TextBridge textBridge = m_textBridge;
     const ScriptRunner scriptRunner = m_scriptRunner;
     const HWND windowHandle = m_hWnd;
@@ -4106,6 +4146,7 @@ void Application::ExecuteScript(const RegisteredScript& script, bool clipboardOn
                             commandLine,
                             allTextInputMode,
                             useClipboardOnly,
+                            autoOutputLayout,
                             textBridge,
                             scriptRunner,
                             windowHandle,
@@ -4119,7 +4160,8 @@ void Application::ExecuteScript(const RegisteredScript& script, bool clipboardOn
                 auto result = std::make_unique<ScriptExecutionTaskResult>();
                 result->scriptName = scriptName;
                 result->clipboardMode = useClipboardOnly;
-                result->inputTargetWindow = hasInputCapture ? inputTargetWindow : nullptr;
+                result->autoOutputLayout = autoOutputLayout;
+                result->inputTargetWindow = useClipboardOnly ? nullptr : inputTargetWindow;
 
                 try {
                     std::wstring selectedText;

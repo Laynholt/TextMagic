@@ -329,7 +329,7 @@ rtk ctest --test-dir build -C Release -R "TextMagic(ScriptManifest|Localization)
 
 Expected: both tests pass, and the application still compiles with the preserved flat `modifiers`/`virtualKey` fields.
 
-- [ ] **Step 8: Commit Task 1**
+- [ ] **Step 8: Commit Task 2**
 
 ```powershell
 rtk git add src/core/scripts/ScriptManifest.h src/core/scripts/ScriptManifest.cpp tests/ScriptManifestTests.cpp lang/en.ini lang/ru.ini tests/LocalizationTests.cpp
@@ -474,7 +474,7 @@ rtk ctest --test-dir build -C Release -R TextMagicModifierGestureResolverTests -
 
 Expected: all deterministic event sequences pass.
 
-- [ ] **Step 6: Commit Task 2**
+- [ ] **Step 6: Commit Task 3**
 
 ```powershell
 rtk git add CMakeLists.txt src/app/ModifierGestureResolver.h tests/ModifierGestureResolverTests.cpp
@@ -604,7 +604,7 @@ rtk powershell -NoProfile -Command "Test-Path -LiteralPath 'build\\bin\\Release\
 
 Expected: all focused tests pass and the last command prints `True`.
 
-- [ ] **Step 8: Commit Task 3**
+- [ ] **Step 8: Commit Task 4**
 
 ```powershell
 rtk git add src/app/OutputLayout.h tests/OutputLayoutTests.cpp src/app/Application.h src/app/Application.cpp scripts/cycle_keyboard_layout.tmscript lang/en.ini lang/ru.ini tests/LocalizationTests.cpp
@@ -618,35 +618,12 @@ rtk git commit -m "feat: add keyboard layout cycle action"
 **Files:**
 - Modify: `src/app/Application.cpp`
 - Modify: `src/app/Application.h` only if the timer handler is kept as a member
-- Modify: `tests/ScriptExecutionGateTests.cpp`
 
 **Interfaces:**
 - Consumes: `ModifierGestureResolver` from Task 3, `ScriptManifest::HotkeyKind` from Task 2, and `ExecuteScriptByHotkeyId`/`ScriptExecutionGate` from existing application code.
 - Produces: registered resolver bindings, timer-driven deferred dispatch, generic cancellation from keyboard/mouse hooks, and removal of the old per-hotkey Shift-style pending-tap fields.
 
-- [ ] **Step 1: Add failing hook-policy checks**
-
-Extend `tests/ScriptExecutionGateTests.cpp` with small pure assertions used by integration:
-
-```cpp
-Expect(HotkeyDispatch::IsModifierVirtualKey(VK_LWIN),
-       "Win participates in generic modifier gestures");
-Expect(!HotkeyDispatch::IsModifierVirtualKey(VK_CAPITAL),
-       "Caps Lock is not a modifier gesture key");
-```
-
-Move Caps Lock out of `IsModifierVirtualKey`; `HandleInputBufferKeyDown` already handles it explicitly and modifier gestures are limited to Ctrl/Alt/Shift/Win.
-
-- [ ] **Step 2: Run the focused test and confirm the Caps Lock assertion fails**
-
-```powershell
-rtk cmake --build build --config Release --target TextMagicScriptExecutionGateTests
-rtk ctest --test-dir build -C Release -R TextMagicScriptExecutionGateTests --output-on-failure
-```
-
-Expected: the new Caps Lock assertion fails.
-
-- [ ] **Step 3: Register modifier gestures separately from conventional chords**
+- [ ] **Step 1: Register modifier gestures separately from conventional chords**
 
 Include `ModifierGestureResolver.h` and add one global resolver beside `g_hookHotkeys`. Replace `HookHotkey::pendingTapTick` and `pendingTapVkCode` with resolver bindings.
 
@@ -665,9 +642,9 @@ if (script.manifest.hotkeyKind == ScriptManifest::HotkeyKind::KeyChord) {
 }
 ```
 
-After the loop, call `g_modifierGestureResolver.SetBindings(std::move(modifierBindings))`. Duplicate detection must compare normalized `hotkeyKind`, `modifiers`, and `virtualKey`; this makes `Ctrl+Shift` and `Shift+Ctrl` duplicates. `UnregisterHotkeys` resets resolver bindings and cancels its timer.
+After the loop, call `g_modifierGestureResolver.SetBindings(std::move(modifierBindings))`. Duplicate detection must compare normalized `hotkeyKind`, `modifiers`, and `virtualKey`; this makes `Ctrl+Shift` and `Shift+Ctrl` duplicates. `UnregisterHotkeys` resets resolver bindings and cancels its timer. Keep `HotkeyDispatch::IsModifierVirtualKey(VK_CAPITAL)` unchanged because `HandleInputBufferKeyDown` relies on it to ignore Caps Lock; the resolver's own modifier-mask helper recognizes only Ctrl, Alt, Shift, and Win.
 
-- [ ] **Step 4: Replace old duplicate-modifier dispatch with resolver decisions**
+- [ ] **Step 2: Replace old duplicate-modifier dispatch with resolver decisions**
 
 Delete `HOTKEY_DOUBLE_TAP_TIMEOUT_MS`, `IsDuplicateModifierHotkey`, `IsSameModifierTapKey`, `ResetPendingModifierTap`, and the duplicate-modifier branch inside `DispatchHookHotkeysOnKeyDown`. That function then handles conventional chords only.
 
@@ -688,7 +665,7 @@ void DispatchResolvedModifierHotkey(int hotkeyId, ULONGLONG now) {
 
 Use a distinct `MODIFIER_GESTURE_TIMER_ID`. Applying a resolver decision must kill the old timer, schedule `dueTick - now` with a minimum of 1 ms when `decision.pending`, and call `DispatchResolvedModifierHotkey` when `decision.hotkeyId != 0`.
 
-- [ ] **Step 5: Feed all relevant hook events into the resolver**
+- [ ] **Step 3: Feed all relevant hook events into the resolver**
 
 In `InputKeyboardHookProc`, continue updating `g_hookKeyState` first. Then:
 
@@ -699,7 +676,7 @@ In `InputKeyboardHookProc`, continue updating `g_hookKeyState` first. Then:
 
 Use `reinterpret_cast<std::uintptr_t>(GetForegroundWindow())` as the pure context ID. In `InputMouseHookProc`, cancel on every physical button-down before clearing the input buffer.
 
-- [ ] **Step 6: Resolve pending gestures from the main window timer**
+- [ ] **Step 4: Resolve pending gestures from the main window timer**
 
 Add to the main `Application::HandleMessage` switch:
 
@@ -720,16 +697,16 @@ case WM_TIMER:
 
 Cancel and kill this timer during script reload, hook uninstall, and application shutdown. Do not reuse the popup tracking timer ID.
 
-- [ ] **Step 7: Run focused gesture and hook-policy tests**
+- [ ] **Step 5: Run focused gesture tests**
 
 ```powershell
-rtk cmake --build build --config Release --target TextMagicModifierGestureResolverTests TextMagicScriptExecutionGateTests TextMagicScriptManifestTests
-rtk ctest --test-dir build -C Release -R "TextMagic(ModifierGestureResolver|ScriptExecutionGate|ScriptManifest)Tests" --output-on-failure
+rtk cmake --build build --config Release --target TextMagicModifierGestureResolverTests TextMagicScriptManifestTests
+rtk ctest --test-dir build -C Release -R "TextMagic(ModifierGestureResolver|ScriptManifest)Tests" --output-on-failure
 ```
 
 Expected: all focused tests pass, including Shift-vs-Shift+Shift and Ctrl-vs-Ctrl+Shift precedence.
 
-- [ ] **Step 8: Run the complete clean verification**
+- [ ] **Step 6: Run the complete clean verification**
 
 ```powershell
 rtk cmake --build build --config Release --clean-first
@@ -739,7 +716,7 @@ rtk git diff --check
 
 Expected: the application and every test target build, all tests pass, and `git diff --check` prints no errors.
 
-- [ ] **Step 9: Manually smoke-test the actual hook**
+- [ ] **Step 7: Manually smoke-test the actual hook**
 
 Launch `build/bin/Release/TextMagic.exe` and verify:
 
@@ -752,10 +729,10 @@ Launch `build/bin/Release/TextMagic.exe` and verify:
 7. Change only the manifest to `hotkey=Ctrl+Alt+L`, reload, and confirm the conventional chord dispatches immediately.
 8. Restore the bundled script to `hotkey=Shift` before committing.
 
-- [ ] **Step 10: Commit Task 4**
+- [ ] **Step 8: Commit Task 5**
 
 ```powershell
-rtk git add src/app/Application.cpp src/app/Application.h src/app/ScriptExecutionGate.h tests/ScriptExecutionGateTests.cpp
+rtk git add src/app/Application.cpp src/app/Application.h
 rtk git commit -m "feat: dispatch deferred modifier hotkeys"
 ```
 

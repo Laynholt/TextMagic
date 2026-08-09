@@ -2,8 +2,8 @@
 
 #include <windows.h>
 
-#include <objidl.h>
 #include <string>
+#include <vector>
 
 namespace ClipboardUtils {
 class Snapshot {
@@ -15,14 +15,18 @@ public:
     Snapshot& operator=(const Snapshot&) = delete;
 
 private:
+    struct FormatData {
+        UINT format = 0;
+        HANDLE handle = nullptr;
+    };
+
     void Restore();
 
-    IDataObject* m_dataObject = nullptr;
+    std::vector<FormatData> m_formats;
     std::wstring m_text;
     bool m_hasText = false;
     bool m_wasEmpty = false;
     bool m_restored = false;
-    bool m_oleInitialized = false;
 };
 
 bool Clear(HWND ownerWindow);

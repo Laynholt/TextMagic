@@ -123,17 +123,15 @@ std::wstring TextBridge::CopyFromActiveControl() const {
 }
 
 bool TextBridge::PasteIntoActiveControl(const std::wstring& text) const {
-    ClipboardUtils::Snapshot snapshot;
-    if (!WaitForModifiersRelease()) {
+    const HWND target = GetForegroundWindow();
+    if (!WaitForModifiersRelease(target)) {
         return false;
     }
-    if (!ClipboardUtils::WriteText(nullptr, text)) {
-        return false;
-    }
-
-    const bool pasted = SendCtrlShortcut('V');
-    Sleep(20);
-    return pasted;
+    return ReplaceText(
+        target,
+        std::wstring(TextBridgeInputUtils::SelectionDeleteCount(text), L' '),
+        text
+    );
 }
 
 bool TextBridge::TryCopyShortcut(int waitAttempts, int waitSleepMs, std::wstring* copied) const {

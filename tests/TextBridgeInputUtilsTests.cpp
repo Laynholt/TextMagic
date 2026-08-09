@@ -70,5 +70,10 @@ int main() {
     Expect(deletedCharacters == 101 && insertedText == L"replacement",
            "the atomic batch must contain the complete replacement");
 
+    Expect(TextBridgeInputUtils::SelectionDeleteCount(L"text") == 0,
+           "typing text must replace the current selection");
+    Expect(TextBridgeInputUtils::SelectionDeleteCount(L"") == 1,
+           "an empty replacement must delete the current selection");
+
     return 0;
 }

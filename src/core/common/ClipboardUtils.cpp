@@ -21,40 +21,81 @@ bool IsClipboardEmpty(HWND ownerWindow) {
     CloseClipboard();
     return empty;
 }
+
+void FreeClipboardData(UINT format, HANDLE handle) {
+    if (!handle) {
+        return;
+    }
+    if (format == CF_BITMAP || format == CF_DSPBITMAP || format == CF_PALETTE) {
+        DeleteObject(handle);
+    } else if (format == CF_ENHMETAFILE || format == CF_DSPENHMETAFILE) {
+        DeleteEnhMetaFile(static_cast<HENHMETAFILE>(handle));
+    } else if (format == CF_METAFILEPICT || format == CF_DSPMETAFILEPICT) {
+        auto* metafile = static_cast<METAFILEPICT*>(GlobalLock(handle));
+        if (metafile) {
+            DeleteMetaFile(metafile->hMF);
+            GlobalUnlock(handle);
+        }
+        GlobalFree(handle);
+    } else {
+        GlobalFree(handle);
+    }
+}
 }
 
 namespace ClipboardUtils {
 Snapshot::Snapshot() {
-    const HRESULT initResult = OleInitialize(nullptr);
-    m_oleInitialized = SUCCEEDED(initResult);
-
-    IDataObject* clipboardObject = nullptr;
-    if (SUCCEEDED(OleGetClipboard(&clipboardObject)) && clipboardObject) {
-        m_dataObject = clipboardObject;
+    if (OpenClipboardWithRetry(nullptr)) {
+        m_wasEmpty = CountClipboardFormats() == 0;
+        UINT format = 0;
+        while ((format = EnumClipboardFormats(format)) != 0) {
+            HANDLE source = GetClipboardData(format);
+            HANDLE duplicate = source
+                ? OleDuplicateData(source, static_cast<CLIPFORMAT>(format), 0)
+                : nullptr;
+            if (duplicate) {
+                m_formats.push_back({format, duplicate});
+            }
+        }
+        CloseClipboard();
     }
 
     m_hasText = ReadText(nullptr, &m_text);
     if (!m_hasText) {
         m_text.clear();
-        m_wasEmpty = IsClipboardEmpty(nullptr);
+        if (m_formats.empty()) {
+            m_wasEmpty = IsClipboardEmpty(nullptr);
+        }
     }
 }
 
 Snapshot::~Snapshot() {
     Restore();
-    if (m_dataObject) {
-        m_dataObject->Release();
-        m_dataObject = nullptr;
-    }
-    if (m_oleInitialized) {
-        OleUninitialize();
-        m_oleInitialized = false;
+    for (const FormatData& item : m_formats) {
+        FreeClipboardData(item.format, item.handle);
     }
 }
 
 void Snapshot::Restore() {
     if (m_restored) {
         return;
+    }
+
+    if (!m_formats.empty() && OpenClipboardWithRetry(nullptr)) {
+        bool restoredAny = false;
+        if (EmptyClipboard()) {
+            for (FormatData& item : m_formats) {
+                if (item.handle && SetClipboardData(item.format, item.handle)) {
+                    item.handle = nullptr;
+                    restoredAny = true;
+                }
+            }
+        }
+        CloseClipboard();
+        if (restoredAny) {
+            m_restored = true;
+            return;
+        }
     }
 
     if (m_hasText) {
@@ -66,14 +107,6 @@ void Snapshot::Restore() {
 
     if (m_wasEmpty) {
         if (Clear(nullptr)) {
-            m_restored = true;
-        }
-        return;
-    }
-
-    if (m_dataObject && SUCCEEDED(OleSetClipboard(m_dataObject))) {
-        const HRESULT flushResult = OleFlushClipboard();
-        if (SUCCEEDED(flushResult)) {
             m_restored = true;
         }
     }

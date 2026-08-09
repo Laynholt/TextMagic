@@ -273,3 +273,17 @@ target_compile_features(TextMagicScriptRunnerTests PRIVATE cxx_std_17)
 target_link_libraries(TextMagicScriptRunnerTests PRIVATE crypt32)
 
 add_test(NAME TextMagicScriptRunnerTests COMMAND TextMagicScriptRunnerTests)
+
+add_executable(TextMagicClipboardUtilsTests
+    src/core/common/ClipboardUtils.cpp
+    tests/ClipboardUtilsTests.cpp
+)
+
+target_include_directories(TextMagicClipboardUtilsTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
+)
+
+target_compile_features(TextMagicClipboardUtilsTests PRIVATE cxx_std_17)
+target_link_libraries(TextMagicClipboardUtilsTests PRIVATE ole32 user32)
+
+add_test(NAME TextMagicClipboardUtilsTests COMMAND TextMagicClipboardUtilsTests)

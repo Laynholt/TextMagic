@@ -53,4 +53,8 @@ inline bool RunAtomicReplacement(
         && operations.isTargetCurrent();
 }
 
+inline size_t SelectionDeleteCount(const std::wstring& replacement) {
+    return replacement.empty() ? 1 : 0;
+}
+
 }

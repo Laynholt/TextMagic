@@ -8,3 +8,4 @@ tests/*
 !tests/InputBufferTests.cpp
 !tests/LogFileTests.cpp
 !tests/ScriptExecutionCooldownTests.cpp
+!tests/ClipboardUtilsTests.cpp

@@ -14,3 +14,4 @@ tests/*
 !tests/UpdateServiceTests.cpp
 !tests/ScriptManifestTests.cpp
 !tests/PopupMenuNavigationTests.cpp
+!tests/OutputLayoutTests.cpp

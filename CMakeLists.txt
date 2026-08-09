@@ -345,3 +345,15 @@ target_include_directories(TextMagicPopupMenuNavigationTests PRIVATE
 target_compile_features(TextMagicPopupMenuNavigationTests PRIVATE cxx_std_17)
 
 add_test(NAME TextMagicPopupMenuNavigationTests COMMAND TextMagicPopupMenuNavigationTests)
+
+add_executable(TextMagicOutputLayoutTests
+    tests/OutputLayoutTests.cpp
+)
+
+target_include_directories(TextMagicOutputLayoutTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+)
+
+target_compile_features(TextMagicOutputLayoutTests PRIVATE cxx_std_17)
+
+add_test(NAME TextMagicOutputLayoutTests COMMAND TextMagicOutputLayoutTests)

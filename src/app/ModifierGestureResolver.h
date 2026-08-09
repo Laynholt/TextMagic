@@ -11,6 +11,10 @@ public:
     static constexpr ULONGLONG MaxHoldMs = 300;
     static constexpr ULONGLONG ResolveMs = 350;
 
+    static UINT ModifierMaskForHookVirtualKey(DWORD virtualKey) noexcept {
+        return ModifierMaskForVirtualKey(virtualKey);
+    }
+
     struct Binding {
         int hotkeyId = 0;
         ScriptManifest::HotkeyKind kind = ScriptManifest::HotkeyKind::ModifierGesture;

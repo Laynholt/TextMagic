@@ -559,22 +559,6 @@ void InvalidateForegroundBlockCache() {
     GetForegroundBlockCache() = {};
 }
 
-UINT GetModifierMaskForVirtualKey(UINT virtualKey) {
-    if (virtualKey == VK_SHIFT) {
-        return MOD_SHIFT;
-    }
-    if (virtualKey == VK_CONTROL) {
-        return MOD_CONTROL;
-    }
-    if (virtualKey == VK_MENU) {
-        return MOD_ALT;
-    }
-    if (virtualKey == VK_LWIN || virtualKey == VK_RWIN) {
-        return MOD_WIN;
-    }
-    return 0;
-}
-
 bool IsHotkeyMatchedByKeyEvent(UINT modifiers, UINT virtualKey, DWORD inputVkCode, UINT currentModifiers) {
     if ((modifiers & HOTKEY_MODIFIER_MASK) != currentModifiers) {
         return false;
@@ -804,7 +788,8 @@ LRESULT CALLBACK InputKeyboardHookProc(int code, WPARAM wParam, LPARAM lParam) {
                 return CallNextHookEx(g_keyboardHook, code, wParam, lParam);
             }
             const UINT currentModifiers = g_hookKeyState.Modifiers();
-            const UINT modifierMask = GetModifierMaskForVirtualKey(keyInfo->vkCode);
+            const UINT modifierMask = ModifierGestureResolver::ModifierMaskForHookVirtualKey(
+                keyInfo->vkCode);
             const std::uintptr_t context = reinterpret_cast<std::uintptr_t>(GetForegroundWindow());
             if (keyDown && modifierMask != 0) {
                 const ULONGLONG now = GetTickCount64();

@@ -1,6 +1,8 @@
 #include "ScriptRunner.h"
+#include "ScriptManifest.h"
 
 #include <chrono>
+#include <filesystem>
 #include <iostream>
 #include <string>
 
@@ -10,6 +12,32 @@ bool Check(bool condition, const char* message) {
         std::cerr << "FAIL: " << message << '\n';
     }
     return condition;
+}
+
+const ScriptManifest::Entry* FindByName(
+    const std::vector<ScriptManifest::Entry>& entries,
+    const wchar_t* name
+) {
+    for (const auto& entry : entries) {
+        if (entry.name == name) {
+            return &entry;
+        }
+    }
+    return nullptr;
+}
+
+bool CheckConversion(
+    const ScriptRunner& runner,
+    const std::wstring& script,
+    const std::wstring& input,
+    const std::wstring& expected
+) {
+    std::wstring output;
+    std::wstring error;
+    const bool ok = runner.ExecutePowerShellScript(script, input, &output, &error);
+    return Check(ok, "layout conversion executes")
+        & Check(error.empty(), "layout conversion reports no error")
+        & Check(output == expected, "layout conversion preserves case");
 }
 }
 
@@ -60,6 +88,19 @@ int main() {
     passed &=
         Check(!timeoutOk, "timed-out process fails")
         & Check(timeoutElapsed < std::chrono::seconds(2), "timeout is enforced before stdout closes");
+
+    const ScriptManifest::LoadResult manifests = ScriptManifest::LoadFromDirectory(
+        (std::filesystem::path(TEXTMAGIC_SOURCE_DIR) / L"scripts").wstring());
+    const auto* layoutScript = FindByName(manifests.entries, L"Layout Auto QWERTY");
+    passed &= Check(layoutScript != nullptr, "bundled layout script is loaded");
+    if (layoutScript) {
+        passed &= CheckConversion(runner, layoutScript->scriptBody, L"ghbdtn", L"\u043F\u0440\u0438\u0432\u0435\u0442");
+        passed &= CheckConversion(runner, layoutScript->scriptBody, L"Ghbdtn", L"\u041F\u0440\u0438\u0432\u0435\u0442");
+        passed &= CheckConversion(runner, layoutScript->scriptBody, L"GHBDTN", L"\u041F\u0420\u0418\u0412\u0415\u0422");
+        passed &= CheckConversion(runner, layoutScript->scriptBody, L"\u043F\u0440\u0438\u0432\u0435\u0442", L"ghbdtn");
+        passed &= CheckConversion(runner, layoutScript->scriptBody, L"\u041F\u0440\u0438\u0432\u0435\u0442", L"Ghbdtn");
+        passed &= CheckConversion(runner, layoutScript->scriptBody, L"\u041F\u0420\u0418\u0412\u0415\u0422", L"GHBDTN");
+    }
 
     return passed ? 0 : 1;
 }

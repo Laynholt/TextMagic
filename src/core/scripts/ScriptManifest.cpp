@@ -276,6 +276,7 @@ ScriptManifest::LoadResult ScriptManifest::LoadFromDirectory(const std::wstring&
         manifest.commandLine = fields[L"COMMAND"];
         manifest.scriptBody = scriptBody;
         manifest.enabled = ParseEnabledValue(fields[L"ENABLED"], true);
+        manifest.autoOutputLayout = ToUpperAscii(Trim(fields[L"OUTPUT_LAYOUT"])) == L"AUTO";
 
         const bool hasInlineScript = !Trim(manifest.scriptBody).empty();
         const bool hasCommandLine = !Trim(manifest.commandLine).empty();

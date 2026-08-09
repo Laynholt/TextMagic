@@ -17,6 +17,7 @@ public:
         UINT modifiers = 0;
         UINT virtualKey = 0;
         bool enabled = true;
+        bool autoOutputLayout = false;
     };
 
     struct LoadResult {

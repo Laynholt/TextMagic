@@ -258,6 +258,7 @@ add_test(NAME TextMagicLocalizationTests COMMAND TextMagicLocalizationTests)
 add_executable(TextMagicScriptRunnerTests
     src/app/Localization.cpp
     src/core/common/EncodingUtils.cpp
+    src/core/scripts/ScriptManifest.cpp
     src/core/scripts/ScriptRunner.cpp
     tests/ScriptRunnerTests.cpp
 )
@@ -271,6 +272,9 @@ target_include_directories(TextMagicScriptRunnerTests PRIVATE
 )
 
 target_compile_features(TextMagicScriptRunnerTests PRIVATE cxx_std_17)
+target_compile_definitions(TextMagicScriptRunnerTests PRIVATE
+    TEXTMAGIC_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+)
 target_link_libraries(TextMagicScriptRunnerTests PRIVATE crypt32)
 
 add_test(NAME TextMagicScriptRunnerTests COMMAND TextMagicScriptRunnerTests)

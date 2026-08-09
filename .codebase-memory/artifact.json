@@ -1,11 +1,11 @@
 {
     "schema_version": 2,
-    "commit": "3364b8ceafbd2503d586446d01b0d098ddc1c55e",
-    "indexed_at": "2026-08-09T16:26:18Z",
-    "project": "TextMagic",
-    "nodes": 987,
-    "edges": 2238,
-    "original_size": 2686976,
-    "compressed_size": 235196,
-    "compression_level": 3
+    "commit": "2ff65a3ac548fd7aa781a894bc85b3dc0ac673a2",
+    "indexed_at": "2026-08-09T17:31:01Z",
+    "project": "F-Data-Code-C-TextMagic-.worktrees-layout-auto-qwerty",
+    "nodes": 1164,
+    "edges": 2744,
+    "original_size": 2621440,
+    "compressed_size": 185999,
+    "compression_level": 9
 }

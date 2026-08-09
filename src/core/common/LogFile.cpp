@@ -7,11 +7,37 @@
 #include <iterator>
 
 namespace LogFile {
-bool Append(const std::wstring& path, const std::wstring& line) {
+bool Append(const std::wstring& path,
+            const std::wstring& line,
+            std::uintmax_t maxBytes) {
+    const std::filesystem::path logPath(path);
     std::error_code sizeError;
-    const bool empty = !std::filesystem::exists(path, sizeError)
-        || std::filesystem::file_size(path, sizeError) == 0;
-    std::ofstream file(std::filesystem::path(path), std::ios::binary | std::ios::app);
+    std::uintmax_t currentSize = std::filesystem::exists(logPath, sizeError)
+        ? std::filesystem::file_size(logPath, sizeError)
+        : 0;
+    if (sizeError) {
+        currentSize = 0;
+    }
+
+    const std::string utf8 = EncodingUtils::WideToUtf8(line);
+    const std::uintmax_t appendBytes = utf8.size() + (currentSize == 0 ? 3 : 2);
+    if (maxBytes > 0 && currentSize > 0
+        && (appendBytes > maxBytes || currentSize > maxBytes - appendBytes)) {
+        const std::filesystem::path backupPath = logPath.wstring() + L".old";
+        std::error_code rotateError;
+        std::filesystem::remove(backupPath, rotateError);
+        if (rotateError) {
+            return false;
+        }
+        std::filesystem::rename(logPath, backupPath, rotateError);
+        if (rotateError) {
+            return false;
+        }
+        currentSize = 0;
+    }
+
+    const bool empty = currentSize == 0;
+    std::ofstream file(logPath, std::ios::binary | std::ios::app);
     if (!file) {
         return false;
     }
@@ -22,7 +48,6 @@ bool Append(const std::wstring& path, const std::wstring& line) {
     } else {
         file.write("\r\n", 2);
     }
-    const std::string utf8 = EncodingUtils::WideToUtf8(line);
     file.write(utf8.data(), static_cast<std::streamsize>(utf8.size()));
     return file.good();
 }
@@ -40,6 +65,12 @@ std::wstring Read(const std::wstring& path) {
 }
 
 bool Clear(const std::wstring& path) {
-    return std::ofstream(std::filesystem::path(path), std::ios::binary | std::ios::trunc).good();
+    const bool cleared = std::ofstream(
+        std::filesystem::path(path),
+        std::ios::binary | std::ios::trunc
+    ).good();
+    std::error_code removeError;
+    std::filesystem::remove(std::filesystem::path(path).wstring() + L".old", removeError);
+    return cleared && !removeError;
 }
 }

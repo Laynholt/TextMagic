@@ -168,70 +168,6 @@ bool SaveTextWithDialog(HWND ownerWindow, const std::wstring& text, std::wstring
     return true;
 }
 
-void FillListBoxWithText(HWND listBox, const std::wstring& text) {
-    if (!listBox || !IsWindow(listBox)) {
-        return;
-    }
-
-    SendMessageW(listBox, WM_SETREDRAW, FALSE, 0);
-    SendMessageW(listBox, LB_RESETCONTENT, 0, 0);
-
-    int maxLineWidth = 0;
-    HDC hdc = GetDC(listBox);
-    HFONT oldFont = nullptr;
-    if (hdc) {
-        HFONT font = reinterpret_cast<HFONT>(SendMessageW(listBox, WM_GETFONT, 0, 0));
-        if (font) {
-            oldFont = static_cast<HFONT>(SelectObject(hdc, font));
-        }
-    }
-
-    auto addLine = [&](const std::wstring& line) {
-        SendMessageW(listBox, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(line.c_str()));
-        if (hdc) {
-            SIZE size = {};
-            if (GetTextExtentPoint32W(hdc, line.c_str(), static_cast<int>(line.size()), &size)) {
-                if (size.cx > maxLineWidth) {
-                    maxLineWidth = size.cx;
-                }
-            }
-        }
-    };
-
-    size_t start = 0;
-    for (size_t i = 0; i <= text.size(); ++i) {
-        const bool atEnd = (i == text.size());
-        const bool isBreak = !atEnd && (text[i] == L'\r' || text[i] == L'\n');
-        if (!atEnd && !isBreak) {
-            continue;
-        }
-
-        addLine(text.substr(start, i - start));
-
-        if (!atEnd && text[i] == L'\r' && (i + 1) < text.size() && text[i + 1] == L'\n') {
-            ++i;
-        }
-        start = i + 1;
-    }
-
-    if (hdc) {
-        if (oldFont) {
-            SelectObject(hdc, oldFont);
-        }
-        ReleaseDC(listBox, hdc);
-    }
-
-    SendMessageW(listBox, LB_SETHORIZONTALEXTENT, static_cast<WPARAM>(maxLineWidth + 24), 0);
-
-    const LRESULT count = SendMessageW(listBox, LB_GETCOUNT, 0, 0);
-    if (count > 0) {
-        SendMessageW(listBox, LB_SETTOPINDEX, static_cast<WPARAM>(count - 1), 0);
-    }
-    UpdateListBoxVerticalScrollbar(listBox);
-    SendMessageW(listBox, WM_SETREDRAW, TRUE, 0);
-    InvalidateRect(listBox, nullptr, TRUE);
-}
-
 namespace {
 int MeasureLineWidth(HDC hdc, const wchar_t* text, int length) {
     if (!hdc || !text || length <= 0) {
@@ -392,21 +328,6 @@ POINT ResolveContextMenuPoint(HWND control, LPARAM lParam) {
         point.y = rect.top + 10;
     }
     return point;
-}
-
-std::wstring GetSelectedListBoxText(HWND listBox) {
-    const LRESULT selectedIndex = SendMessageW(listBox, LB_GETCURSEL, 0, 0);
-    if (selectedIndex == LB_ERR) {
-        return std::wstring();
-    }
-    const LRESULT textLen = SendMessageW(listBox, LB_GETTEXTLEN, static_cast<WPARAM>(selectedIndex), 0);
-    if (textLen <= 0) {
-        return std::wstring();
-    }
-    std::wstring result(static_cast<size_t>(textLen) + 1, L'\0');
-    SendMessageW(listBox, LB_GETTEXT, static_cast<WPARAM>(selectedIndex), reinterpret_cast<LPARAM>(result.data()));
-    result.resize(static_cast<size_t>(textLen));
-    return result;
 }
 
 bool IsTmscriptFilePath(const std::filesystem::path& path) {

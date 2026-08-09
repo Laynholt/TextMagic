@@ -219,7 +219,7 @@ ScriptManifest::LoadResult ScriptManifest::LoadFromDirectory(const std::wstring&
         }
 
         const fs::path path = entry.path();
-        if (path.extension() != L".tmscript") {
+        if (_wcsicmp(path.extension().c_str(), L".tmscript") != 0) {
             continue;
         }
 

@@ -72,6 +72,7 @@ private:
     bool RegisterMorePopupWindowClass();
     static LRESULT CALLBACK MorePopupWindowProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
     LRESULT HandleMorePopupMessage(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+    bool HandleMorePopupKey(UINT virtualKey);
     void CloseMorePopupWindows();
     void CloseMoreSubPopupWindow();
     void EnsureMoreSubPopup(UINT headerItemId);

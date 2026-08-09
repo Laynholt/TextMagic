@@ -10,3 +10,5 @@ tests/*
 !tests/ScriptExecutionCooldownTests.cpp
 !tests/ClipboardUtilsTests.cpp
 !tests/UpdateServiceTests.cpp
+!tests/ScriptManifestTests.cpp
+!tests/PopupMenuNavigationTests.cpp

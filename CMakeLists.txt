@@ -309,3 +309,35 @@ target_compile_features(TextMagicUpdateServiceTests PRIVATE cxx_std_17)
 target_link_libraries(TextMagicUpdateServiceTests PRIVATE crypt32 winhttp wintrust)
 
 add_test(NAME TextMagicUpdateServiceTests COMMAND TextMagicUpdateServiceTests)
+
+add_executable(TextMagicScriptManifestTests
+    src/app/Localization.cpp
+    src/core/common/EncodingUtils.cpp
+    src/core/scripts/ScriptManifest.cpp
+    tests/ScriptManifestTests.cpp
+)
+add_dependencies(TextMagicScriptManifestTests TextMagicEmbeddedLanguages)
+
+target_include_directories(TextMagicScriptManifestTests PRIVATE
+    ${CMAKE_BINARY_DIR}/generated
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/scripts
+)
+
+target_compile_features(TextMagicScriptManifestTests PRIVATE cxx_std_17)
+
+add_test(NAME TextMagicScriptManifestTests COMMAND TextMagicScriptManifestTests)
+
+add_executable(TextMagicPopupMenuNavigationTests
+    tests/PopupMenuNavigationTests.cpp
+)
+
+target_include_directories(TextMagicPopupMenuNavigationTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ui
+)
+
+target_compile_features(TextMagicPopupMenuNavigationTests PRIVATE cxx_std_17)
+
+add_test(NAME TextMagicPopupMenuNavigationTests COMMAND TextMagicPopupMenuNavigationTests)

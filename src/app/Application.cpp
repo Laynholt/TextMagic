@@ -12,6 +12,7 @@
 #include "InputBuffer.h"
 #include "LogFile.h"
 #include "PowerShellUtils.h"
+#include "PopupMenuNavigation.h"
 #include "RunningApplication.h"
 #include "resource.h"
 
@@ -1830,6 +1831,11 @@ bool Application::Initialize(HINSTANCE hInstance) {
 int Application::Run() {
     MSG msg = {};
     while (GetMessageW(&msg, nullptr, 0, 0)) {
+        if (m_hMorePopupWindow
+            && (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN)
+            && HandleMorePopupKey(static_cast<UINT>(msg.wParam))) {
+            continue;
+        }
         if (m_toolTip) {
             m_toolTip->RelayEvent(msg);
         }
@@ -2360,8 +2366,7 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
 
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
-        if (wParam == VK_ESCAPE && m_hMorePopupWindow) {
-            CloseMorePopupWindows();
+        if (m_hMorePopupWindow && HandleMorePopupKey(static_cast<UINT>(wParam))) {
             return 0;
         }
         break;
@@ -2740,6 +2745,136 @@ void Application::CloseMoreSubPopupWindow() {
     }
 }
 
+bool Application::HandleMorePopupKey(UINT virtualKey) {
+    if (!m_hMorePopupWindow || !IsWindow(m_hMorePopupWindow)) {
+        return false;
+    }
+    if (virtualKey != VK_ESCAPE && virtualKey != VK_UP && virtualKey != VK_DOWN
+        && virtualKey != VK_LEFT && virtualKey != VK_RIGHT
+        && virtualKey != VK_RETURN && virtualKey != VK_SPACE) {
+        return false;
+    }
+
+    if (m_hWnd) {
+        KillTimer(m_hWnd, MORE_POPUP_TRACK_TIMER_ID);
+    }
+
+    const auto findItem = [](const std::vector<UiRenderer::PopupMenuItem>& items,
+                             UINT itemId) -> const UiRenderer::PopupMenuItem* {
+        for (const UiRenderer::PopupMenuItem& item : items) {
+            if (item.id == itemId) {
+                return &item;
+            }
+        }
+        return nullptr;
+    };
+    const auto redrawAndAnnounce = [&](HWND windowHandle,
+                                       const std::vector<UiRenderer::PopupMenuItem>& items,
+                                       UINT itemId) {
+        if (!windowHandle || !IsWindow(windowHandle)) {
+            return;
+        }
+        InvalidateRect(windowHandle, nullptr, FALSE);
+        const UiRenderer::PopupMenuItem* item = findItem(items, itemId);
+        if (item) {
+            SetWindowTextW(windowHandle, item->text.c_str());
+            NotifyWinEvent(EVENT_OBJECT_FOCUS, windowHandle, OBJID_CLIENT, CHILDID_SELF);
+        }
+    };
+
+    if (virtualKey == VK_ESCAPE) {
+        CloseMorePopupWindows();
+        return true;
+    }
+
+    const bool inSubPopup = m_hMoreSubPopupWindow
+        && IsWindow(m_hMoreSubPopupWindow)
+        && m_hoveredMoreSubPopupItemId != 0;
+
+    if (virtualKey == VK_UP || virtualKey == VK_DOWN) {
+        if (inSubPopup) {
+            m_hoveredMoreSubPopupItemId = PopupMenuNavigation::MoveSelection(
+                m_moreSubPopupItems,
+                m_hoveredMoreSubPopupItemId,
+                virtualKey == VK_DOWN ? 1 : -1
+            );
+            redrawAndAnnounce(
+                m_hMoreSubPopupWindow,
+                m_moreSubPopupItems,
+                m_hoveredMoreSubPopupItemId
+            );
+        } else {
+            CloseMoreSubPopupWindow();
+            m_hoveredMorePopupItemId = PopupMenuNavigation::MoveSelection(
+                m_morePopupItems,
+                m_hoveredMorePopupItemId,
+                virtualKey == VK_DOWN ? 1 : -1
+            );
+            redrawAndAnnounce(
+                m_hMorePopupWindow,
+                m_morePopupItems,
+                m_hoveredMorePopupItemId
+            );
+        }
+        return true;
+    }
+
+    if (virtualKey == VK_LEFT) {
+        if (m_hMoreSubPopupWindow && IsWindow(m_hMoreSubPopupWindow)) {
+            CloseMoreSubPopupWindow();
+            redrawAndAnnounce(
+                m_hMorePopupWindow,
+                m_morePopupItems,
+                m_hoveredMorePopupItemId
+            );
+        }
+        return true;
+    }
+
+    const UiRenderer::PopupMenuItem* selectedItem = inSubPopup
+        ? findItem(m_moreSubPopupItems, m_hoveredMoreSubPopupItemId)
+        : findItem(m_morePopupItems, m_hoveredMorePopupItemId);
+    if (virtualKey == VK_RIGHT) {
+        if (!inSubPopup && selectedItem && selectedItem->submenu) {
+            EnsureMoreSubPopup(selectedItem->id);
+            m_hoveredMoreSubPopupItemId = PopupMenuNavigation::MoveSelection(
+                m_moreSubPopupItems,
+                0,
+                1
+            );
+            redrawAndAnnounce(
+                m_hMoreSubPopupWindow,
+                m_moreSubPopupItems,
+                m_hoveredMoreSubPopupItemId
+            );
+        }
+        return true;
+    }
+
+    if (!selectedItem) {
+        return true;
+    }
+    if (!inSubPopup && selectedItem->submenu) {
+        EnsureMoreSubPopup(selectedItem->id);
+        m_hoveredMoreSubPopupItemId = PopupMenuNavigation::MoveSelection(
+            m_moreSubPopupItems,
+            0,
+            1
+        );
+        redrawAndAnnounce(
+            m_hMoreSubPopupWindow,
+            m_moreSubPopupItems,
+            m_hoveredMoreSubPopupItemId
+        );
+        return true;
+    }
+
+    const UINT commandId = selectedItem->id;
+    CloseMorePopupWindows();
+    PostMessageW(m_hWnd, WM_COMMAND, MAKEWPARAM(commandId, 0), 0);
+    return true;
+}
+
 void Application::EnsureMoreSubPopup(UINT headerItemId) {
     if (!IsSubmenuHeaderMenuItem(headerItemId) || !m_hMorePopupWindow || !IsWindow(m_hMorePopupWindow)) {
         CloseMoreSubPopupWindow();
@@ -3068,6 +3203,9 @@ LRESULT Application::HandleMorePopupMessage(HWND hWnd, UINT message, WPARAM wPar
         return 1;
 
     case WM_MOUSEMOVE:
+        if (m_hWnd) {
+            SetTimer(m_hWnd, MORE_POPUP_TRACK_TIMER_ID, MORE_POPUP_TRACK_INTERVAL_MS, nullptr);
+        }
         UpdateMorePopupTracking();
         return 0;
 

@@ -1,5 +1,7 @@
 build/
 .vscode/
+.worktrees/
+.superpowers/
 .codebase-memory/*.db
 .codebase-memory/*.db-shm
 .codebase-memory/*.db-wal

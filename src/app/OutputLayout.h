@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -56,4 +57,16 @@ inline HKL FindInstalledOutputLayout(OutputLayout target, const std::vector<HKL>
         }
     }
     return nullptr;
+}
+
+inline HKL FindNextInstalledLayout(HKL current, const std::vector<HKL>& layouts) {
+    if (!current || layouts.size() < 2) {
+        return nullptr;
+    }
+    const auto currentIt = std::find(layouts.begin(), layouts.end(), current);
+    if (currentIt == layouts.end()) {
+        return nullptr;
+    }
+    const size_t nextIndex = (static_cast<size_t>(currentIt - layouts.begin()) + 1) % layouts.size();
+    return layouts[nextIndex];
 }

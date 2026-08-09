@@ -46,5 +46,15 @@ int main() {
           "Russian selects an installed Russian layout");
     Check(FindInstalledOutputLayout(OutputLayout::English, { russian }) == nullptr,
           "a missing target language keeps the current layout");
+
+    const HKL german = reinterpret_cast<HKL>(static_cast<ULONG_PTR>(0x00000407));
+    Check(FindNextInstalledLayout(english, { english, russian, german }) == russian,
+          "cycle selects the next installed layout");
+    Check(FindNextInstalledLayout(german, { english, russian, german }) == english,
+          "cycle wraps to the first installed layout");
+    Check(FindNextInstalledLayout(english, { english }) == nullptr,
+          "one installed layout is a no-op");
+    Check(FindNextInstalledLayout(german, { english, russian }) == nullptr,
+          "missing current layout is a no-op");
     return 0;
 }

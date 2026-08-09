@@ -103,6 +103,16 @@ void TestEmbeddedLanguagesContainScriptActionKeys() {
         L"manifest.warning.required_fields", L"en")).empty());
     CHECK(!std::wstring(Localization::GetTextByName(
         L"manifest.warning.required_fields", L"ru")).empty());
+
+    constexpr const wchar_t* layoutCycleKeys[] = {
+        L"app.status.layout_cycle_success",
+        L"app.status.layout_cycle_unavailable",
+        L"app.log.script.builtin_layout_cycle",
+    };
+    for (const wchar_t* key : layoutCycleKeys) {
+        CHECK(!std::wstring(Localization::GetTextByName(key, L"en")).empty());
+        CHECK(!std::wstring(Localization::GetTextByName(key, L"ru")).empty());
+    }
 }
 
 void TestCurrentLanguageIsSafeDuringConcurrentSwitches(const fs::path& root) {

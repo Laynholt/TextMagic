@@ -1,0 +1,5 @@
+name=Next Keyboard Layout
+description=Switches to the next installed keyboard layout
+hotkey=Shift
+action=cycle_keyboard_layout
+enabled=true

@@ -112,6 +112,8 @@ private:
     void ExecuteSelectedScript();
     void ExecuteScriptByHotkeyId(int hotkeyId);
     void ExecuteScript(const RegisteredScript& script, bool clipboardOnly, bool reservationHeld = false);
+    void ExecuteBuiltinAction(ScriptManifest::Action action);
+    bool CycleForegroundKeyboardLayout();
 
     bool RegisterInfoWindowClass();
     bool RegisterMessageWindowClass();

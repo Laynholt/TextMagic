@@ -4106,9 +4106,68 @@ void Application::ExecuteScriptByHotkeyId(int hotkeyId) {
     ExecuteScript(m_scripts[it->second], false, true);
 }
 
+void Application::ExecuteBuiltinAction(ScriptManifest::Action action) {
+    if (action != ScriptManifest::Action::CycleKeyboardLayout) {
+        return;
+    }
+
+    const bool switched = CycleForegroundKeyboardLayout();
+    SetStatusText(T(switched
+        ? L"app.status.layout_cycle_success"
+        : L"app.status.layout_cycle_unavailable"));
+    AppendLog(T(L"app.log.script.builtin_layout_cycle"));
+}
+
+bool Application::CycleForegroundKeyboardLayout() {
+    const HWND foregroundWindow = GetForegroundWindow();
+    if (!foregroundWindow || !IsWindow(foregroundWindow)) {
+        return false;
+    }
+
+    const DWORD threadId = GetWindowThreadProcessId(foregroundWindow, nullptr);
+    if (threadId == 0) {
+        return false;
+    }
+
+    const HKL currentLayout = GetKeyboardLayout(threadId);
+    if (!currentLayout) {
+        return false;
+    }
+
+    const int layoutCount = GetKeyboardLayoutList(0, nullptr);
+    if (layoutCount < 2) {
+        return false;
+    }
+
+    std::vector<HKL> layouts(static_cast<size_t>(layoutCount));
+    const int copiedLayoutCount = GetKeyboardLayoutList(layoutCount, layouts.data());
+    if (copiedLayoutCount < 2) {
+        return false;
+    }
+    layouts.resize(static_cast<size_t>(copiedLayoutCount));
+
+    const HKL nextLayout = FindNextInstalledLayout(currentLayout, layouts);
+    if (!nextLayout) {
+        return false;
+    }
+
+    return PostMessageW(
+        foregroundWindow,
+        WM_INPUTLANGCHANGEREQUEST,
+        0,
+        reinterpret_cast<LPARAM>(nextLayout)
+    ) != FALSE;
+}
+
 void Application::ExecuteScript(const RegisteredScript& script, bool clipboardOnly, bool reservationHeld) {
     if (!reservationHeld && !m_scriptExecutionGate.TryReserve(GetTickCount64())) {
         SetStatusText(T(L"app.status.script_already_running"));
+        return;
+    }
+
+    if (script.manifest.action != ScriptManifest::Action::TransformText) {
+        ExecuteBuiltinAction(script.manifest.action);
+        m_scriptExecutionGate.Release(GetTickCount64());
         return;
     }
 

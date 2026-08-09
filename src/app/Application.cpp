@@ -5,6 +5,7 @@
 #include "EncodingUtils.h"
 #include "FullscreenUtils.h"
 #include "Localization.h"
+#include "ModifierGestureResolver.h"
 #include "OutputLayout.h"
 #include "ScriptInputSource.h"
 #include "TextBridgeInputUtils.h"
@@ -28,6 +29,7 @@
 #include <uxtheme.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <cwctype>
 #include <filesystem>
@@ -214,7 +216,7 @@ constexpr int MORE_POPUP_ARROW_EXTRA_WIDTH = 48;
 constexpr int MORE_POPUP_ITEM_EXTRA_WIDTH = 34;
 constexpr int MORE_POPUP_WIDTH_PADDING = 14;
 constexpr int MORE_POPUP_TRACK_INTERVAL_MS = 25;
-constexpr ULONGLONG HOTKEY_DOUBLE_TAP_TIMEOUT_MS = 350;
+constexpr UINT MODIFIER_GESTURE_TIMER_ID = 0x4D32;
 
 struct CheckboxVisualState {
     bool hot = false;
@@ -383,10 +385,9 @@ struct HookHotkey {
     UINT modifiers = 0;
     UINT virtualKey = 0;
     bool armed = true;
-    ULONGLONG pendingTapTick = 0;
-    DWORD pendingTapVkCode = 0;
 };
 std::vector<HookHotkey> g_hookHotkeys;
+ModifierGestureResolver g_modifierGestureResolver;
 HotkeyDispatch::PressedKeyState g_hookKeyState;
 HWND g_hotkeyDispatchWindow = nullptr;
 ApplicationBlacklist* g_applicationBlacklist = nullptr;
@@ -558,13 +559,6 @@ void InvalidateForegroundBlockCache() {
     GetForegroundBlockCache() = {};
 }
 
-bool IsDuplicateModifierHotkey(UINT modifiers, UINT virtualKey) {
-    return (virtualKey == VK_SHIFT && (modifiers & MOD_SHIFT) != 0)
-        || (virtualKey == VK_CONTROL && (modifiers & MOD_CONTROL) != 0)
-        || (virtualKey == VK_MENU && (modifiers & MOD_ALT) != 0)
-        || ((virtualKey == VK_LWIN || virtualKey == VK_RWIN) && (modifiers & MOD_WIN) != 0);
-}
-
 UINT GetModifierMaskForVirtualKey(UINT virtualKey) {
     if (virtualKey == VK_SHIFT) {
         return MOD_SHIFT;
@@ -581,82 +575,12 @@ UINT GetModifierMaskForVirtualKey(UINT virtualKey) {
     return 0;
 }
 
-bool IsSameModifierTapKey(DWORD firstVkCode, DWORD secondVkCode, UINT hotkeyVirtualKey) {
-    if (firstVkCode == secondVkCode) {
-        return true;
-    }
-    if (hotkeyVirtualKey == VK_SHIFT) {
-        return (firstVkCode == VK_SHIFT && (secondVkCode == VK_LSHIFT || secondVkCode == VK_RSHIFT))
-            || (secondVkCode == VK_SHIFT && (firstVkCode == VK_LSHIFT || firstVkCode == VK_RSHIFT));
-    }
-    if (hotkeyVirtualKey == VK_CONTROL) {
-        return (firstVkCode == VK_CONTROL && (secondVkCode == VK_LCONTROL || secondVkCode == VK_RCONTROL))
-            || (secondVkCode == VK_CONTROL && (firstVkCode == VK_LCONTROL || firstVkCode == VK_RCONTROL));
-    }
-    if (hotkeyVirtualKey == VK_MENU) {
-        return (firstVkCode == VK_MENU && (secondVkCode == VK_LMENU || secondVkCode == VK_RMENU))
-            || (secondVkCode == VK_MENU && (firstVkCode == VK_LMENU || firstVkCode == VK_RMENU));
-    }
-    return false;
-}
-
-void ResetPendingModifierTap(HookHotkey* hotkey) {
-    if (!hotkey) {
-        return;
-    }
-    hotkey->pendingTapTick = 0;
-    hotkey->pendingTapVkCode = 0;
-}
-
-bool IsDualModifierPressed(UINT hotkeyVirtualKey, DWORD inputVkCode) {
-    if (hotkeyVirtualKey == VK_SHIFT) {
-        if (inputVkCode == VK_LSHIFT) {
-            return g_hookKeyState.IsPressed(VK_RSHIFT);
-        }
-        if (inputVkCode == VK_RSHIFT) {
-            return g_hookKeyState.IsPressed(VK_LSHIFT);
-        }
-        return g_hookKeyState.IsPressed(VK_LSHIFT) && g_hookKeyState.IsPressed(VK_RSHIFT);
-    }
-    if (hotkeyVirtualKey == VK_CONTROL) {
-        if (inputVkCode == VK_LCONTROL) {
-            return g_hookKeyState.IsPressed(VK_RCONTROL);
-        }
-        if (inputVkCode == VK_RCONTROL) {
-            return g_hookKeyState.IsPressed(VK_LCONTROL);
-        }
-        return g_hookKeyState.IsPressed(VK_LCONTROL) && g_hookKeyState.IsPressed(VK_RCONTROL);
-    }
-    if (hotkeyVirtualKey == VK_MENU) {
-        if (inputVkCode == VK_LMENU) {
-            return g_hookKeyState.IsPressed(VK_RMENU);
-        }
-        if (inputVkCode == VK_RMENU) {
-            return g_hookKeyState.IsPressed(VK_LMENU);
-        }
-        return g_hookKeyState.IsPressed(VK_LMENU) && g_hookKeyState.IsPressed(VK_RMENU);
-    }
-    if (hotkeyVirtualKey == VK_LWIN || hotkeyVirtualKey == VK_RWIN) {
-        if (inputVkCode == VK_LWIN) {
-            return g_hookKeyState.IsPressed(VK_RWIN);
-        }
-        if (inputVkCode == VK_RWIN) {
-            return g_hookKeyState.IsPressed(VK_LWIN);
-        }
-        return g_hookKeyState.IsPressed(VK_LWIN) && g_hookKeyState.IsPressed(VK_RWIN);
-    }
-    return true;
-}
-
 bool IsHotkeyMatchedByKeyEvent(UINT modifiers, UINT virtualKey, DWORD inputVkCode, UINT currentModifiers) {
     if ((modifiers & HOTKEY_MODIFIER_MASK) != currentModifiers) {
         return false;
     }
     if (!HotkeyDispatch::MatchesVirtualKey(inputVkCode, virtualKey)) {
         return false;
-    }
-    if (IsDuplicateModifierHotkey(modifiers, virtualKey)) {
-        return IsDualModifierPressed(virtualKey, inputVkCode);
     }
     return true;
 }
@@ -679,28 +603,7 @@ HotkeyDispatch::Action DispatchHookHotkeysOnKeyDown(DWORD inputVkCode, UINT curr
         if (!hotkey.armed) {
             continue;
         }
-        if (IsDuplicateModifierHotkey(hotkey.modifiers, hotkey.virtualKey)) {
-            if (hotkey.pendingTapTick != 0 && nowTick - hotkey.pendingTapTick > HOTKEY_DOUBLE_TAP_TIMEOUT_MS) {
-                ResetPendingModifierTap(&hotkey);
-            }
-            const UINT effectiveModifiers = currentModifiers | GetModifierMaskForVirtualKey(hotkey.virtualKey);
-            if ((hotkey.modifiers & HOTKEY_MODIFIER_MASK) != effectiveModifiers
-                || !HotkeyDispatch::MatchesVirtualKey(inputVkCode, hotkey.virtualKey)) {
-                ResetPendingModifierTap(&hotkey);
-                continue;
-            }
-
-            const bool dualPressed = IsDualModifierPressed(hotkey.virtualKey, inputVkCode);
-            const bool sameKeyTappedTwice = hotkey.pendingTapTick != 0
-                && IsSameModifierTapKey(hotkey.pendingTapVkCode, inputVkCode, hotkey.virtualKey)
-                && nowTick - hotkey.pendingTapTick <= HOTKEY_DOUBLE_TAP_TIMEOUT_MS;
-            if (!dualPressed && !sameKeyTappedTwice) {
-                hotkey.pendingTapTick = nowTick;
-                hotkey.pendingTapVkCode = inputVkCode;
-                continue;
-            }
-            ResetPendingModifierTap(&hotkey);
-        } else if (!IsHotkeyMatchedByKeyEvent(hotkey.modifiers, hotkey.virtualKey, inputVkCode, currentModifiers)) {
+        if (!IsHotkeyMatchedByKeyEvent(hotkey.modifiers, hotkey.virtualKey, inputVkCode, currentModifiers)) {
             continue;
         }
         const HotkeyDispatch::Action consumeAction = HotkeyDispatch::BeginMatchedPress(hotkey.armed);
@@ -714,6 +617,51 @@ HotkeyDispatch::Action DispatchHookHotkeysOnKeyDown(DWORD inputVkCode, UINT curr
         return HotkeyDispatch::Action::Dispatch;
     }
     return HotkeyDispatch::Action::PassThrough;
+}
+
+void DispatchResolvedModifierHotkey(int hotkeyId, ULONGLONG now) {
+    if (hotkeyId == 0 || !g_scriptExecutionGate
+        || !g_scriptExecutionGate->TryReserve(now)) {
+        return;
+    }
+    if (!PostMessageW(g_hotkeyDispatchWindow, WM_HOTKEY,
+                      static_cast<WPARAM>(hotkeyId), 0)) {
+        g_scriptExecutionGate->Release(now);
+    }
+}
+
+void ApplyModifierGestureDecision(
+    ModifierGestureResolver::Decision decision,
+    ULONGLONG now
+) {
+    if (g_hotkeyDispatchWindow) {
+        KillTimer(g_hotkeyDispatchWindow, MODIFIER_GESTURE_TIMER_ID);
+    }
+    if (decision.pending) {
+        if (!g_hotkeyDispatchWindow || !IsWindow(g_hotkeyDispatchWindow)) {
+            return;
+        }
+        const ULONGLONG delay = decision.dueTick > now
+            ? decision.dueTick - now
+            : 1;
+        SetTimer(
+            g_hotkeyDispatchWindow,
+            MODIFIER_GESTURE_TIMER_ID,
+            static_cast<UINT>(std::min<ULONGLONG>(delay, 0xffffffffULL)),
+            nullptr
+        );
+        return;
+    }
+    if (decision.hotkeyId != 0) {
+        DispatchResolvedModifierHotkey(decision.hotkeyId, now);
+    }
+}
+
+void CancelModifierGesture() {
+    if (g_hotkeyDispatchWindow) {
+        KillTimer(g_hotkeyDispatchWindow, MODIFIER_GESTURE_TIMER_ID);
+    }
+    g_modifierGestureResolver.Cancel();
 }
 
 void RearmHookHotkeysIfReleased(DWORD releasedVkCode) {
@@ -849,13 +797,38 @@ LRESULT CALLBACK InputKeyboardHookProc(int code, WPARAM wParam, LPARAM lParam) {
                     keyDown);
             }
             if ((keyDown || keyUp) && IsForegroundHandlingBlocked()) {
+                CancelModifierGesture();
                 if (HotkeyDispatch::ShouldRearmBlockedKeyEvent(keyUp)) {
                     RearmHookHotkeysIfReleased(keyInfo->vkCode);
                 }
                 return CallNextHookEx(g_keyboardHook, code, wParam, lParam);
             }
-            if (keyDown) {
-                const UINT currentModifiers = g_hookKeyState.Modifiers();
+            const UINT currentModifiers = g_hookKeyState.Modifiers();
+            const UINT modifierMask = GetModifierMaskForVirtualKey(keyInfo->vkCode);
+            const std::uintptr_t context = reinterpret_cast<std::uintptr_t>(GetForegroundWindow());
+            if (keyDown && modifierMask != 0) {
+                const ULONGLONG now = GetTickCount64();
+                ApplyModifierGestureDecision(
+                    g_modifierGestureResolver.OnKeyDown(
+                        keyInfo->vkCode,
+                        currentModifiers,
+                        now,
+                        context),
+                    now
+                );
+            } else if (keyUp && modifierMask != 0) {
+                const ULONGLONG now = GetTickCount64();
+                ApplyModifierGestureDecision(
+                    g_modifierGestureResolver.OnKeyUp(
+                        keyInfo->vkCode,
+                        currentModifiers,
+                        now,
+                        context),
+                    now
+                );
+                RearmHookHotkeysIfReleased(keyInfo->vkCode);
+            } else if (keyDown) {
+                CancelModifierGesture();
                 const HotkeyDispatch::Action action = DispatchHookHotkeysOnKeyDown(
                     keyInfo->vkCode,
                     currentModifiers);
@@ -877,6 +850,7 @@ LRESULT CALLBACK InputMouseHookProc(int code, WPARAM wParam, LPARAM lParam) {
             || wParam == WM_MBUTTONDOWN || wParam == WM_XBUTTONDOWN)) {
         const auto* mouseInfo = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
         if (!mouseInfo || (mouseInfo->flags & LLMHF_INJECTED) == 0) {
+            CancelModifierGesture();
             ClearInputBuffer();
         }
     }
@@ -898,6 +872,7 @@ bool InstallInputHooks(HINSTANCE hInstance) {
 }
 
 void UninstallInputHooks() {
+    CancelModifierGesture();
     if (g_keyboardHook) {
         UnhookWindowsHookEx(g_keyboardHook);
         g_keyboardHook = nullptr;
@@ -1890,6 +1865,7 @@ int Application::Run() {
 }
 
 void Application::Shutdown() {
+    CancelModifierGesture();
     SetHotkeyDispatchWindow(nullptr);
     g_applicationBlacklist = nullptr;
     g_scriptExecutionGate = nullptr;
@@ -2395,6 +2371,17 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         break;
 
     case WM_TIMER:
+        if (wParam == MODIFIER_GESTURE_TIMER_ID) {
+            KillTimer(m_hWnd, MODIFIER_GESTURE_TIMER_ID);
+            const ULONGLONG now = GetTickCount64();
+            ApplyModifierGestureDecision(
+                g_modifierGestureResolver.OnTimeout(
+                    now,
+                    reinterpret_cast<std::uintptr_t>(GetForegroundWindow())),
+                now
+            );
+            return 0;
+        }
         if (wParam == MORE_POPUP_TRACK_TIMER_ID) {
             UpdateMorePopupTracking();
             return 0;
@@ -3613,7 +3600,13 @@ void Application::ReloadScripts(bool announceResult) {
 void Application::RegisterHotkeys() {
     ClearTrackedHotkeys();
     ClearHookHotkeys();
-    std::vector<TrackedHotkey> assignedHotkeys;
+    struct AssignedHotkey {
+        ScriptManifest::HotkeyKind kind = ScriptManifest::HotkeyKind::KeyChord;
+        UINT modifiers = 0;
+        UINT virtualKey = 0;
+    };
+    std::vector<AssignedHotkey> assignedHotkeys;
+    std::vector<ModifierGestureResolver::Binding> modifierBindings;
     for (auto& script : m_scripts) {
         script.hotkeyRegistered = false;
         script.hotkeyError.clear();
@@ -3621,18 +3614,21 @@ void Application::RegisterHotkeys() {
             script.hotkeyError = T(L"app.status.disabled_by_user");
             continue;
         }
-        if (script.manifest.virtualKey == 0) {
+        if (script.manifest.virtualKey == 0
+            && script.manifest.hotkeyKind != ScriptManifest::HotkeyKind::ModifierGesture) {
             script.hotkeyError = T(L"app.status.invalid_hotkey");
             continue;
         }
 
-        const TrackedHotkey currentHotkey{
+        const AssignedHotkey currentHotkey{
+            script.manifest.hotkeyKind,
             script.manifest.modifiers & HOTKEY_MODIFIER_MASK,
             script.manifest.virtualKey
         };
         const auto duplicateIt = std::find_if(assignedHotkeys.begin(), assignedHotkeys.end(),
-            [&currentHotkey](const TrackedHotkey& assigned) {
-                return assigned.modifiers == currentHotkey.modifiers
+            [&currentHotkey](const AssignedHotkey& assigned) {
+                return assigned.kind == currentHotkey.kind
+                    && assigned.modifiers == currentHotkey.modifiers
                     && assigned.virtualKey == currentHotkey.virtualKey;
             });
         if (duplicateIt != assignedHotkeys.end()) {
@@ -3642,18 +3638,30 @@ void Application::RegisterHotkeys() {
             continue;
         }
 
-        AddHookHotkey(script.hotkeyId, currentHotkey.modifiers, currentHotkey.virtualKey);
+        if (currentHotkey.kind == ScriptManifest::HotkeyKind::KeyChord) {
+            AddHookHotkey(script.hotkeyId, currentHotkey.modifiers, currentHotkey.virtualKey);
+            AddTrackedHotkey(currentHotkey.modifiers, currentHotkey.virtualKey);
+        } else {
+            modifierBindings.push_back({
+                script.hotkeyId,
+                currentHotkey.kind,
+                currentHotkey.modifiers,
+                currentHotkey.virtualKey,
+            });
+        }
         script.hotkeyRegistered = true;
         m_scriptIndexByHotkeyId[script.hotkeyId] = &script - m_scripts.data();
-        AddTrackedHotkey(currentHotkey.modifiers, currentHotkey.virtualKey);
         assignedHotkeys.push_back(currentHotkey);
     }
+    g_modifierGestureResolver.SetBindings(std::move(modifierBindings));
 }
 
 void Application::UnregisterHotkeys() {
     m_scriptIndexByHotkeyId.clear();
     ClearTrackedHotkeys();
     ClearHookHotkeys();
+    CancelModifierGesture();
+    g_modifierGestureResolver.SetBindings({});
 }
 
 void Application::RefreshScriptList() {

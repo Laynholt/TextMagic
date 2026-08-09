@@ -5,7 +5,9 @@
 #include "PowerShellUtils.h"
 
 #include <windows.h>
+#include <softpub.h>
 #include <winhttp.h>
+#include <wintrust.h>
 
 #include <algorithm>
 #include <cwctype>
@@ -223,6 +225,41 @@ UpdateCheckResult UpdateService::CheckForUpdates(const std::wstring& currentVers
     return result;
 }
 
+bool UpdateService::VerifyExecutableTrust(const std::wstring& executablePath,
+                                          std::wstring& errorMessage) {
+    errorMessage.clear();
+    if (executablePath.empty()) {
+        errorMessage = T(L"update.error.signature_invalid");
+        return false;
+    }
+
+    WINTRUST_FILE_INFO fileInfo = {};
+    fileInfo.cbStruct = sizeof(fileInfo);
+    fileInfo.pcwszFilePath = executablePath.c_str();
+
+    WINTRUST_DATA trustData = {};
+    trustData.cbStruct = sizeof(trustData);
+    trustData.dwUIChoice = WTD_UI_NONE;
+    trustData.fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN;
+    trustData.dwUnionChoice = WTD_CHOICE_FILE;
+    trustData.pFile = &fileInfo;
+    trustData.dwStateAction = WTD_STATEACTION_VERIFY;
+    trustData.dwProvFlags = WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT;
+
+    GUID policy = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+    const LONG trustResult = WinVerifyTrust(nullptr, &policy, &trustData);
+    trustData.dwStateAction = WTD_STATEACTION_CLOSE;
+    WinVerifyTrust(nullptr, &policy, &trustData);
+
+    if (trustResult == ERROR_SUCCESS) {
+        return true;
+    }
+
+    errorMessage = std::wstring(T(L"update.error.signature_invalid"))
+        + L" (" + FormatWin32Error(static_cast<DWORD>(trustResult)) + L")";
+    return false;
+}
+
 bool UpdateService::DownloadReleaseExecutable(const std::wstring& tag, const std::wstring& destinationPath, std::wstring& errorMessage) const {
     if (tag.empty() || destinationPath.empty()) {
         errorMessage = T(L"update.error.invalid_download_params");
@@ -347,7 +384,7 @@ bool UpdateService::DownloadReleaseExecutable(const std::wstring& tag, const std
 
     CloseHandle(fileHandle);
 
-    if (!readOk) {
+    if (!readOk || !VerifyExecutableTrust(destinationPath, errorMessage)) {
         DeleteFileW(destinationPath.c_str());
         return false;
     }
@@ -363,15 +400,34 @@ bool UpdateService::LaunchUpdaterProcess(DWORD currentProcessId,
         errorMessage = T(L"update.error.invalid_launch_params");
         return false;
     }
+    if (!VerifyExecutableTrust(downloadedExePath, errorMessage)) {
+        return false;
+    }
 
     std::wstringstream script;
     script << L"$pidToWait=" << currentProcessId << L";";
     script << L"$download='" << PowerShellUtils::EscapeSingleQuoted(downloadedExePath) << L"';";
     script << L"$target='" << PowerShellUtils::EscapeSingleQuoted(targetExePath) << L"';";
+    script << L"$backup=$target+'.bak';";
     script << L"while (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 500 };";
-    script << L"Copy-Item -LiteralPath $download -Destination $target -Force;";
-    script << L"Start-Process -FilePath $target;";
+    script << L"Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue;";
+    script << L"$hadTarget=Test-Path -LiteralPath $target;";
+    script << L"try {";
+    script << L"if ($hadTarget) { Move-Item -LiteralPath $target -Destination $backup -Force };";
+    script << L"Move-Item -LiteralPath $download -Destination $target -Force;";
+    script << L"$updated=Start-Process -FilePath $target -PassThru -ErrorAction Stop;";
+    script << L"Start-Sleep -Milliseconds 1000;";
+    script << L"if ($updated.HasExited) { throw 'Updated process exited during startup' };";
+    script << L"Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue;";
+    script << L"} catch {";
+    script << L"Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue;";
+    script << L"if ($hadTarget -and (Test-Path -LiteralPath $backup)) {";
+    script << L"Move-Item -LiteralPath $backup -Destination $target -Force;";
+    script << L"Start-Process -FilePath $target -ErrorAction SilentlyContinue";
+    script << L"};";
     script << L"Remove-Item -LiteralPath $download -Force -ErrorAction SilentlyContinue;";
+    script << L"exit 1;";
+    script << L"};";
 
     std::wstring commandLine =
         L"powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command \"" +

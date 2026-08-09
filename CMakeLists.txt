@@ -95,6 +95,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     uxtheme
     user32
     winhttp
+    wintrust
 )
 
 if(MSVC)
@@ -287,3 +288,24 @@ target_compile_features(TextMagicClipboardUtilsTests PRIVATE cxx_std_17)
 target_link_libraries(TextMagicClipboardUtilsTests PRIVATE ole32 user32)
 
 add_test(NAME TextMagicClipboardUtilsTests COMMAND TextMagicClipboardUtilsTests)
+
+add_executable(TextMagicUpdateServiceTests
+    src/app/Localization.cpp
+    src/core/common/EncodingUtils.cpp
+    src/core/common/PowerShellUtils.cpp
+    src/core/update/UpdateService.cpp
+    tests/UpdateServiceTests.cpp
+)
+add_dependencies(TextMagicUpdateServiceTests TextMagicEmbeddedLanguages)
+
+target_include_directories(TextMagicUpdateServiceTests PRIVATE
+    ${CMAKE_BINARY_DIR}/generated
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/update
+)
+
+target_compile_features(TextMagicUpdateServiceTests PRIVATE cxx_std_17)
+target_link_libraries(TextMagicUpdateServiceTests PRIVATE crypt32 winhttp wintrust)
+
+add_test(NAME TextMagicUpdateServiceTests COMMAND TextMagicUpdateServiceTests)

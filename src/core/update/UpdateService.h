@@ -20,6 +20,8 @@ public:
                               const std::wstring& downloadedExePath,
                               const std::wstring& targetExePath,
                               std::wstring& errorMessage) const;
+    static bool VerifyExecutableTrust(const std::wstring& executablePath,
+                                      std::wstring& errorMessage);
 
 private:
     bool ResolveLatestReleaseTag(std::wstring& latestTag, std::wstring& errorMessage) const;

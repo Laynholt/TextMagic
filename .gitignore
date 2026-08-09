@@ -9,3 +9,4 @@ tests/*
 !tests/LogFileTests.cpp
 !tests/ScriptExecutionCooldownTests.cpp
 !tests/ClipboardUtilsTests.cpp
+!tests/UpdateServiceTests.cpp

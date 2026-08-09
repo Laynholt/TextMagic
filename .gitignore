@@ -1,5 +1,8 @@
 build/
 .vscode/
+.codebase-memory/*.db
+.codebase-memory/*.db-shm
+.codebase-memory/*.db-wal
 tests/*
 !tests/
 !tests/InputBufferTests.cpp

@@ -1,0 +1,11 @@
+{
+    "schema_version": 2,
+    "commit": "daad164f4af8b972e356b382b2d83a2307307cd2",
+    "indexed_at": "2026-08-09T15:03:01Z",
+    "project": "TextMagic",
+    "nodes": 987,
+    "edges": 2238,
+    "original_size": 2686976,
+    "compressed_size": 235196,
+    "compression_level": 3
+}

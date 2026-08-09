@@ -67,6 +67,14 @@ If the target disappears, the foreground window changes before deferred dispatch
 - A small pure layout helper chooses the next installed layout; `Application` performs the Win32 request.
 - The text-script worker remains unchanged for scripts without a built-in action.
 
+## Input case preservation
+
+The bundled layout-conversion script already maps lowercase, title-case, and uppercase characters correctly. The live input path must preserve that case before the script runs.
+
+The low-level keyboard hook's modifier state is authoritative for the event currently being processed. `HandleInputBufferKeyDown` passes its `currentModifiers` value into `AppendKeyToInputBuffer`, which overlays the Shift pressed bit in the keyboard-state array before `ToUnicodeEx`. Caps Lock remains sourced from the toggle bits returned by `GetKeyboardState`.
+
+This is a shared input-buffer correction, not behavior specific to `layout_auto_qwerty`: every text script receives the actual typed case. The existing direct script checks for `ghbdtn`, `Ghbdtn`, and `GHBDTN` remain as conversion regressions.
+
 ## Error handling and compatibility
 
 - Duplicate normalized hotkeys continue to be rejected by registration.
@@ -88,4 +96,5 @@ Focused automated checks cover:
 - immediate dispatch of a conventional chord such as `Ctrl+Alt+L`;
 - next-layout selection, wraparound, missing current layout, and one-layout no-op;
 - action scripts bypassing text capture, clipboard operations, PowerShell, and replacement;
+- hook modifier state preserving lowercase, title-case, and uppercase input before script execution;
 - the existing full test suite.

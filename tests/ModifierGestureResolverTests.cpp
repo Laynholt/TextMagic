@@ -96,6 +96,28 @@ int main() {
     }
 
     {
+        ModifierGestureResolver resolver;
+        resolver.SetBindings({
+            {7, ScriptManifest::HotkeyKind::ModifierDoubleTap, MOD_SHIFT, VK_SHIFT},
+        });
+        CheckNoDispatch(resolver.OnKeyDown(VK_SHIFT, MOD_SHIFT, 0, 100),
+                        "a double-tap-only binding starts its first tap");
+        const auto firstTap = resolver.OnKeyUp(VK_SHIFT, 0, 50, 100);
+        Check(firstTap.pending && firstTap.dueTick == 350,
+              "a double-tap-only binding keeps the first tap until timeout");
+        CheckNoDispatch(resolver.OnTimeout(350, 100),
+                        "a double-tap-only binding emits no single action at timeout");
+
+        resolver.SetBindings({
+            {7, ScriptManifest::HotkeyKind::ModifierDoubleTap, MOD_SHIFT, VK_SHIFT},
+        });
+        resolver.OnKeyDown(VK_SHIFT, MOD_SHIFT, 500, 100);
+        resolver.OnKeyUp(VK_SHIFT, 0, 550, 100);
+        Check(resolver.OnKeyDown(VK_SHIFT, MOD_SHIFT, 700, 100).hotkeyId == 7,
+              "a double-tap-only binding dispatches on its second tap");
+    }
+
+    {
         auto resolver = MakeResolver();
         resolver.OnKeyDown(VK_CONTROL, MOD_CONTROL, 0, 100);
         resolver.OnKeyDown(VK_SHIFT, MOD_CONTROL | MOD_SHIFT, 50, 100);
@@ -177,6 +199,25 @@ int main() {
               "releasing the final Shift side completes the gesture");
         Check(resolver.OnTimeout(350, 100).hotkeyId == 1,
               "the side-insensitive Shift gesture resolves once both sides release");
+    }
+
+    {
+        auto resolver = MakeResolver();
+        resolver.OnKeyDown(VK_SHIFT, MOD_SHIFT, 0, 100);
+        resolver.Cancel(0);
+        CheckNoDispatch(resolver.OnKeyDown(VK_SHIFT, MOD_SHIFT, 100, 100),
+                        "cancellation synchronizes a released modifier mask");
+        Check(resolver.OnKeyUp(VK_SHIFT, 0, 120, 100).pending,
+              "a modifier can start a fresh gesture after synchronized cancellation");
+    }
+
+    {
+        auto resolver = MakeResolver();
+        resolver.OnKeyDown(VK_SHIFT, MOD_SHIFT, 0, 100);
+        resolver.OnKeyUp(VK_SHIFT, 0, 50, 100);
+        const auto overdue = resolver.OnTimeout(400, 100);
+        Check(overdue.hotkeyId == 1 && overdue.context == 100,
+              "an overdue timeout resolves with its captured context");
     }
 
     return 0;

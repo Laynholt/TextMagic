@@ -26,6 +26,7 @@ public:
         int hotkeyId = 0;
         bool pending = false;
         ULONGLONG dueTick = 0;
+        std::uintptr_t context = 0;
     };
 
     void SetBindings(std::vector<Binding> bindings) {
@@ -38,7 +39,7 @@ public:
                        ULONGLONG now, std::uintptr_t context) {
         const UINT modifierBit = ModifierMaskForVirtualKey(virtualKey);
         if (modifierBit == 0) {
-            return Cancel();
+            return Cancel(currentModifiers);
         }
 
         if ((m_pressedMask & modifierBit) != 0) {
@@ -47,7 +48,7 @@ public:
 
         if ((m_candidate.active || m_completed.active)
             && context != Context()) {
-            return Cancel();
+            return Cancel(currentModifiers);
         }
 
         const UINT nextMask = (m_pressedMask
@@ -63,14 +64,15 @@ public:
                 && now - m_firstTap.startedTick <= ResolveMs) {
                 m_pressedMask = nextMask;
                 ClearCandidates();
-                return { repeated->hotkeyId, false, 0 };
+                return { repeated->hotkeyId, false, 0, context };
             }
             ClearCandidates();
         }
 
         m_pressedMask = nextMask;
         const Binding* gesture = FindGestureBinding(nextMask);
-        if (!gesture && !HasGesturePrefix(nextMask)) {
+        const bool hasRepeated = FindRepeatedBinding(nextMask, virtualKey) != nullptr;
+        if (!gesture && !hasRepeated && !HasGesturePrefix(nextMask)) {
             ClearCandidates();
             return {};
         }
@@ -103,7 +105,7 @@ public:
 
         if ((m_candidate.active || m_completed.active)
             && context != Context()) {
-            return Cancel();
+            return Cancel(currentModifiers);
         }
 
         if (!m_candidate.active || (m_pressedMask & m_candidate.modifiers) != 0) {
@@ -112,7 +114,9 @@ public:
 
         const Candidate completed = m_candidate;
         m_candidate = {};
-        if (!FindGestureBinding(completed.modifiers)) {
+        const Binding* gesture = FindGestureBinding(completed.modifiers);
+        const Binding* repeated = FindRepeatedBinding(completed.modifiers, completed.virtualKey);
+        if (!gesture && !repeated) {
             ClearCandidates();
             return {};
         }
@@ -128,7 +132,6 @@ public:
             completed.startedTick + ResolveMs,
             completed.context,
         };
-        const Binding* repeated = FindRepeatedBinding(completed.modifiers, completed.virtualKey);
         m_firstTap = {
             repeated != nullptr,
             completed.modifiers,
@@ -144,7 +147,7 @@ public:
             return {};
         }
         if (context != m_completed.context) {
-            return Cancel();
+            return Cancel(m_pressedMask);
         }
         if (now < m_completed.dueTick) {
             return PendingDecision();
@@ -152,11 +155,13 @@ public:
 
         const Binding* gesture = FindGestureBinding(m_completed.modifiers);
         const int hotkeyId = gesture ? gesture->hotkeyId : 0;
+        const std::uintptr_t completedContext = m_completed.context;
         ClearCandidates();
-        return { hotkeyId, false, 0 };
+        return { hotkeyId, false, 0, completedContext };
     }
 
-    Decision Cancel() noexcept {
+    Decision Cancel(UINT currentModifiers = 0) noexcept {
+        m_pressedMask = currentModifiers & ModifierMask;
         ClearCandidates();
         return {};
     }
@@ -262,7 +267,9 @@ private:
     }
 
     Decision PendingDecision() const noexcept {
-        return m_completed.active ? Decision{ 0, true, m_completed.dueTick } : Decision{};
+        return m_completed.active
+            ? Decision{ 0, true, m_completed.dueTick, m_completed.context }
+            : Decision{};
     }
 
     void ClearCandidates() noexcept {

@@ -190,6 +190,7 @@ constexpr UINT WM_UPDATE_CHECK_COMPLETE = WM_APP + 3;
 constexpr UINT WM_UPDATE_INSTALL_COMPLETE = WM_APP + 4;
 constexpr UINT WM_IMPORT_ZIP_COMPLETE = WM_APP + 5;
 constexpr UINT WM_EXPORT_ZIP_COMPLETE = WM_APP + 6;
+constexpr UINT WM_MODIFIER_HOTKEY = WM_APP + 7;
 constexpr UINT MORE_POPUP_TRACK_TIMER_ID = 0x4D31;
 constexpr UINT TRAY_ICON_ID = 1;
 constexpr int LOGS_MIN_WIDTH = 640;
@@ -569,7 +570,11 @@ bool IsHotkeyMatchedByKeyEvent(UINT modifiers, UINT virtualKey, DWORD inputVkCod
     return true;
 }
 
-HotkeyDispatch::Action DispatchHookHotkeysOnKeyDown(DWORD inputVkCode, UINT currentModifiers) {
+HotkeyDispatch::Action DispatchHookHotkeysOnKeyDown(
+    DWORD inputVkCode,
+    UINT currentModifiers,
+    std::uintptr_t context
+) {
     const ULONGLONG nowTick = GetTickCount64();
     std::lock_guard<std::mutex> lock(g_hookHotkeysMutex);
     if (!g_hotkeyDispatchWindow || !IsWindow(g_hotkeyDispatchWindow)) {
@@ -594,7 +599,11 @@ HotkeyDispatch::Action DispatchHookHotkeysOnKeyDown(DWORD inputVkCode, UINT curr
         if (!g_scriptExecutionGate || !g_scriptExecutionGate->TryReserve(nowTick)) {
             return consumeAction;
         }
-        if (!PostMessageW(g_hotkeyDispatchWindow, WM_HOTKEY, static_cast<WPARAM>(hotkey.hotkeyId), 0)) {
+        if (!PostMessageW(
+                g_hotkeyDispatchWindow,
+                WM_MODIFIER_HOTKEY,
+                static_cast<WPARAM>(hotkey.hotkeyId),
+                static_cast<LPARAM>(context))) {
             g_scriptExecutionGate->Release(nowTick);
             return consumeAction;
         }
@@ -603,13 +612,16 @@ HotkeyDispatch::Action DispatchHookHotkeysOnKeyDown(DWORD inputVkCode, UINT curr
     return HotkeyDispatch::Action::PassThrough;
 }
 
-void DispatchResolvedModifierHotkey(int hotkeyId, ULONGLONG now) {
+void DispatchResolvedModifierHotkey(int hotkeyId, std::uintptr_t context, ULONGLONG now) {
     if (hotkeyId == 0 || !g_scriptExecutionGate
         || !g_scriptExecutionGate->TryReserve(now)) {
         return;
     }
-    if (!PostMessageW(g_hotkeyDispatchWindow, WM_HOTKEY,
-                      static_cast<WPARAM>(hotkeyId), 0)) {
+    if (!PostMessageW(
+            g_hotkeyDispatchWindow,
+            WM_MODIFIER_HOTKEY,
+            static_cast<WPARAM>(hotkeyId),
+            static_cast<LPARAM>(context))) {
         g_scriptExecutionGate->Release(now);
     }
 }
@@ -637,7 +649,7 @@ void ApplyModifierGestureDecision(
         return;
     }
     if (decision.hotkeyId != 0) {
-        DispatchResolvedModifierHotkey(decision.hotkeyId, now);
+        DispatchResolvedModifierHotkey(decision.hotkeyId, decision.context, now);
     }
 }
 
@@ -645,7 +657,18 @@ void CancelModifierGesture() {
     if (g_hotkeyDispatchWindow) {
         KillTimer(g_hotkeyDispatchWindow, MODIFIER_GESTURE_TIMER_ID);
     }
-    g_modifierGestureResolver.Cancel();
+    g_modifierGestureResolver.Cancel(g_hookKeyState.Modifiers());
+}
+
+void ResolveDueModifierGesture(std::uintptr_t context, ULONGLONG now) {
+    if (!g_modifierGestureResolver.HasPending()
+        || g_modifierGestureResolver.DueTick() > now) {
+        return;
+    }
+    ApplyModifierGestureDecision(
+        g_modifierGestureResolver.OnTimeout(now, context),
+        now
+    );
 }
 
 void RearmHookHotkeysIfReleased(DWORD releasedVkCode) {
@@ -772,7 +795,10 @@ LRESULT CALLBACK InputKeyboardHookProc(int code, WPARAM wParam, LPARAM lParam) {
         if (keyInfo && (keyInfo->flags & LLKHF_INJECTED) == 0) {
             const bool keyDown = wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN;
             const bool keyUp = wParam == WM_KEYUP || wParam == WM_SYSKEYUP;
+            const std::uintptr_t context = reinterpret_cast<std::uintptr_t>(GetForegroundWindow());
+            const ULONGLONG now = GetTickCount64();
             if (keyDown || keyUp) {
+                ResolveDueModifierGesture(context, now);
                 g_hookKeyState.Update(
                     HotkeyDispatch::NormalizeHookVirtualKey(
                         keyInfo->vkCode,
@@ -780,7 +806,8 @@ LRESULT CALLBACK InputKeyboardHookProc(int code, WPARAM wParam, LPARAM lParam) {
                         keyInfo->flags),
                     keyDown);
             }
-            if ((keyDown || keyUp) && IsForegroundHandlingBlocked()) {
+            const bool blocked = (keyDown || keyUp) && IsForegroundHandlingBlocked();
+            if (blocked) {
                 CancelModifierGesture();
                 if (HotkeyDispatch::ShouldRearmBlockedKeyEvent(keyUp)) {
                     RearmHookHotkeysIfReleased(keyInfo->vkCode);
@@ -790,9 +817,7 @@ LRESULT CALLBACK InputKeyboardHookProc(int code, WPARAM wParam, LPARAM lParam) {
             const UINT currentModifiers = g_hookKeyState.Modifiers();
             const UINT modifierMask = ModifierGestureResolver::ModifierMaskForHookVirtualKey(
                 keyInfo->vkCode);
-            const std::uintptr_t context = reinterpret_cast<std::uintptr_t>(GetForegroundWindow());
             if (keyDown && modifierMask != 0) {
-                const ULONGLONG now = GetTickCount64();
                 ApplyModifierGestureDecision(
                     g_modifierGestureResolver.OnKeyDown(
                         keyInfo->vkCode,
@@ -802,7 +827,6 @@ LRESULT CALLBACK InputKeyboardHookProc(int code, WPARAM wParam, LPARAM lParam) {
                     now
                 );
             } else if (keyUp && modifierMask != 0) {
-                const ULONGLONG now = GetTickCount64();
                 ApplyModifierGestureDecision(
                     g_modifierGestureResolver.OnKeyUp(
                         keyInfo->vkCode,
@@ -816,7 +840,8 @@ LRESULT CALLBACK InputKeyboardHookProc(int code, WPARAM wParam, LPARAM lParam) {
                 CancelModifierGesture();
                 const HotkeyDispatch::Action action = DispatchHookHotkeysOnKeyDown(
                     keyInfo->vkCode,
-                    currentModifiers);
+                    currentModifiers,
+                    context);
                 if (action != HotkeyDispatch::Action::PassThrough) {
                     return 1;
                 }
@@ -835,6 +860,8 @@ LRESULT CALLBACK InputMouseHookProc(int code, WPARAM wParam, LPARAM lParam) {
             || wParam == WM_MBUTTONDOWN || wParam == WM_XBUTTONDOWN)) {
         const auto* mouseInfo = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
         if (!mouseInfo || (mouseInfo->flags & LLMHF_INJECTED) == 0) {
+            const std::uintptr_t context = reinterpret_cast<std::uintptr_t>(GetForegroundWindow());
+            ResolveDueModifierGesture(context, GetTickCount64());
             CancelModifierGesture();
             ClearInputBuffer();
         }
@@ -1988,8 +2015,18 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         break;
 
+    case WM_MODIFIER_HOTKEY:
+        ExecuteScriptByHotkeyId(
+            static_cast<int>(wParam),
+            reinterpret_cast<HWND>(lParam)
+        );
+        return 0;
+
     case WM_HOTKEY:
-        ExecuteScriptByHotkeyId(static_cast<int>(wParam));
+        ExecuteScriptByHotkeyId(
+            static_cast<int>(wParam),
+            GetForegroundWindow()
+        );
         return 0;
 
     case WM_SCRIPT_EXECUTION_COMPLETE:
@@ -4070,6 +4107,7 @@ void Application::ImportScriptFiles(const std::vector<std::wstring>& filePaths) 
 }
 
 void Application::ExecuteSelectedScript() {
+    const HWND contextWindow = GetForegroundWindow();
     size_t selectedIndex = 0;
     if (!GetPrimarySelectedScriptIndex(&selectedIndex)) {
         SetStatusText(T(L"app.status.select_script"));
@@ -4079,10 +4117,10 @@ void Application::ExecuteSelectedScript() {
         SetStatusText(T(L"app.status.script_disabled"));
         return;
     }
-    ExecuteScript(m_scripts[selectedIndex], true, false);
+    ExecuteScript(m_scripts[selectedIndex], true, false, contextWindow);
 }
 
-void Application::ExecuteScriptByHotkeyId(int hotkeyId) {
+void Application::ExecuteScriptByHotkeyId(int hotkeyId, HWND contextWindow) {
     const auto it = m_scriptIndexByHotkeyId.find(hotkeyId);
     if (it == m_scriptIndexByHotkeyId.end()) {
         m_scriptExecutionGate.Release(GetTickCount64());
@@ -4096,43 +4134,52 @@ void Application::ExecuteScriptByHotkeyId(int hotkeyId) {
         m_scriptExecutionGate.Release(GetTickCount64());
         return;
     }
-    ExecuteScript(m_scripts[it->second], false, true);
+    ExecuteScript(m_scripts[it->second], false, true, contextWindow);
 }
 
-void Application::ExecuteBuiltinAction(ScriptManifest::Action action) {
+void Application::ExecuteBuiltinAction(ScriptManifest::Action action, HWND contextWindow) {
     if (action != ScriptManifest::Action::CycleKeyboardLayout) {
         return;
     }
 
-    const bool switched = CycleForegroundKeyboardLayout();
+    const bool switched = CycleForegroundKeyboardLayout(contextWindow);
     SetStatusText(T(switched
         ? L"app.status.layout_cycle_success"
         : L"app.status.layout_cycle_unavailable"));
     AppendLog(T(L"app.log.script.builtin_layout_cycle"));
 }
 
-bool Application::CycleForegroundKeyboardLayout() {
-    const HWND foregroundWindow = GetForegroundWindow();
-    if (!foregroundWindow || !IsWindow(foregroundWindow)) {
+bool Application::CycleForegroundKeyboardLayout(HWND contextWindow) {
+    if (!contextWindow || !IsWindow(contextWindow)
+        || GetForegroundWindow() != contextWindow) {
         return false;
     }
 
-    const DWORD threadId = GetWindowThreadProcessId(foregroundWindow, nullptr);
+    const DWORD threadId = GetWindowThreadProcessId(contextWindow, nullptr);
     if (threadId == 0) {
         return false;
     }
 
+    if (!IsWindow(contextWindow) || GetForegroundWindow() != contextWindow) {
+        return false;
+    }
     const HKL currentLayout = GetKeyboardLayout(threadId);
     if (!currentLayout) {
         return false;
     }
 
+    if (!IsWindow(contextWindow) || GetForegroundWindow() != contextWindow) {
+        return false;
+    }
     const int layoutCount = GetKeyboardLayoutList(0, nullptr);
     if (layoutCount < 2) {
         return false;
     }
 
     std::vector<HKL> layouts(static_cast<size_t>(layoutCount));
+    if (!IsWindow(contextWindow) || GetForegroundWindow() != contextWindow) {
+        return false;
+    }
     const int copiedLayoutCount = GetKeyboardLayoutList(layoutCount, layouts.data());
     if (copiedLayoutCount < 2) {
         return false;
@@ -4144,22 +4191,33 @@ bool Application::CycleForegroundKeyboardLayout() {
         return false;
     }
 
+    if (!IsWindow(contextWindow) || GetForegroundWindow() != contextWindow) {
+        return false;
+    }
     return PostMessageW(
-        foregroundWindow,
+        contextWindow,
         WM_INPUTLANGCHANGEREQUEST,
         0,
         reinterpret_cast<LPARAM>(nextLayout)
     ) != FALSE;
 }
 
-void Application::ExecuteScript(const RegisteredScript& script, bool clipboardOnly, bool reservationHeld) {
+void Application::ExecuteScript(
+    const RegisteredScript& script,
+    bool clipboardOnly,
+    bool reservationHeld,
+    HWND contextWindow
+) {
     if (!reservationHeld && !m_scriptExecutionGate.TryReserve(GetTickCount64())) {
         SetStatusText(T(L"app.status.script_already_running"));
         return;
     }
 
     if (script.manifest.action != ScriptManifest::Action::TransformText) {
-        ExecuteBuiltinAction(script.manifest.action);
+        ExecuteBuiltinAction(
+            script.manifest.action,
+            contextWindow
+        );
         m_scriptExecutionGate.Release(GetTickCount64());
         return;
     }

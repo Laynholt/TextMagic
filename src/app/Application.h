@@ -110,10 +110,13 @@ private:
     void ImportScriptFiles(const std::vector<std::wstring>& filePaths);
 
     void ExecuteSelectedScript();
-    void ExecuteScriptByHotkeyId(int hotkeyId);
-    void ExecuteScript(const RegisteredScript& script, bool clipboardOnly, bool reservationHeld = false);
-    void ExecuteBuiltinAction(ScriptManifest::Action action);
-    bool CycleForegroundKeyboardLayout();
+    void ExecuteScriptByHotkeyId(int hotkeyId, HWND contextWindow = nullptr);
+    void ExecuteScript(const RegisteredScript& script,
+                       bool clipboardOnly,
+                       bool reservationHeld = false,
+                       HWND contextWindow = nullptr);
+    void ExecuteBuiltinAction(ScriptManifest::Action action, HWND contextWindow);
+    bool CycleForegroundKeyboardLayout(HWND contextWindow);
 
     bool RegisterInfoWindowClass();
     bool RegisterMessageWindowClass();

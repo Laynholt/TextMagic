@@ -127,5 +127,57 @@ int main() {
                         "Caps Lock cancels the pending modifier gesture");
     }
 
+    {
+        auto resolver = MakeResolver();
+        resolver.OnKeyDown(VK_SHIFT, MOD_SHIFT, 0, 100);
+        CheckNoDispatch(resolver.OnKeyUp(VK_SHIFT, 0, 50, 200),
+                        "a context-mismatched release cancels the old candidate");
+        resolver.OnKeyDown(VK_SHIFT, MOD_SHIFT, 100, 200);
+        resolver.OnKeyUp(VK_SHIFT, 0, 150, 200);
+        Check(resolver.OnTimeout(450, 200).hotkeyId == 1,
+              "a fresh gesture resolves after a context-mismatched release");
+    }
+
+    {
+        ModifierGestureResolver resolver;
+        resolver.SetBindings({
+            {4, ScriptManifest::HotkeyKind::ModifierGesture,
+             MOD_CONTROL | MOD_SHIFT, 0},
+        });
+        resolver.OnKeyDown(VK_CONTROL, MOD_CONTROL, 0, 100);
+        resolver.OnKeyDown(VK_SHIFT, MOD_CONTROL | MOD_SHIFT, 250, 100);
+        resolver.OnKeyUp(VK_SHIFT, MOD_CONTROL, 260, 100);
+        CheckNoDispatch(resolver.OnKeyUp(VK_CONTROL, 0, 301, 100),
+                        "a chord-only gesture uses its first modifier press for hold timing");
+        CheckNoDispatch(resolver.OnTimeout(600, 100),
+                        "an overlong chord-only gesture never dispatches");
+
+        resolver.SetBindings({
+            {4, ScriptManifest::HotkeyKind::ModifierGesture,
+             MOD_CONTROL | MOD_SHIFT, 0},
+        });
+        resolver.OnKeyDown(VK_SHIFT, MOD_SHIFT, 1000, 100);
+        resolver.OnKeyDown(VK_CONTROL, MOD_CONTROL | MOD_SHIFT, 1020, 100);
+        resolver.OnKeyUp(VK_CONTROL, MOD_SHIFT, 1030, 100);
+        const auto completed = resolver.OnKeyUp(VK_SHIFT, 0, 1040, 100);
+        Check(completed.pending && completed.dueTick == 1350,
+              "a reversed chord-only gesture keeps its first-press due tick");
+        Check(resolver.OnTimeout(1350, 100).hotkeyId == 4,
+              "a short reversed chord-only gesture dispatches");
+    }
+
+    {
+        auto resolver = MakeResolver();
+        resolver.OnKeyDown(VK_LSHIFT, MOD_SHIFT, 0, 100);
+        resolver.OnKeyDown(VK_RSHIFT, MOD_SHIFT, 10, 100);
+        CheckNoDispatch(resolver.OnKeyUp(VK_LSHIFT, MOD_SHIFT, 20, 100),
+                        "releasing one Shift side keeps the generic modifier pressed");
+        Check(!resolver.HasPending(), "one held Shift side keeps the candidate active");
+        Check(resolver.OnKeyUp(VK_RSHIFT, 0, 30, 100).pending,
+              "releasing the final Shift side completes the gesture");
+        Check(resolver.OnTimeout(350, 100).hotkeyId == 1,
+              "the side-insensitive Shift gesture resolves once both sides release");
+    }
+
     return 0;
 }

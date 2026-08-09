@@ -64,40 +64,54 @@ public:
             ClearCandidates();
         }
 
-        const Binding* gesture = FindGestureBinding(nextMask);
         m_pressedMask = nextMask;
-        if (!gesture) {
+        const Binding* gesture = FindGestureBinding(nextMask);
+        if (!gesture && !HasGesturePrefix(nextMask)) {
             ClearCandidates();
             return {};
         }
 
         if (!m_candidate.active) {
-            m_candidate = { true, gesture->modifiers, now, context, virtualKey };
-        } else if (gesture->modifiers != m_candidate.modifiers) {
+            m_candidate = {
+                true,
+                gesture ? gesture->modifiers : nextMask,
+                now,
+                context,
+                virtualKey,
+            };
+        } else if (gesture) {
             m_candidate.modifiers = gesture->modifiers;
+        } else {
+            m_candidate.modifiers = nextMask;
         }
         return {};
     }
 
-    Decision OnKeyUp(DWORD virtualKey, UINT /*currentModifiers*/,
+    Decision OnKeyUp(DWORD virtualKey, UINT currentModifiers,
                      ULONGLONG now, std::uintptr_t context) {
         const UINT modifierBit = ModifierMaskForVirtualKey(virtualKey);
         if (modifierBit == 0) {
             return {};
         }
 
+        m_pressedMask = (m_pressedMask & ~modifierBit)
+            | (currentModifiers & ModifierMask);
+
         if ((m_candidate.active || m_completed.active)
             && context != Context()) {
             return Cancel();
         }
 
-        m_pressedMask &= ~modifierBit;
         if (!m_candidate.active || (m_pressedMask & m_candidate.modifiers) != 0) {
             return PendingDecision();
         }
 
         const Candidate completed = m_candidate;
         m_candidate = {};
+        if (!FindGestureBinding(completed.modifiers)) {
+            ClearCandidates();
+            return {};
+        }
         if (now < completed.startedTick || now - completed.startedTick > MaxHoldMs) {
             ClearCandidates();
             return {};
@@ -211,6 +225,17 @@ private:
             }
         }
         return nullptr;
+    }
+
+    bool HasGesturePrefix(UINT modifiers) const noexcept {
+        for (const auto& binding : m_bindings) {
+            if (binding.kind == ScriptManifest::HotkeyKind::ModifierGesture
+                && binding.modifiers != modifiers
+                && (binding.modifiers & modifiers) == modifiers) {
+                return true;
+            }
+        }
+        return false;
     }
 
     const Binding* FindRepeatedBinding(UINT modifiers, DWORD virtualKey) const noexcept {

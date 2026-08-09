@@ -4050,7 +4050,10 @@ void Application::ExecuteScript(const RegisteredScript& script, bool clipboardOn
                 result->inputReady = TextBridgeInputUtils::WaitForInputReady(
                     result->executeOk && result->inputBufferMode,
                     [&]() {
-                        return textBridge.WaitForModifiersRelease(inputTargetWindow);
+                        return textBridge.WaitForModifiersRelease(
+                            inputTargetWindow,
+                            TextBridgeInputUtils::WAIT_INDEFINITELY
+                        );
                     }
                 );
 

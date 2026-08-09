@@ -14,6 +14,19 @@ void Expect(bool condition, const char* message) {
 }
 
 int main() {
+    int modifierWaitPauses = 0;
+    const TextBridgeInputUtils::ModifierWaitOperations modifierWaitOperations{
+        []() { return true; },
+        [&]() { return modifierWaitPauses < 80; },
+        [&]() { ++modifierWaitPauses; }
+    };
+    Expect(TextBridgeInputUtils::WaitForModifiersRelease(
+               TextBridgeInputUtils::WAIT_INDEFINITELY,
+               modifierWaitOperations),
+           "unbounded input replacement wait must survive held modifiers");
+    Expect(modifierWaitPauses == 80,
+           "input replacement must resume when modifiers are released");
+
     std::string completionOrder;
     const bool inputReady = TextBridgeInputUtils::WaitForInputReady(
         true,

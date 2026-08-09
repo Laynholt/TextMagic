@@ -17,25 +17,21 @@ bool IsTargetCurrent(HWND expectedTarget) {
 }
 }
 
-bool TextBridge::WaitForModifiersRelease(HWND expectedTarget) const {
-    for (int attempt = 0; attempt < 60; ++attempt) {
-        if (expectedTarget && !IsTargetCurrent(expectedTarget)) {
-            return false;
-        }
-        const bool controlDown = IsModifierPressed(VK_CONTROL);
-        const bool altDown = IsModifierPressed(VK_MENU);
-        const bool shiftDown = IsModifierPressed(VK_SHIFT);
-        const bool lwinDown = IsModifierPressed(VK_LWIN);
-        const bool rwinDown = IsModifierPressed(VK_RWIN);
-        if (!controlDown && !altDown && !shiftDown && !lwinDown && !rwinDown) {
+bool TextBridge::WaitForModifiersRelease(HWND expectedTarget, int maxAttempts) const {
+    const TextBridgeInputUtils::ModifierWaitOperations operations{
+        [expectedTarget]() {
             return !expectedTarget || IsTargetCurrent(expectedTarget);
-        }
-        Sleep(5);
-        if (expectedTarget && !IsTargetCurrent(expectedTarget)) {
-            return false;
-        }
-    }
-    return false;
+        },
+        []() {
+            return IsModifierPressed(VK_CONTROL)
+                || IsModifierPressed(VK_MENU)
+                || IsModifierPressed(VK_SHIFT)
+                || IsModifierPressed(VK_LWIN)
+                || IsModifierPressed(VK_RWIN);
+        },
+        []() { Sleep(5); }
+    };
+    return TextBridgeInputUtils::WaitForModifiersRelease(maxAttempts, operations);
 }
 
 std::wstring TextBridge::GetSelectedText() const {

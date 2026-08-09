@@ -8,7 +8,7 @@ class TextBridge {
 public:
     std::wstring GetSelectedText() const;
     bool SetSelectedText(const std::wstring& text) const;
-    bool WaitForModifiersRelease(HWND expectedTarget = nullptr) const;
+    bool WaitForModifiersRelease(HWND expectedTarget = nullptr, int maxAttempts = 60) const;
     bool ReplaceText(HWND expectedTarget,
                      const std::wstring& oldText,
                      const std::wstring& replacement) const;

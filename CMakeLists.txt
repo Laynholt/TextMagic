@@ -381,3 +381,14 @@ target_include_directories(TextMagicInfoWindowModelTests PRIVATE
 
 target_compile_features(TextMagicInfoWindowModelTests PRIVATE cxx_std_17)
 add_test(NAME TextMagicInfoWindowModelTests COMMAND TextMagicInfoWindowModelTests)
+
+add_executable(TextMagicInfoWindowLayoutTests
+    tests/InfoWindowLayoutTests.cpp
+)
+
+target_include_directories(TextMagicInfoWindowLayoutTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+)
+
+target_compile_features(TextMagicInfoWindowLayoutTests PRIVATE cxx_std_17)
+add_test(NAME TextMagicInfoWindowLayoutTests COMMAND TextMagicInfoWindowLayoutTests)

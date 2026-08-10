@@ -38,5 +38,29 @@ int main() {
     Check(about.actionButton.y == about.closeButton.y,
           "about buttons share a baseline");
     Check(IsInside(about.closeButton, 620, 440), "about close button stays inside");
+
+    const AboutWindowLayout minimumAbout = CalculateAboutWindowLayout(620, 300);
+    Check(IsInside(minimumAbout.title, 620, 300),
+          "about minimum title stays inside");
+    Check(IsInside(minimumAbout.description, 620, 300),
+          "about minimum description stays inside");
+    Check(IsInside(minimumAbout.identityPanel, 620, 300),
+          "about minimum identity panel stays inside");
+    Check(IsInside(minimumAbout.detailsPanel, 620, 300),
+          "about minimum details panel stays inside");
+    Check(IsInside(minimumAbout.pathValue, 620, 300),
+          "about minimum path value stays inside");
+    Check(IsInside(minimumAbout.hint, 620, 300),
+          "about minimum hint stays inside");
+    Check(IsInside(minimumAbout.actionButton, 620, 300),
+          "about minimum action button stays inside");
+    Check(IsInside(minimumAbout.closeButton, 620, 300),
+          "about minimum close button stays inside");
+    Check(minimumAbout.detailsPanel.y + minimumAbout.detailsPanel.height
+              <= minimumAbout.actionButton.y,
+          "about minimum details stay above footer");
+    Check(minimumAbout.hint.y + minimumAbout.hint.height
+              <= minimumAbout.actionButton.y,
+          "about minimum hint stays above footer");
     return 0;
 }

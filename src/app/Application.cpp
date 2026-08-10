@@ -12,6 +12,8 @@
 #include "ToolTip.h"
 #include "UiRenderer.h"
 #include "InputBuffer.h"
+#include "InfoWindowLayout.h"
+#include "InfoWindowModel.h"
 #include "LogFile.h"
 #include "PowerShellUtils.h"
 #include "PopupMenuNavigation.h"
@@ -90,7 +92,12 @@ enum InfoControlId {
     ID_INFO_BLACKLIST_LIST = 2105,
     ID_INFO_RUNNING_PICKER = 2106,
     ID_INFO_EXE_PICKER = 2107,
-    ID_INFO_REMOVE_BLACKLIST = 2108
+    ID_INFO_REMOVE_BLACKLIST = 2108,
+    ID_INFO_SUBTITLE = 2109,
+    ID_INFO_LOG_LIST = 2110,
+    ID_INFO_EMPTY_LABEL = 2111,
+    ID_INFO_COPY_ALL = 2112,
+    ID_INFO_SELECT_ALL = 2113
 };
 
 enum MessageControlId {
@@ -111,12 +118,18 @@ struct InfoWindowState {
     HWND runningPickerButton = nullptr;
     HWND exePickerButton = nullptr;
     HWND removeButton = nullptr;
+    HWND subtitleLabel = nullptr;
+    HWND logList = nullptr;
+    HWND emptyLabel = nullptr;
+    HWND copyAllButton = nullptr;
     HWND contextMenuTarget = nullptr;
     std::wstring title;
     std::wstring text;
     HBRUSH editBrush = nullptr;
     bool richEdit = false;
     bool logPlaceholderVisible = false;
+    std::vector<std::wstring> logRows;
+    int hoveredLogIndex = -1;
 };
 
 struct MessageWindowState {
@@ -143,6 +156,100 @@ struct MessageWindowState {
     int* resultOut = nullptr;
     HBRUSH editBrush = nullptr;
 };
+
+void InvalidateLogRow(HWND logList, int index) {
+    if (!logList || index < 0) {
+        return;
+    }
+    RECT rowRect = {};
+    if (SendMessageW(logList, LB_GETITEMRECT, index, reinterpret_cast<LPARAM>(&rowRect)) != LB_ERR) {
+        InvalidateRect(logList, &rowRect, FALSE);
+    }
+}
+
+LRESULT CALLBACK LogListSubclassProc(
+    HWND hWnd,
+    UINT message,
+    WPARAM wParam,
+    LPARAM lParam,
+    UINT_PTR,
+    DWORD_PTR refData
+) {
+    auto* state = reinterpret_cast<InfoWindowState*>(refData);
+    switch (message) {
+    case WM_KEYDOWN:
+        if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) {
+            if (wParam == 'A') {
+                SendMessageW(GetParent(hWnd), WM_COMMAND, MAKEWPARAM(ID_INFO_SELECT_ALL, 0), 0);
+                return 0;
+            }
+            if (wParam == 'C') {
+                SendMessageW(GetParent(hWnd), WM_COMMAND, MAKEWPARAM(ID_MENU_CONTEXT_COPY, 0), 0);
+                return 0;
+            }
+        }
+        break;
+
+    case WM_MOUSEMOVE:
+        if (state) {
+            const LRESULT hit = SendMessageW(hWnd, LB_ITEMFROMPOINT, 0, lParam);
+            const int hovered = HIWORD(hit) == 0 ? LOWORD(hit) : -1;
+            if (hovered != state->hoveredLogIndex) {
+                const int previous = state->hoveredLogIndex;
+                state->hoveredLogIndex = hovered;
+                InvalidateLogRow(hWnd, previous);
+                InvalidateLogRow(hWnd, hovered);
+            }
+            TRACKMOUSEEVENT tracking = { sizeof(tracking), TME_LEAVE, hWnd, 0 };
+            TrackMouseEvent(&tracking);
+        }
+        break;
+
+    case WM_MOUSELEAVE:
+        if (state && state->hoveredLogIndex != -1) {
+            const int previous = state->hoveredLogIndex;
+            state->hoveredLogIndex = -1;
+            InvalidateLogRow(hWnd, previous);
+        }
+        break;
+    }
+    return DefSubclassProc(hWnd, message, wParam, lParam);
+}
+
+bool DrawLogListBoxItem(const DRAWITEMSTRUCT* item, const InfoWindowState* state) {
+    if (!item || !state || item->CtlType != ODT_LISTBOX || item->hwndItem != state->logList
+        || item->itemID == static_cast<UINT>(-1)) {
+        return false;
+    }
+
+    const bool selected = (item->itemState & ODS_SELECTED) != 0;
+    const bool focused = (item->itemState & ODS_FOCUS) != 0;
+    const bool hovered = static_cast<int>(item->itemID) == state->hoveredLogIndex;
+    const COLORREF background = selected ? RGB(58, 58, 64)
+        : ((hovered || focused) ? RGB(36, 36, 40) : RGB(24, 24, 26));
+    SetDCBrushColor(item->hDC, background);
+    FillRect(item->hDC, &item->rcItem, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+
+    const LRESULT length = SendMessageW(item->hwndItem, LB_GETTEXTLEN, item->itemID, 0);
+    if (length >= 0) {
+        std::wstring text(static_cast<size_t>(length) + 1, L'\0');
+        SendMessageW(item->hwndItem, LB_GETTEXT, item->itemID, reinterpret_cast<LPARAM>(text.data()));
+        text.resize(static_cast<size_t>(length));
+        RECT textRect = item->rcItem;
+        textRect.left += 9;
+        textRect.right -= 9;
+        const int savedDc = SaveDC(item->hDC);
+        IntersectClipRect(item->hDC, textRect.left, textRect.top, textRect.right, textRect.bottom);
+        HFONT oldFont = static_cast<HFONT>(SelectObject(item->hDC, GetWindowFont(item->hwndItem)));
+        SetBkMode(item->hDC, TRANSPARENT);
+        SetTextColor(item->hDC, selected ? RGB(255, 255, 255) : RGB(235, 235, 235));
+        DrawTextW(item->hDC, text.c_str(), static_cast<int>(text.size()), &textRect,
+            DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+        SelectObject(item->hDC, oldFont);
+        RestoreDC(item->hDC, savedDc);
+    }
+    return true;
+}
 
 int CALLBACK CompareRunningApplicationRows(
     LPARAM leftRow,
@@ -195,8 +302,10 @@ constexpr UINT WM_EXPORT_ZIP_COMPLETE = WM_APP + 6;
 constexpr UINT WM_MODIFIER_HOTKEY = WM_APP + 7;
 constexpr UINT MORE_POPUP_TRACK_TIMER_ID = 0x4D31;
 constexpr UINT TRAY_ICON_ID = 1;
-constexpr int LOGS_MIN_WIDTH = 640;
-constexpr int LOGS_MIN_HEIGHT = 420;
+constexpr int LOGS_MIN_WIDTH = 400;
+constexpr int LOGS_MIN_HEIGHT = 260;
+constexpr int BLACKLIST_MIN_WIDTH = 640;
+constexpr int BLACKLIST_MIN_HEIGHT = 420;
 constexpr int INFO_MIN_WIDTH = 500;
 constexpr int INFO_MIN_HEIGHT = 300;
 constexpr int LIST_CONTENT_PADDING = 6;
@@ -1294,6 +1403,8 @@ const wchar_t* GetMenuItemText(UINT itemId) {
         return T(L"menu.more.about");
     case ID_MENU_CONTEXT_COPY:
         return T(L"menu.copy");
+    case ID_INFO_SELECT_ALL:
+        return T(L"menu.select_all");
     case ID_MENU_CONTEXT_SAVEAS:
         return T(L"menu.save_as");
     case ID_MENU_CONTEXT_CLEAR_LOGS:
@@ -1338,7 +1449,7 @@ bool IsSubmenuHeaderMenuItem(UINT itemId) {
 
 bool IsStyledMenuItem(UINT itemId) {
     return itemId == ID_MENU_MORE_LOGS || itemId == ID_MENU_MORE_ABOUT
-        || itemId == ID_MENU_CONTEXT_COPY || itemId == ID_MENU_CONTEXT_SAVEAS
+        || itemId == ID_MENU_CONTEXT_COPY || itemId == ID_INFO_SELECT_ALL || itemId == ID_MENU_CONTEXT_SAVEAS
         || itemId == ID_MENU_CONTEXT_CLEAR_LOGS
         || itemId == ID_MENU_SCRIPTS_ADD || itemId == ID_MENU_SCRIPTS_IMPORT_ZIP
         || itemId == ID_MENU_SCRIPTS_EXPORT_ZIP || itemId == ID_MENU_SCRIPTS_ENABLE
@@ -1490,7 +1601,11 @@ void DrawStyledMenuItem(const DRAWITEMSTRUCT* dis) {
     DeleteObject(borderPen);
 }
 
-void ShowStyledContextMenu(HWND ownerWindow, POINT screenPoint, bool includeSaveAs, bool includeClearLogs = false) {
+void ShowStyledContextMenu(HWND ownerWindow,
+                           POINT screenPoint,
+                           bool includeSaveAs,
+                           bool includeClearLogs = false,
+                           bool copyEnabled = true) {
     HMENU contextMenu = CreatePopupMenu();
     if (!contextMenu) {
         return;
@@ -1498,7 +1613,11 @@ void ShowStyledContextMenu(HWND ownerWindow, POINT screenPoint, bool includeSave
 
     static HBRUSH s_menuBrush = CreateSolidBrush(RGB(45, 45, 45));
 
-    AppendMenuW(contextMenu, MF_OWNERDRAW, ID_MENU_CONTEXT_COPY, GetMenuItemText(ID_MENU_CONTEXT_COPY));
+    AppendMenuW(contextMenu, MF_OWNERDRAW | (copyEnabled ? 0 : MF_GRAYED),
+        ID_MENU_CONTEXT_COPY, GetMenuItemText(ID_MENU_CONTEXT_COPY));
+    if (includeClearLogs) {
+        AppendMenuW(contextMenu, MF_OWNERDRAW, ID_INFO_SELECT_ALL, GetMenuItemText(ID_INFO_SELECT_ALL));
+    }
     if (includeSaveAs) {
         AppendMenuW(contextMenu, MF_OWNERDRAW, ID_MENU_CONTEXT_SAVEAS, GetMenuItemText(ID_MENU_CONTEXT_SAVEAS));
     }
@@ -4567,8 +4686,8 @@ void Application::CreateOrActivateInfoWindow(InfoWindowKind kind, HWND& targetHa
     GetWindowRect(m_hWnd, &ownerRect);
     const bool isLogsWindow = kind == InfoWindowKind::Logs;
     const bool isApplicationBlacklistWindow = kind == InfoWindowKind::ApplicationBlacklist;
-    const int width = isApplicationBlacklistWindow ? 760 : (isLogsWindow ? 700 : 560);
-    const int height = isApplicationBlacklistWindow ? 520 : (isLogsWindow ? 480 : 360);
+    const int width = isApplicationBlacklistWindow ? 760 : (isLogsWindow ? 900 : 560);
+    const int height = isApplicationBlacklistWindow ? 520 : (isLogsWindow ? 600 : 360);
     const int x = ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2;
     const int y = ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2;
 
@@ -4591,10 +4710,6 @@ void Application::CreateOrActivateInfoWindow(InfoWindowKind kind, HWND& targetHa
     );
 
     if (!infoWindow) {
-        if (state->editBrush) {
-            DeleteObject(state->editBrush);
-        }
-        delete state;
         return;
     }
 
@@ -4631,16 +4746,14 @@ void Application::UpdateInfoWindowText(InfoWindowKind kind, const std::wstring& 
     }
 
     auto* state = reinterpret_cast<InfoWindowState*>(GetWindowLongPtrW(target, GWLP_USERDATA));
-    if (!state || !state->textControl) {
+    if (!state) {
         return;
     }
     if (kind == InfoWindowKind::Logs) {
-        const std::wstring logText = LogFile::Read(m_logPath);
-        state->logPlaceholderVisible = logText.empty();
-        SetWindowTextW(
-            state->textControl,
-            state->logPlaceholderVisible ? T(L"log.is_empty") : logText.c_str()
-        );
+        RefreshLogsWindow();
+        return;
+    }
+    if (!state->textControl) {
         return;
     }
     state->text = text;
@@ -4975,6 +5088,106 @@ void Application::CheckForUpdates() {
     }).detach();
 }
 
+void Application::RefreshLogsWindow() {
+    if (!m_hLogsWindow || !IsWindow(m_hLogsWindow)) {
+        return;
+    }
+    auto* state = reinterpret_cast<InfoWindowState*>(GetWindowLongPtrW(m_hLogsWindow, GWLP_USERDATA));
+    if (!state || !state->logList) {
+        return;
+    }
+
+    state->logRows = SplitLogLines(LogFile::Read(m_logPath));
+    state->hoveredLogIndex = -1;
+    SendMessageW(state->logList, LB_RESETCONTENT, 0, 0);
+    for (const std::wstring& row : state->logRows) {
+        SendMessageW(state->logList, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(row.c_str()));
+    }
+    const bool isEmpty = state->logRows.empty();
+    ShowWindow(state->emptyLabel, isEmpty ? SW_SHOW : SW_HIDE);
+    ShowWindow(state->logList, isEmpty ? SW_HIDE : SW_SHOW);
+    EnableWindow(state->copyAllButton, !isEmpty);
+    UpdateLogScrollbar();
+}
+
+void Application::CopySelectedLogRows() {
+    if (!m_hLogsWindow || !IsWindow(m_hLogsWindow)) {
+        return;
+    }
+    auto* state = reinterpret_cast<InfoWindowState*>(GetWindowLongPtrW(m_hLogsWindow, GWLP_USERDATA));
+    if (!state || !state->logList) {
+        return;
+    }
+    const LRESULT selectedCount = SendMessageW(state->logList, LB_GETSELCOUNT, 0, 0);
+    if (selectedCount <= 0) {
+        return;
+    }
+    std::vector<int> selected(static_cast<size_t>(selectedCount));
+    if (SendMessageW(state->logList, LB_GETSELITEMS, selectedCount,
+            reinterpret_cast<LPARAM>(selected.data())) == LB_ERR) {
+        return;
+    }
+    std::vector<size_t> indices;
+    indices.reserve(selected.size());
+    for (const int index : selected) {
+        if (index >= 0) {
+            indices.push_back(static_cast<size_t>(index));
+        }
+    }
+    const std::wstring text = JoinLogLines(state->logRows, indices);
+    if (!text.empty()) {
+        ClipboardUtils::WriteText(m_hLogsWindow, text);
+    }
+}
+
+void Application::CopyAllLogRows() {
+    if (!m_hLogsWindow || !IsWindow(m_hLogsWindow)) {
+        return;
+    }
+    auto* state = reinterpret_cast<InfoWindowState*>(GetWindowLongPtrW(m_hLogsWindow, GWLP_USERDATA));
+    if (!state) {
+        return;
+    }
+    std::vector<size_t> indices(state->logRows.size());
+    for (size_t index = 0; index < indices.size(); ++index) {
+        indices[index] = index;
+    }
+    const std::wstring text = JoinLogLines(state->logRows, indices);
+    if (!text.empty()) {
+        ClipboardUtils::WriteText(m_hLogsWindow, text);
+    }
+}
+
+void Application::SelectAllLogRows() {
+    if (!m_hLogsWindow || !IsWindow(m_hLogsWindow)) {
+        return;
+    }
+    auto* state = reinterpret_cast<InfoWindowState*>(GetWindowLongPtrW(m_hLogsWindow, GWLP_USERDATA));
+    if (state && state->logList) {
+        SendMessageW(state->logList, LB_SETSEL, TRUE, static_cast<LPARAM>(-1));
+        EnableWindow(state->copyAllButton, !state->logRows.empty());
+    }
+}
+
+void Application::UpdateLogScrollbar() {
+    if (!m_hLogsWindow || !IsWindow(m_hLogsWindow)) {
+        return;
+    }
+    auto* state = reinterpret_cast<InfoWindowState*>(GetWindowLongPtrW(m_hLogsWindow, GWLP_USERDATA));
+    if (!state || !state->logList) {
+        return;
+    }
+    RECT client = {};
+    GetClientRect(state->logList, &client);
+    const LRESULT itemHeight = SendMessageW(state->logList, LB_GETITEMHEIGHT, 0, 0);
+    const bool show = ShouldShowVerticalScrollbar(
+        state->logRows.size(),
+        itemHeight > 0 ? static_cast<int>(itemHeight) : 25,
+        client.bottom - client.top
+    );
+    ShowScrollBar(state->logList, SB_VERT, show);
+}
+
 void Application::AppendLog(const std::wstring& line) {
     SYSTEMTIME st = {};
     GetLocalTime(&st);
@@ -4991,32 +5204,28 @@ void Application::AppendLog(const std::wstring& line) {
     }
     auto* state = reinterpret_cast<InfoWindowState*>(
         GetWindowLongPtrW(m_hLogsWindow, GWLP_USERDATA));
-    if (!state || !state->textControl) {
+    if (!state || !state->logList) {
         return;
     }
+    RECT client = {};
+    GetClientRect(state->logList, &client);
+    const LRESULT itemHeight = SendMessageW(state->logList, LB_GETITEMHEIGHT, 0, 0);
+    const int safeItemHeight = itemHeight > 0 ? static_cast<int>(itemHeight) : 25;
+    const LRESULT existingCount = SendMessageW(state->logList, LB_GETCOUNT, 0, 0);
+    const int topIndex = static_cast<int>(SendMessageW(state->logList, LB_GETTOPINDEX, 0, 0));
+    const int clientHeight = static_cast<int>(client.bottom - client.top);
+    const int visibleItems = (std::max)(1, clientHeight / safeItemHeight);
+    const bool wasAtBottom = existingCount <= 0 || topIndex + visibleItems >= existingCount;
 
-    if (state->logPlaceholderVisible) {
-        SetWindowTextW(state->textControl, persistedLine.c_str());
-        state->logPlaceholderVisible = false;
-    } else {
-        const std::wstring addition = L"\r\n" + persistedLine;
-        SendMessageW(state->textControl, EM_SETSEL, static_cast<WPARAM>(-1), -1);
-        SendMessageW(
-            state->textControl,
-            EM_REPLACESEL,
-            FALSE,
-            reinterpret_cast<LPARAM>(addition.c_str())
-        );
+    state->logRows.push_back(persistedLine);
+    SendMessageW(state->logList, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(persistedLine.c_str()));
+    ShowWindow(state->emptyLabel, SW_HIDE);
+    ShowWindow(state->logList, SW_SHOW);
+    EnableWindow(state->copyAllButton, TRUE);
+    UpdateLogScrollbar();
+    if (wasAtBottom) {
+        SendMessageW(state->logList, LB_SETTOPINDEX, state->logRows.size() - 1, 0);
     }
-    if (!state->richEdit) {
-        RedrawWindow(
-            state->textControl,
-            nullptr,
-            nullptr,
-            RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW
-        );
-    }
-    SendMessageW(state->textControl, EM_SCROLLCARET, 0, 0);
 }
 
 void Application::ClearLogs() {
@@ -5050,10 +5259,10 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
     case WM_GETMINMAXINFO:
         if (state) {
             auto* info = reinterpret_cast<MINMAXINFO*>(lParam);
-            const bool usesLargeMinimum = state->kind == static_cast<int>(Application::InfoWindowKind::Logs)
-                || state->kind == static_cast<int>(Application::InfoWindowKind::ApplicationBlacklist);
-            info->ptMinTrackSize.x = usesLargeMinimum ? LOGS_MIN_WIDTH : INFO_MIN_WIDTH;
-            info->ptMinTrackSize.y = usesLargeMinimum ? LOGS_MIN_HEIGHT : INFO_MIN_HEIGHT;
+            const bool isLogs = state->kind == static_cast<int>(Application::InfoWindowKind::Logs);
+            const bool isBlacklist = state->kind == static_cast<int>(Application::InfoWindowKind::ApplicationBlacklist);
+            info->ptMinTrackSize.x = isLogs ? LOGS_MIN_WIDTH : (isBlacklist ? BLACKLIST_MIN_WIDTH : INFO_MIN_WIDTH);
+            info->ptMinTrackSize.y = isLogs ? LOGS_MIN_HEIGHT : (isBlacklist ? BLACKLIST_MIN_HEIGHT : INFO_MIN_HEIGHT);
             return 0;
         }
         break;
@@ -5068,39 +5277,38 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             );
 
             if (state->kind == static_cast<int>(Application::InfoWindowKind::Logs)) {
-                const std::wstring logText = LogFile::Read(state->owner->m_logPath);
-                state->logPlaceholderVisible = logText.empty();
-                const wchar_t* initialText = state->logPlaceholderVisible ? T(L"log.is_empty") : logText.c_str();
-                const DWORD logStyles = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL
-                    | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_NOHIDESEL;
-
-                if (state->owner->m_msfteditModule) {
-                    state->textControl = CreateWindowExW(
-                        0, MSFTEDIT_CLASS, initialText, logStyles,
-                        0, 0, 100, 100,
-                        hWnd, reinterpret_cast<HMENU>(ID_INFO_TEXT), GetModuleHandleW(nullptr), nullptr
-                    );
-                    if (state->textControl) {
-                        state->richEdit = true;
-                    }
-                }
-                if (!state->textControl) {
-                    state->textControl = CreateWindowExW(
-                        0, L"EDIT", initialText, logStyles,
-                        0, 0, 100, 100,
-                        hWnd, reinterpret_cast<HMENU>(ID_INFO_TEXT), GetModuleHandleW(nullptr), nullptr
-                    );
-                    if (state->textControl) {
-                        SetWindowTheme(state->textControl, L"", L"");
-                    }
-                }
-                SendMessageW(state->textControl, EM_SETLIMITTEXT, 0x7FFFFFFE, 0);
-                SendMessageW(
-                    state->textControl,
-                    EM_SETMARGINS,
-                    EC_LEFTMARGIN | EC_RIGHTMARGIN,
-                    MAKELPARAM(LIST_TEXT_PADDING, LIST_TEXT_PADDING)
+                state->subtitleLabel = CreateWindowExW(
+                    0, L"STATIC", T(L"logs.subtitle"), WS_CHILD | WS_VISIBLE | SS_LEFT,
+                    0, 0, 100, 20, hWnd, reinterpret_cast<HMENU>(ID_INFO_SUBTITLE),
+                    GetModuleHandleW(nullptr), nullptr
                 );
+                const DWORD logStyles = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL
+                    | LBS_EXTENDEDSEL | LBS_OWNERDRAWFIXED | LBS_HASSTRINGS
+                    | LBS_NOINTEGRALHEIGHT | LBS_NOTIFY;
+                state->logList = CreateWindowExW(
+                    0, L"LISTBOX", nullptr, logStyles, 0, 0, 100, 100,
+                    hWnd, reinterpret_cast<HMENU>(ID_INFO_LOG_LIST), GetModuleHandleW(nullptr), nullptr
+                );
+                state->emptyLabel = CreateWindowExW(
+                    0, L"STATIC", T(L"log.is_empty"), WS_CHILD | SS_CENTER | SS_CENTERIMAGE,
+                    0, 0, 100, 100, hWnd, reinterpret_cast<HMENU>(ID_INFO_EMPTY_LABEL),
+                    GetModuleHandleW(nullptr), nullptr
+                );
+                state->copyAllButton = CreateWindowExW(
+                    0, L"BUTTON", T(L"logs.copy_all"), WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+                    0, 0, 140, 34, hWnd, reinterpret_cast<HMENU>(ID_INFO_COPY_ALL),
+                    GetModuleHandleW(nullptr), nullptr
+                );
+                if (!state->titleLabel || !state->subtitleLabel || !state->logList
+                    || !state->emptyLabel || !state->copyAllButton) {
+                    return -1;
+                }
+                SendMessageW(state->logList, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hMonoFont), TRUE);
+                SendMessageW(state->logList, LB_SETITEMHEIGHT, 0, 25);
+                ApplyDarkScrollBar(state->logList);
+                if (!SetWindowSubclass(state->logList, LogListSubclassProc, 1, reinterpret_cast<DWORD_PTR>(state))) {
+                    return -1;
+                }
             } else if (state->kind == static_cast<int>(Application::InfoWindowKind::ApplicationBlacklist)) {
                 state->fullscreenCheckbox = CreateWindowExW(
                     0, L"BUTTON", T(L"application_blacklist.disable_fullscreen"),
@@ -5191,6 +5399,9 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 0, 0, 100, 34,
                 hWnd, reinterpret_cast<HMENU>(ID_INFO_CLOSE), GetModuleHandleW(nullptr), nullptr
             );
+            if (!state->closeButton) {
+                return -1;
+            }
 
             if (state->kind == static_cast<int>(Application::InfoWindowKind::About)) {
                 state->actionButton = CreateWindowExW(
@@ -5228,6 +5439,15 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             if (state->actionButton) {
                 SendMessageW(state->actionButton, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
             }
+            if (state->subtitleLabel) {
+                SendMessageW(state->subtitleLabel, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
+            }
+            if (state->emptyLabel) {
+                SendMessageW(state->emptyLabel, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
+            }
+            if (state->copyAllButton) {
+                SendMessageW(state->copyAllButton, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
+            }
             if (state->fullscreenCheckbox) {
                 SendMessageW(
                     state->fullscreenCheckbox,
@@ -5243,6 +5463,10 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 SendMessageW(state->removeButton, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
                 state->owner->m_hApplicationBlacklistWindow = hWnd;
                 state->owner->RefreshApplicationBlacklistList();
+            }
+            if (isLogs) {
+                state->owner->m_hLogsWindow = hWnd;
+                state->owner->RefreshLogsWindow();
             }
         }
         return 0;
@@ -5261,6 +5485,24 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
 
             const int textTop = m + titleH + 6;
             MoveWindow(state->titleLabel, m, m, w - 2 * m, titleH, TRUE);
+            if (state->kind == static_cast<int>(Application::InfoWindowKind::Logs)) {
+                const LogsWindowLayout layout = CalculateLogsWindowLayout(w, h);
+                MoveWindow(state->titleLabel, layout.title.x, layout.title.y, layout.title.width, layout.title.height, TRUE);
+                MoveWindow(state->subtitleLabel, layout.subtitle.x, layout.subtitle.y,
+                    layout.subtitle.width, layout.subtitle.height, TRUE);
+                constexpr int panelInset = 1;
+                MoveWindow(state->logList, layout.content.x + panelInset, layout.content.y + panelInset,
+                    layout.content.width - 2 * panelInset, layout.content.height - 2 * panelInset, TRUE);
+                MoveWindow(state->emptyLabel, layout.content.x + panelInset, layout.content.y + panelInset,
+                    layout.content.width - 2 * panelInset, layout.content.height - 2 * panelInset, TRUE);
+                MoveWindow(state->copyAllButton, layout.copyAllButton.x, layout.copyAllButton.y,
+                    layout.copyAllButton.width, layout.copyAllButton.height, TRUE);
+                MoveWindow(state->closeButton, layout.closeButton.x, layout.closeButton.y,
+                    layout.closeButton.width, layout.closeButton.height, TRUE);
+                state->owner->UpdateLogScrollbar();
+                InvalidateRect(hWnd, nullptr, FALSE);
+                return 0;
+            }
             if (state->kind == static_cast<int>(Application::InfoWindowKind::ApplicationBlacklist)) {
                 MoveWindow(state->fullscreenCheckbox, m, textTop, w - 2 * m, 28, TRUE);
                 const int listTop = textTop + 36;
@@ -5306,6 +5548,9 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             if (!dis) {
                 break;
             }
+            if (DrawLogListBoxItem(dis, state)) {
+                return TRUE;
+            }
             if (DrawPaddedListBoxItem(dis)) {
                 return TRUE;
             }
@@ -5340,11 +5585,29 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
     case WM_CONTEXTMENU:
         if (state) {
             HWND sourceControl = reinterpret_cast<HWND>(wParam);
+            if (sourceControl == state->logList) {
+                if (lParam != -1) {
+                    POINT clientPoint = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+                    ScreenToClient(sourceControl, &clientPoint);
+                    const LRESULT hit = SendMessageW(sourceControl, LB_ITEMFROMPOINT, 0,
+                        MAKELPARAM(clientPoint.x, clientPoint.y));
+                    const int index = HIWORD(hit) == 0 ? LOWORD(hit) : -1;
+                    if (index >= 0 && SendMessageW(sourceControl, LB_GETSEL, index, 0) == 0) {
+                        SendMessageW(sourceControl, LB_SETSEL, FALSE, static_cast<LPARAM>(-1));
+                        SendMessageW(sourceControl, LB_SETSEL, TRUE, index);
+                    }
+                }
+                state->contextMenuTarget = sourceControl;
+                const POINT point = ResolveContextMenuPoint(sourceControl, lParam);
+                const bool copyEnabled = SendMessageW(sourceControl, LB_GETSELCOUNT, 0, 0) > 0;
+                ShowStyledContextMenu(hWnd, point, true, true, copyEnabled);
+                return 0;
+            }
             if (sourceControl == state->textControl) {
                 state->contextMenuTarget = sourceControl;
                 const POINT point = ResolveContextMenuPoint(sourceControl, lParam);
                 const bool isLogs = state->kind == static_cast<int>(Application::InfoWindowKind::Logs);
-                ShowStyledContextMenu(hWnd, point, isLogs, isLogs);
+                ShowStyledContextMenu(hWnd, point, isLogs, isLogs, true);
                 return 0;
             }
         }
@@ -5362,6 +5625,16 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             UiRenderer::DrawBackground(hdc, r);
             RECT card = { 8, 8, r.right - 8, r.bottom - 8 };
             UiRenderer::DrawCard(hdc, card);
+            if (state && state->kind == static_cast<int>(Application::InfoWindowKind::Logs)) {
+                const LogsWindowLayout layout = CalculateLogsWindowLayout(r.right - r.left, r.bottom - r.top);
+                const RECT content = {
+                    layout.content.x,
+                    layout.content.y,
+                    layout.content.x + layout.content.width,
+                    layout.content.y + layout.content.height,
+                };
+                UiRenderer::DrawRoundedPanel(hdc, content, RGB(24, 24, 26), RGB(52, 52, 56));
+            }
             EndPaint(hWnd, &ps);
         }
         return 0;
@@ -5374,6 +5647,11 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             if (control == state->titleLabel) {
                 SetTextColor(hdc, RGB(255, 255, 255));
                 return reinterpret_cast<INT_PTR>(state->owner->m_hCardBrush);
+            }
+            if (control == state->emptyLabel) {
+                SetTextColor(hdc, RGB(230, 230, 230));
+                SetDCBrushColor(hdc, RGB(24, 24, 26));
+                return reinterpret_cast<INT_PTR>(GetStockObject(DC_BRUSH));
             }
             SetTextColor(hdc, RGB(230, 230, 230));
             return reinterpret_cast<INT_PTR>(state->owner->m_hCardBrush);
@@ -5399,6 +5677,13 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
         break;
 
     case WM_CTLCOLORLISTBOX:
+        if (state && reinterpret_cast<HWND>(lParam) == state->logList) {
+            HDC hdc = reinterpret_cast<HDC>(wParam);
+            SetBkColor(hdc, RGB(24, 24, 26));
+            SetTextColor(hdc, RGB(235, 235, 235));
+            SetDCBrushColor(hdc, RGB(24, 24, 26));
+            return reinterpret_cast<INT_PTR>(GetStockObject(DC_BRUSH));
+        }
         break;
 
     case WM_NOTIFY:
@@ -5440,14 +5725,24 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             const UINT id = LOWORD(wParam);
             const UINT notifyCode = HIWORD(wParam);
             if (id == ID_MENU_CONTEXT_COPY) {
-                if (state->contextMenuTarget == state->textControl) {
+                if (state->kind == static_cast<int>(Application::InfoWindowKind::Logs) && state->owner) {
+                    state->owner->CopySelectedLogRows();
+                } else if (state->contextMenuTarget == state->textControl) {
                     CopyEditSelectionOrAll(state->textControl);
                 }
                 return 0;
             }
+            if (id == ID_INFO_SELECT_ALL && state->owner) {
+                state->owner->SelectAllLogRows();
+                return 0;
+            }
+            if (id == ID_INFO_COPY_ALL && state->owner) {
+                state->owner->CopyAllLogRows();
+                return 0;
+            }
             if (id == ID_MENU_CONTEXT_SAVEAS) {
                 const bool isLogs = state->kind == static_cast<int>(Application::InfoWindowKind::Logs);
-                if (isLogs && state->owner && state->contextMenuTarget == state->textControl) {
+                if (isLogs && state->owner && state->contextMenuTarget == state->logList) {
                     std::wstring savedPath;
                     std::wstring saveError;
                     if (SaveTextWithDialog(
@@ -5734,7 +6029,7 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
             if (sourceControl == state->textControl && !state->runningApplicationSelection) {
                 state->contextMenuTarget = sourceControl;
                 const POINT point = ResolveContextMenuPoint(sourceControl, lParam);
-                ShowStyledContextMenu(hWnd, point, false);
+                ShowStyledContextMenu(hWnd, point, false, false, true);
                 return 0;
             }
         }
@@ -5850,6 +6145,7 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
                 DestroyWindow(hWnd);
                 return 0;
             }
+
             if (id == ID_MESSAGE_SECONDARY || id == IDCANCEL) {
                 if (id == ID_MESSAGE_SECONDARY && state->secondaryCopiesText) {
                     ClipboardUtils::WriteText(hWnd, state->text);

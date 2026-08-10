@@ -239,6 +239,41 @@ void UiRenderer::DrawCard(HDC hdc, const RECT& rect, const std::wstring& title) 
     }
 }
 
+void UiRenderer::DrawRoundedPanel(HDC hdc, const RECT& rect, COLORREF background, COLORREF border, int radius) {
+    if (!hdc || rect.right <= rect.left || rect.bottom <= rect.top) {
+        return;
+    }
+
+    Graphics graphics(hdc);
+    graphics.SetSmoothingMode(SmoothingModeHighQuality);
+    graphics.SetPixelOffsetMode(PixelOffsetModeHighQuality);
+
+    const int width = static_cast<int>(rect.right - rect.left);
+    const int height = static_cast<int>(rect.bottom - rect.top);
+    const int safeRadius = (std::max)(0, (std::min)(radius, (std::min)(width, height) / 2));
+    const REAL diameter = static_cast<REAL>(safeRadius * 2);
+    const REAL left = static_cast<REAL>(rect.left) + 0.5f;
+    const REAL top = static_cast<REAL>(rect.top) + 0.5f;
+    const REAL right = static_cast<REAL>(rect.right) - 0.5f;
+    const REAL bottom = static_cast<REAL>(rect.bottom) - 0.5f;
+
+    GraphicsPath path;
+    if (safeRadius == 0) {
+        path.AddRectangle(RectF(left, top, right - left, bottom - top));
+    } else {
+        path.AddArc(left, top, diameter, diameter, 180.0f, 90.0f);
+        path.AddArc(right - diameter, top, diameter, diameter, 270.0f, 90.0f);
+        path.AddArc(right - diameter, bottom - diameter, diameter, diameter, 0.0f, 90.0f);
+        path.AddArc(left, bottom - diameter, diameter, diameter, 90.0f, 90.0f);
+        path.CloseFigure();
+    }
+
+    SolidBrush panelBrush(Color(255, GetRValue(background), GetGValue(background), GetBValue(background)));
+    Pen borderPen(Color(255, GetRValue(border), GetGValue(border), GetBValue(border)), 1.0f);
+    graphics.FillPath(&panelBrush, &path);
+    graphics.DrawPath(&borderPen, &path);
+}
+
 void UiRenderer::DrawEditBorder(HWND parentWindow, HWND editControl, int padding) {
     if (!editControl || !parentWindow) {
         return;

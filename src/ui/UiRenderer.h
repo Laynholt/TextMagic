@@ -18,6 +18,7 @@ public:
     static void DrawCustomCheckbox(HDC hdc, HWND control, const std::wstring& text, bool checked, bool hot, bool pressed, bool enabled, bool focused);
     static void DrawBackground(HDC hdc, const RECT& rect);
     static void DrawCard(HDC hdc, const RECT& rect, const std::wstring& title = L"");
+    static void DrawRoundedPanel(HDC hdc, const RECT& rect, COLORREF background, COLORREF border, int radius = 10);
     static void DrawEditBorder(HWND parentWindow, HWND editControl, int padding = 0);
     static void DrawMenuCheckMark(HDC hdc, const RECT& itemRect, COLORREF color);
     static void DrawMenuChevron(HDC hdc, const RECT& itemRect, COLORREF color);

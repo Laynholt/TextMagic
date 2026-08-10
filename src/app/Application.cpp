@@ -3523,6 +3523,15 @@ void Application::ApplyLocalization() {
         if (state->actionButton) {
             SetWindowTextW(state->actionButton, T(L"info.button.check_updates"));
         }
+        if (state->subtitleLabel) {
+            SetWindowTextW(state->subtitleLabel, T(L"logs.subtitle"));
+        }
+        if (state->emptyLabel) {
+            SetWindowTextW(state->emptyLabel, T(L"log.is_empty"));
+        }
+        if (state->copyAllButton) {
+            SetWindowTextW(state->copyAllButton, T(L"logs.copy_all"));
+        }
         if (state->fullscreenCheckbox) {
             SetWindowTextW(
                 state->fullscreenCheckbox,

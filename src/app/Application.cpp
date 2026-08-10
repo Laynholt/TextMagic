@@ -97,7 +97,16 @@ enum InfoControlId {
     ID_INFO_LOG_LIST = 2110,
     ID_INFO_EMPTY_LABEL = 2111,
     ID_INFO_COPY_ALL = 2112,
-    ID_INFO_SELECT_ALL = 2113
+    ID_INFO_SELECT_ALL = 2113,
+    ID_INFO_ABOUT_DESCRIPTION = 2114,
+    ID_INFO_ABOUT_PRODUCT = 2115,
+    ID_INFO_ABOUT_VERSION_LABEL = 2116,
+    ID_INFO_ABOUT_VERSION_VALUE = 2117,
+    ID_INFO_ABOUT_LOADED_SCRIPTS_LABEL = 2118,
+    ID_INFO_ABOUT_LOADED_SCRIPTS_VALUE = 2119,
+    ID_INFO_ABOUT_DIRECTORY_LABEL = 2120,
+    ID_INFO_ABOUT_DIRECTORY_VALUE = 2121,
+    ID_INFO_ABOUT_UPDATE_HINT = 2122
 };
 
 enum MessageControlId {
@@ -122,6 +131,15 @@ struct InfoWindowState {
     HWND logList = nullptr;
     HWND emptyLabel = nullptr;
     HWND copyAllButton = nullptr;
+    HWND descriptionLabel = nullptr;
+    HWND productLabel = nullptr;
+    HWND versionLabel = nullptr;
+    HWND versionValue = nullptr;
+    HWND loadedScriptsLabel = nullptr;
+    HWND loadedScriptsValue = nullptr;
+    HWND directoryLabel = nullptr;
+    HWND directoryValue = nullptr;
+    HWND updateHintLabel = nullptr;
     HWND contextMenuTarget = nullptr;
     std::wstring title;
     std::wstring text;
@@ -308,6 +326,8 @@ constexpr int BLACKLIST_MIN_WIDTH = 640;
 constexpr int BLACKLIST_MIN_HEIGHT = 420;
 constexpr int INFO_MIN_WIDTH = 500;
 constexpr int INFO_MIN_HEIGHT = 300;
+constexpr int ABOUT_MIN_WIDTH = 620;
+constexpr int ABOUT_MIN_HEIGHT = 440;
 constexpr int LIST_CONTENT_PADDING = 6;
 constexpr int LIST_ITEM_HEIGHT = 24;
 constexpr int LIST_TEXT_PADDING = 9;
@@ -3559,9 +3579,7 @@ void Application::ApplyLocalization() {
     localizeInfoWindow(m_hAboutWindow, InfoWindowKind::About);
     localizeInfoWindow(m_hLogsWindow, InfoWindowKind::Logs);
     localizeInfoWindow(m_hApplicationBlacklistWindow, InfoWindowKind::ApplicationBlacklist);
-    if (m_hAboutWindow && IsWindow(m_hAboutWindow)) {
-        UpdateInfoWindowText(InfoWindowKind::About, BuildAboutText());
-    }
+    RefreshAboutWindow();
     if (m_hLogsWindow && IsWindow(m_hLogsWindow)) {
         UpdateInfoWindowText(InfoWindowKind::Logs, L"");
     }
@@ -3745,6 +3763,7 @@ void Application::ReloadScripts(bool announceResult) {
 
     RegisterHotkeys();
     RefreshScriptList();
+    RefreshAboutWindow();
 
     if (!loadResult.warning.empty()) {
         AppendLog(std::wstring(T(L"app.log.scripts.warning_prefix")) + loadResult.warning);
@@ -4647,7 +4666,7 @@ void Application::ShowAboutWindow() {
         InfoWindowKind::About,
         m_hAboutWindow,
         GetInfoWindowTitleByKind(static_cast<int>(InfoWindowKind::About)),
-        BuildAboutText()
+        L""
     );
 }
 
@@ -4671,7 +4690,9 @@ void Application::ShowApplicationBlacklistWindow() {
 
 void Application::CreateOrActivateInfoWindow(InfoWindowKind kind, HWND& targetHandle, const wchar_t* title, const std::wstring& bodyText) {
     if (targetHandle && IsWindow(targetHandle)) {
-        if (kind != InfoWindowKind::Logs) {
+        if (kind == InfoWindowKind::About) {
+            RefreshAboutWindow();
+        } else if (kind != InfoWindowKind::Logs) {
             UpdateInfoWindowText(kind, bodyText);
         }
         ShowWindow(targetHandle, SW_SHOWNORMAL);
@@ -4689,22 +4710,27 @@ void Application::CreateOrActivateInfoWindow(InfoWindowKind kind, HWND& targetHa
     if (kind != InfoWindowKind::Logs) {
         state->text = bodyText;
     }
-    state->editBrush = CreateSolidBrush(RGB(45, 45, 45));
+    state->editBrush = CreateSolidBrush(kind == InfoWindowKind::About ? RGB(24, 24, 26) : RGB(45, 45, 45));
 
     RECT ownerRect = {};
     GetWindowRect(m_hWnd, &ownerRect);
     const bool isLogsWindow = kind == InfoWindowKind::Logs;
     const bool isApplicationBlacklistWindow = kind == InfoWindowKind::ApplicationBlacklist;
-    const int width = isApplicationBlacklistWindow ? 760 : (isLogsWindow ? 900 : 560);
-    const int height = isApplicationBlacklistWindow ? 520 : (isLogsWindow ? 600 : 360);
-    const int x = ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2;
-    const int y = ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2;
-
     const DWORD infoStyle = isLogsWindow
         ? WS_OVERLAPPEDWINDOW
         : (isApplicationBlacklistWindow
             ? WS_OVERLAPPEDWINDOW
             : (WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX));
+    int width = isApplicationBlacklistWindow ? 760 : (isLogsWindow ? 900 : 560);
+    int height = isApplicationBlacklistWindow ? 520 : (isLogsWindow ? 600 : 360);
+    if (kind == InfoWindowKind::About) {
+        RECT aboutClient = { 0, 0, 620, 440 };
+        AdjustWindowRectEx(&aboutClient, infoStyle, FALSE, 0);
+        width = aboutClient.right - aboutClient.left;
+        height = aboutClient.bottom - aboutClient.top;
+    }
+    const int x = ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2;
+    const int y = ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2;
 
     HWND infoWindow = CreateWindowExW(
         0,
@@ -5245,13 +5271,33 @@ void Application::ClearLogs() {
     SetStatusText(T(L"status.logs_cleared"));
 }
 
-std::wstring Application::BuildAboutText() const {
-    std::wostringstream stream;
-    stream << WINDOW_TITLE << L" " << APP_VERSION << L"\r\n\r\n";
-    stream << T(L"about.loaded_scripts_prefix") << m_scripts.size() << L"\r\n";
-    stream << T(L"about.scripts_directory_prefix") << m_scriptsDirectory << L"\r\n\r\n";
-    stream << T(L"about.check_updates_hint");
-    return stream.str();
+void Application::RefreshAboutWindow() {
+    if (!m_hAboutWindow || !IsWindow(m_hAboutWindow)) {
+        return;
+    }
+
+    auto* state = reinterpret_cast<InfoWindowState*>(
+        GetWindowLongPtrW(m_hAboutWindow, GWLP_USERDATA)
+    );
+    if (!state) {
+        return;
+    }
+
+    SetWindowTextW(m_hAboutWindow, GetInfoWindowTitleByKind(static_cast<int>(InfoWindowKind::About)));
+    state->title = GetInfoWindowTitleByKind(static_cast<int>(InfoWindowKind::About));
+    SetWindowTextW(state->titleLabel, state->title.c_str());
+    SetWindowTextW(state->descriptionLabel, T(L"about.description"));
+    SetWindowTextW(state->productLabel, T(L"about.product"));
+    SetWindowTextW(state->versionLabel, T(L"about.version_label"));
+    SetWindowTextW(state->versionValue, APP_VERSION);
+    SetWindowTextW(state->loadedScriptsLabel, T(L"about.loaded_scripts_label"));
+    SetWindowTextW(state->loadedScriptsValue, std::to_wstring(m_scripts.size()).c_str());
+    SetWindowTextW(state->directoryLabel, T(L"about.scripts_directory_label"));
+    SetWindowTextW(state->directoryValue, m_scriptsDirectory.c_str());
+    SetWindowTextW(state->updateHintLabel, T(L"about.check_updates_hint"));
+    SetWindowTextW(state->actionButton, T(L"info.button.check_updates"));
+    SetWindowTextW(state->closeButton, T(L"info.button.close"));
+    InvalidateRect(m_hAboutWindow, nullptr, FALSE);
 }
 
 LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -5270,8 +5316,11 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             auto* info = reinterpret_cast<MINMAXINFO*>(lParam);
             const bool isLogs = state->kind == static_cast<int>(Application::InfoWindowKind::Logs);
             const bool isBlacklist = state->kind == static_cast<int>(Application::InfoWindowKind::ApplicationBlacklist);
-            info->ptMinTrackSize.x = isLogs ? LOGS_MIN_WIDTH : (isBlacklist ? BLACKLIST_MIN_WIDTH : INFO_MIN_WIDTH);
-            info->ptMinTrackSize.y = isLogs ? LOGS_MIN_HEIGHT : (isBlacklist ? BLACKLIST_MIN_HEIGHT : INFO_MIN_HEIGHT);
+            const bool isAbout = state->kind == static_cast<int>(Application::InfoWindowKind::About);
+            info->ptMinTrackSize.x = isLogs ? LOGS_MIN_WIDTH
+                : (isBlacklist ? BLACKLIST_MIN_WIDTH : (isAbout ? ABOUT_MIN_WIDTH : INFO_MIN_WIDTH));
+            info->ptMinTrackSize.y = isLogs ? LOGS_MIN_HEIGHT
+                : (isBlacklist ? BLACKLIST_MIN_HEIGHT : (isAbout ? ABOUT_MIN_HEIGHT : INFO_MIN_HEIGHT));
             return 0;
         }
         break;
@@ -5390,13 +5439,65 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                     hWnd, reinterpret_cast<HMENU>(ID_INFO_REMOVE_BLACKLIST), GetModuleHandleW(nullptr), nullptr
                 );
                 EnableWindow(state->removeButton, FALSE);
-            } else {
-                state->textControl = CreateWindowExW(
-                    0, L"EDIT", state->text.c_str(),
-                    WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY,
-                    0, 0, 100, 100,
-                    hWnd, reinterpret_cast<HMENU>(ID_INFO_TEXT), GetModuleHandleW(nullptr), nullptr
+            } else if (state->kind == static_cast<int>(Application::InfoWindowKind::About)) {
+                state->descriptionLabel = CreateWindowExW(
+                    0, L"STATIC", T(L"about.description"), WS_CHILD | WS_VISIBLE | SS_LEFT,
+                    0, 0, 100, 40, hWnd, reinterpret_cast<HMENU>(ID_INFO_ABOUT_DESCRIPTION),
+                    GetModuleHandleW(nullptr), nullptr
                 );
+                state->productLabel = CreateWindowExW(
+                    0, L"STATIC", T(L"about.product"), WS_CHILD | WS_VISIBLE | SS_LEFT,
+                    0, 0, 100, 28, hWnd, reinterpret_cast<HMENU>(ID_INFO_ABOUT_PRODUCT),
+                    GetModuleHandleW(nullptr), nullptr
+                );
+                state->versionLabel = CreateWindowExW(
+                    0, L"STATIC", T(L"about.version_label"), WS_CHILD | WS_VISIBLE | SS_RIGHT,
+                    0, 0, 100, 20, hWnd, reinterpret_cast<HMENU>(ID_INFO_ABOUT_VERSION_LABEL),
+                    GetModuleHandleW(nullptr), nullptr
+                );
+                state->versionValue = CreateWindowExW(
+                    0, L"STATIC", APP_VERSION, WS_CHILD | WS_VISIBLE | SS_LEFT,
+                    0, 0, 100, 20, hWnd, reinterpret_cast<HMENU>(ID_INFO_ABOUT_VERSION_VALUE),
+                    GetModuleHandleW(nullptr), nullptr
+                );
+                state->loadedScriptsLabel = CreateWindowExW(
+                    0, L"STATIC", T(L"about.loaded_scripts_label"), WS_CHILD | WS_VISIBLE | SS_LEFT,
+                    0, 0, 100, 20, hWnd, reinterpret_cast<HMENU>(ID_INFO_ABOUT_LOADED_SCRIPTS_LABEL),
+                    GetModuleHandleW(nullptr), nullptr
+                );
+                state->loadedScriptsValue = CreateWindowExW(
+                    0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_RIGHT,
+                    0, 0, 100, 20, hWnd, reinterpret_cast<HMENU>(ID_INFO_ABOUT_LOADED_SCRIPTS_VALUE),
+                    GetModuleHandleW(nullptr), nullptr
+                );
+                state->directoryLabel = CreateWindowExW(
+                    0, L"STATIC", T(L"about.scripts_directory_label"), WS_CHILD | WS_VISIBLE | SS_LEFT | SS_CENTERIMAGE,
+                    0, 0, 100, 40, hWnd, reinterpret_cast<HMENU>(ID_INFO_ABOUT_DIRECTORY_LABEL),
+                    GetModuleHandleW(nullptr), nullptr
+                );
+                state->directoryValue = CreateWindowExW(
+                    0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_READONLY,
+                    0, 0, 100, 40, hWnd, reinterpret_cast<HMENU>(ID_INFO_ABOUT_DIRECTORY_VALUE),
+                    GetModuleHandleW(nullptr), nullptr
+                );
+                state->updateHintLabel = CreateWindowExW(
+                    0, L"STATIC", T(L"about.check_updates_hint"), WS_CHILD | WS_VISIBLE | SS_LEFT,
+                    0, 0, 100, 20, hWnd, reinterpret_cast<HMENU>(ID_INFO_ABOUT_UPDATE_HINT),
+                    GetModuleHandleW(nullptr), nullptr
+                );
+                if (!state->titleLabel || !state->descriptionLabel || !state->productLabel
+                    || !state->versionLabel || !state->versionValue || !state->loadedScriptsLabel
+                    || !state->loadedScriptsValue || !state->directoryLabel || !state->directoryValue
+                    || !state->updateHintLabel) {
+                    return -1;
+                }
+                if (!SetWindowSubclass(
+                        state->directoryValue,
+                        CopyOnlyContextSubclassProc,
+                        1,
+                        reinterpret_cast<DWORD_PTR>(hWnd))) {
+                    return -1;
+                }
             }
             if (state->textControl) {
                 SetWindowSubclass(state->textControl, CopyOnlyContextSubclassProc, 1, reinterpret_cast<DWORD_PTR>(hWnd));
@@ -5415,10 +5516,13 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             if (state->kind == static_cast<int>(Application::InfoWindowKind::About)) {
                 state->actionButton = CreateWindowExW(
                     0, L"BUTTON", T(L"info.button.check_updates"),
-                    WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
                     0, 0, 180, 34,
                     hWnd, reinterpret_cast<HMENU>(ID_INFO_ACTION), GetModuleHandleW(nullptr), nullptr
                 );
+                if (!state->actionButton) {
+                    return -1;
+                }
             }
 
             const bool isLogs = state->kind == static_cast<int>(Application::InfoWindowKind::Logs);
@@ -5448,6 +5552,17 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             if (state->actionButton) {
                 SendMessageW(state->actionButton, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
             }
+            if (state->descriptionLabel) {
+                SendMessageW(state->descriptionLabel, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
+                SendMessageW(state->productLabel, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hTitleFont), TRUE);
+                SendMessageW(state->versionLabel, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
+                SendMessageW(state->versionValue, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
+                SendMessageW(state->loadedScriptsLabel, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
+                SendMessageW(state->loadedScriptsValue, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
+                SendMessageW(state->directoryLabel, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
+                SendMessageW(state->directoryValue, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
+                SendMessageW(state->updateHintLabel, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
+            }
             if (state->subtitleLabel) {
                 SendMessageW(state->subtitleLabel, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
             }
@@ -5476,6 +5591,10 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             if (isLogs) {
                 state->owner->m_hLogsWindow = hWnd;
                 state->owner->RefreshLogsWindow();
+            }
+            if (state->kind == static_cast<int>(Application::InfoWindowKind::About)) {
+                state->owner->m_hAboutWindow = hWnd;
+                state->owner->RefreshAboutWindow();
             }
         }
         return 0;
@@ -5509,6 +5628,43 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 MoveWindow(state->closeButton, layout.closeButton.x, layout.closeButton.y,
                     layout.closeButton.width, layout.closeButton.height, TRUE);
                 state->owner->UpdateLogScrollbar();
+                InvalidateRect(hWnd, nullptr, FALSE);
+                return 0;
+            }
+            if (state->kind == static_cast<int>(Application::InfoWindowKind::About)) {
+                const AboutWindowLayout layout = CalculateAboutWindowLayout(w, h);
+                const int panelInset = 14;
+                const int badgeWidth = std::min(180, std::max(120, layout.identityPanel.width / 3));
+                const int badgeX = layout.identityPanel.x + layout.identityPanel.width - panelInset - badgeWidth;
+                const int badgeY = layout.identityPanel.y + 12;
+                const int directoryLabelWidth = std::min(150, std::max(110, layout.pathValue.width / 3));
+                const int directoryValueX = layout.pathValue.x + directoryLabelWidth;
+                const int directoryValueWidth = std::max(0, layout.pathValue.width - directoryLabelWidth);
+                const int loadedScriptsY = layout.pathValue.y + layout.pathValue.height + 18;
+
+                MoveWindow(state->titleLabel, layout.title.x, layout.title.y,
+                    layout.title.width, layout.title.height, TRUE);
+                MoveWindow(state->descriptionLabel, layout.description.x, layout.description.y,
+                    layout.description.width, layout.description.height, TRUE);
+                MoveWindow(state->productLabel, layout.identityPanel.x + panelInset,
+                    layout.identityPanel.y + 10, std::max(0, badgeX - layout.identityPanel.x - 2 * panelInset), 32, TRUE);
+                MoveWindow(state->versionLabel, badgeX + 10, badgeY + 10, 66, 20, TRUE);
+                MoveWindow(state->versionValue, badgeX + 80, badgeY + 10,
+                    std::max(0, badgeWidth - 90), 20, TRUE);
+                MoveWindow(state->directoryLabel, layout.pathValue.x, layout.pathValue.y,
+                    directoryLabelWidth, layout.pathValue.height, TRUE);
+                MoveWindow(state->directoryValue, directoryValueX, layout.pathValue.y,
+                    directoryValueWidth, layout.pathValue.height, TRUE);
+                MoveWindow(state->loadedScriptsLabel, layout.detailsPanel.x + panelInset, loadedScriptsY,
+                    std::max(0, layout.detailsPanel.width - 2 * panelInset - 80), 20, TRUE);
+                MoveWindow(state->loadedScriptsValue,
+                    layout.detailsPanel.x + layout.detailsPanel.width - panelInset - 70, loadedScriptsY, 70, 20, TRUE);
+                MoveWindow(state->updateHintLabel, layout.hint.x, layout.hint.y,
+                    layout.hint.width, layout.hint.height, TRUE);
+                MoveWindow(state->actionButton, layout.actionButton.x, layout.actionButton.y,
+                    layout.actionButton.width, layout.actionButton.height, TRUE);
+                MoveWindow(state->closeButton, layout.closeButton.x, layout.closeButton.y,
+                    layout.closeButton.width, layout.closeButton.height, TRUE);
                 InvalidateRect(hWnd, nullptr, FALSE);
                 return 0;
             }
@@ -5612,7 +5768,7 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 ShowStyledContextMenu(hWnd, point, true, true, copyEnabled);
                 return 0;
             }
-            if (sourceControl == state->textControl) {
+            if (sourceControl == state->textControl || sourceControl == state->directoryValue) {
                 state->contextMenuTarget = sourceControl;
                 const POINT point = ResolveContextMenuPoint(sourceControl, lParam);
                 const bool isLogs = state->kind == static_cast<int>(Application::InfoWindowKind::Logs);
@@ -5643,6 +5799,30 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                     layout.content.y + layout.content.height,
                 };
                 UiRenderer::DrawRoundedPanel(hdc, content, RGB(24, 24, 26), RGB(52, 52, 56));
+            } else if (state && state->kind == static_cast<int>(Application::InfoWindowKind::About)) {
+                const AboutWindowLayout layout = CalculateAboutWindowLayout(r.right - r.left, r.bottom - r.top);
+                const RECT identityPanel = {
+                    layout.identityPanel.x,
+                    layout.identityPanel.y,
+                    layout.identityPanel.x + layout.identityPanel.width,
+                    layout.identityPanel.y + layout.identityPanel.height,
+                };
+                const RECT detailsPanel = {
+                    layout.detailsPanel.x,
+                    layout.detailsPanel.y,
+                    layout.detailsPanel.x + layout.detailsPanel.width,
+                    layout.detailsPanel.y + layout.detailsPanel.height,
+                };
+                const int badgeWidth = std::min(180, std::max(120, layout.identityPanel.width / 3));
+                const RECT versionBadge = {
+                    layout.identityPanel.x + layout.identityPanel.width - 14 - badgeWidth,
+                    layout.identityPanel.y + 12,
+                    layout.identityPanel.x + layout.identityPanel.width - 14,
+                    layout.identityPanel.y + 52,
+                };
+                UiRenderer::DrawRoundedPanel(hdc, identityPanel, RGB(34, 34, 37), RGB(52, 52, 56));
+                UiRenderer::DrawRoundedPanel(hdc, versionBadge, RGB(56, 56, 62), RGB(52, 52, 56), 8);
+                UiRenderer::DrawRoundedPanel(hdc, detailsPanel, RGB(24, 24, 26), RGB(52, 52, 56));
             }
             EndPaint(hWnd, &ps);
         }
@@ -5662,6 +5842,17 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 SetDCBrushColor(hdc, RGB(24, 24, 26));
                 return reinterpret_cast<INT_PTR>(GetStockObject(DC_BRUSH));
             }
+            if (control == state->productLabel || control == state->versionValue
+                || control == state->loadedScriptsValue) {
+                SetTextColor(hdc, RGB(255, 255, 255));
+                return reinterpret_cast<INT_PTR>(state->owner->m_hCardBrush);
+            }
+            if (control == state->descriptionLabel || control == state->versionLabel
+                || control == state->loadedScriptsLabel || control == state->directoryLabel
+                || control == state->updateHintLabel) {
+                SetTextColor(hdc, RGB(170, 170, 175));
+                return reinterpret_cast<INT_PTR>(state->owner->m_hCardBrush);
+            }
             SetTextColor(hdc, RGB(230, 230, 230));
             return reinterpret_cast<INT_PTR>(state->owner->m_hCardBrush);
         }
@@ -5679,7 +5870,8 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
     case WM_CTLCOLOREDIT:
         if (state && state->editBrush) {
             HDC hdc = reinterpret_cast<HDC>(wParam);
-            SetBkColor(hdc, RGB(45, 45, 45));
+            const bool isAboutDirectory = reinterpret_cast<HWND>(lParam) == state->directoryValue;
+            SetBkColor(hdc, isAboutDirectory ? RGB(24, 24, 26) : RGB(45, 45, 45));
             SetTextColor(hdc, RGB(245, 245, 245));
             return reinterpret_cast<INT_PTR>(state->editBrush);
         }
@@ -5736,8 +5928,9 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             if (id == ID_MENU_CONTEXT_COPY) {
                 if (state->kind == static_cast<int>(Application::InfoWindowKind::Logs) && state->owner) {
                     state->owner->CopySelectedLogRows();
-                } else if (state->contextMenuTarget == state->textControl) {
-                    CopyEditSelectionOrAll(state->textControl);
+                } else if (state->contextMenuTarget == state->textControl
+                    || state->contextMenuTarget == state->directoryValue) {
+                    CopyEditSelectionOrAll(state->contextMenuTarget);
                 }
                 return 0;
             }

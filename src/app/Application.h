@@ -144,12 +144,11 @@ private:
     void AppendLog(const std::wstring& line);
     void ClearLogs();
     void RefreshLogsWindow();
+    void RefreshAboutWindow();
     void CopySelectedLogRows();
     void CopyAllLogRows();
     void SelectAllLogRows();
     void UpdateLogScrollbar();
-    std::wstring BuildAboutText() const;
-
     void SetStatusText(const std::wstring& text);
     void OpenScriptsFolder() const;
     std::wstring GetExecutableDirectory() const;

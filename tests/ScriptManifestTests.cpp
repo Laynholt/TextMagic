@@ -92,27 +92,37 @@ int main() {
         std::ofstream manifest(directory / L"UPPERCASE.TMSCRIPT", std::ios::binary);
         manifest << "name=Uppercase\n"
                     "hotkey=Ctrl+Alt+U\n"
-                    "command=cmd.exe\n";
+                    "---\n"
+                    "[Console]::Out.Write([Console]::In.ReadToEnd())\n";
     }
     {
         std::ofstream manifest(directory / L"auto.tmscript", std::ios::binary);
         manifest << "name=Auto\n"
                     "hotkey=Ctrl+Alt+A\n"
-                    "command=cmd.exe\n"
-                    "output_layout=auto\n";
+                    "output_layout=auto\n"
+                    "---\n"
+                    "[Console]::Out.Write([Console]::In.ReadToEnd())\n";
     }
     {
         std::ofstream manifest(directory / L"default.tmscript", std::ios::binary);
         manifest << "name=Default\n"
                     "hotkey=Ctrl+Alt+D\n"
-                    "command=cmd.exe\n";
+                    "---\n"
+                    "[Console]::Out.Write([Console]::In.ReadToEnd())\n";
     }
     {
         std::ofstream manifest(directory / L"invalid.tmscript", std::ios::binary);
         manifest << "name=Invalid\n"
                     "hotkey=Ctrl+Alt+I\n"
-                    "command=cmd.exe\n"
-                    "output_layout=unsupported\n";
+                    "output_layout=unsupported\n"
+                    "---\n"
+                    "[Console]::Out.Write([Console]::In.ReadToEnd())\n";
+    }
+    {
+        std::ofstream manifest(directory / L"legacy-command.tmscript", std::ios::binary);
+        manifest << "name=Legacy command\n"
+                    "hotkey=Ctrl+Alt+C\n"
+                    "command=cmd.exe\n";
     }
     {
         std::ofstream manifest(directory / L"cycle.tmscript", std::ios::binary);
@@ -125,8 +135,7 @@ int main() {
         std::ofstream manifest(directory / L"unknown-action.tmscript", std::ios::binary);
         manifest << "name=Unknown action\n"
                     "hotkey=Shift\n"
-                    "action=unknown\n"
-                    "command=cmd.exe\n";
+                    "action=unknown\n";
     }
 
     const ScriptManifest::LoadResult result =
@@ -139,6 +148,7 @@ int main() {
     const auto defaultEntry = FindByName(result.entries, L"Default");
     const auto invalidEntry = FindByName(result.entries, L"Invalid");
     const auto cycleEntry = FindByName(result.entries, L"Cycle");
+    const auto legacyCommandEntry = FindByName(result.entries, L"Legacy command");
     const auto unknownEntry = FindByName(result.entries, L"Unknown action");
     passed &= Check(autoEntry && autoEntry->autoOutputLayout,
         "output_layout=auto enables automatic output layout");
@@ -154,6 +164,9 @@ int main() {
         "cycle action loads without executable fields");
     passed &= Check(cycleEntry && cycleEntry->hotkeyKind == ScriptManifest::HotkeyKind::ModifierGesture,
         "cycle modifier gesture kind is preserved");
+    passed &= Check(!legacyCommandEntry, "command-only manifest is skipped");
+    passed &= Check(result.warning.find(L"legacy-command.tmscript") != std::wstring::npos,
+        "command-only manifest warning names the skipped file");
     passed &= Check(!unknownEntry, "unknown action manifest is skipped");
     passed &= Check(result.warning.find(L"unknown-action.tmscript") != std::wstring::npos,
         "unknown action warning names the manifest");

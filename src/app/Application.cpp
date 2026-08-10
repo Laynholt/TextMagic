@@ -4253,15 +4253,10 @@ void Application::ExecuteScript(
 
     SetStatusText(std::wstring(T(L"app.status.running_prefix")) + script.manifest.name);
     AppendLog(std::wstring(T(L"app.log.script.start_prefix")) + script.manifest.name + L"\".");
-    if (!script.manifest.scriptBody.empty()) {
-        AppendLog(T(L"app.log.script.launch_mode_inline"));
-    } else {
-        AppendLog(std::wstring(T(L"app.log.script.command_prefix")) + script.manifest.commandLine);
-    }
+    AppendLog(T(L"app.log.script.launch_mode_inline"));
 
     const std::wstring scriptName = script.manifest.name;
     const std::wstring scriptBody = script.manifest.scriptBody;
-    const std::wstring commandLine = script.manifest.commandLine;
     const bool allTextInputMode = m_scriptInputAllText;
     const bool useClipboardOnly = clipboardOnly;
     const bool autoOutputLayout = script.manifest.autoOutputLayout;
@@ -4286,7 +4281,6 @@ void Application::ExecuteScript(
     try {
         std::thread worker([scriptName,
                             scriptBody,
-                            commandLine,
                             allTextInputMode,
                             useClipboardOnly,
                             autoOutputLayout,
@@ -4346,16 +4340,9 @@ void Application::ExecuteScript(
                         result->noTextAvailable = true;
                         result->executeOk = false;
                         result->executionError = noTextAvailableMessage;
-                    } else if (!scriptBody.empty()) {
+                    } else {
                         result->executeOk = scriptRunner.ExecutePowerShellScript(
                             scriptBody,
-                            sourceText,
-                            &result->outputText,
-                            &result->executionError
-                        );
-                    } else {
-                        result->executeOk = scriptRunner.Execute(
-                            commandLine,
                             sourceText,
                             &result->outputText,
                             &result->executionError

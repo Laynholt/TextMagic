@@ -22,7 +22,6 @@ public:
         std::wstring name;
         std::wstring description;
         std::wstring hotkeyText;
-        std::wstring commandLine;
         std::wstring scriptBody;
         std::wstring manifestPath;
         UINT modifiers = 0;

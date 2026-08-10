@@ -57,19 +57,6 @@ std::vector<std::wstring> Split(const std::wstring& text, wchar_t delimiter) {
     return parts;
 }
 
-std::wstring ReplaceAll(std::wstring source, const std::wstring& from, const std::wstring& to) {
-    if (from.empty()) {
-        return source;
-    }
-
-    size_t pos = 0;
-    while ((pos = source.find(from, pos)) != std::wstring::npos) {
-        source.replace(pos, from.size(), to);
-        pos += to.size();
-    }
-    return source;
-}
-
 bool ParseVirtualKey(const std::wstring& token, UINT* virtualKey) {
     if (!virtualKey) {
         return false;
@@ -302,7 +289,6 @@ ScriptManifest::LoadResult ScriptManifest::LoadFromDirectory(const std::wstring&
         manifest.name = fields[L"NAME"];
         manifest.description = fields[L"DESCRIPTION"];
         manifest.hotkeyText = fields[L"HOTKEY"];
-        manifest.commandLine = fields[L"COMMAND"];
         manifest.scriptBody = scriptBody;
         manifest.enabled = ParseEnabledValue(fields[L"ENABLED"], true);
         manifest.autoOutputLayout = ToUpperAscii(Trim(fields[L"OUTPUT_LAYOUT"])) == L"AUTO";
@@ -320,11 +306,10 @@ ScriptManifest::LoadResult ScriptManifest::LoadFromDirectory(const std::wstring&
         }
 
         const bool hasInlineScript = !Trim(manifest.scriptBody).empty();
-        const bool hasCommandLine = !Trim(manifest.commandLine).empty();
 
         if (manifest.name.empty() || manifest.hotkeyText.empty()
             || (manifest.action == ScriptManifest::Action::TransformText
-                && !hasInlineScript && !hasCommandLine)) {
+                && !hasInlineScript)) {
             warnings << T(L"manifest.warning.parse_skip_prefix") << path.filename().wstring()
                      << T(L"manifest.warning.required_fields");
             continue;
@@ -341,9 +326,6 @@ ScriptManifest::LoadResult ScriptManifest::LoadFromDirectory(const std::wstring&
                      << L": " << hotkeyError << L"\n";
             continue;
         }
-
-        const std::wstring scriptDir = path.parent_path().wstring();
-        manifest.commandLine = ReplaceAll(manifest.commandLine, L"%SCRIPT_DIR%", scriptDir);
 
         result.entries.push_back(std::move(manifest));
     }

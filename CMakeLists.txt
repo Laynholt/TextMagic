@@ -370,3 +370,14 @@ target_include_directories(TextMagicModifierGestureResolverTests PRIVATE
 target_compile_features(TextMagicModifierGestureResolverTests PRIVATE cxx_std_17)
 
 add_test(NAME TextMagicModifierGestureResolverTests COMMAND TextMagicModifierGestureResolverTests)
+
+add_executable(TextMagicInfoWindowModelTests
+    tests/InfoWindowModelTests.cpp
+)
+
+target_include_directories(TextMagicInfoWindowModelTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+)
+
+target_compile_features(TextMagicInfoWindowModelTests PRIVATE cxx_std_17)
+add_test(NAME TextMagicInfoWindowModelTests COMMAND TextMagicInfoWindowModelTests)

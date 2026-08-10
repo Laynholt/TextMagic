@@ -21,6 +21,7 @@
 #include <windowsx.h>
 #include <commctrl.h>
 #include <commdlg.h>
+#include <dwmapi.h>
 #include <gdiplus.h>
 #include <objbase.h>
 #include <richedit.h>
@@ -130,6 +131,7 @@ struct MessageWindowState {
     std::wstring primaryButtonText;
     std::wstring secondaryButtonText;
     bool hasSecondaryButton = false;
+    bool secondaryCopiesText = false;
     bool useMonoFont = false;
     bool usesListBox = false;
     bool runningApplicationSelection = false;
@@ -1163,6 +1165,21 @@ void ApplyDarkScrollBar(HWND control, bool applyExplorerTheme = true) {
     RedrawWindow(control, nullptr, nullptr, RDW_INVALIDATE | RDW_FRAME | RDW_UPDATENOW);
 }
 
+void ApplyDarkTitleBar(HWND window) {
+    if (!window) {
+        return;
+    }
+    const BOOL enabled = TRUE;
+    constexpr DWORD kImmersiveDarkMode = 20;
+    constexpr DWORD kImmersiveDarkModeBefore20H1 = 19;
+    if (FAILED(DwmSetWindowAttribute(
+            window, kImmersiveDarkMode, &enabled, sizeof(enabled)))) {
+        DwmSetWindowAttribute(
+            window, kImmersiveDarkModeBefore20H1, &enabled, sizeof(enabled)
+        );
+    }
+}
+
 void LoadLanguageSetting(const std::wstring& settingsPath) {
     wchar_t value[32] = {};
     GetPrivateProfileStringW(
@@ -1823,6 +1840,7 @@ bool Application::Initialize(HINSTANCE hInstance) {
         m_initializationError = T(L"app.error.init.main_window");
         return false;
     }
+    ApplyDarkTitleBar(m_hWnd);
     SetWindowTextW(m_hWnd, WINDOW_TITLE);
     DragAcceptFiles(m_hWnd, TRUE);
     InitializeTrayIcon();
@@ -1846,6 +1864,11 @@ bool Application::Initialize(HINSTANCE hInstance) {
     fs::create_directories(fs::path(m_scriptsDirectory), createDirError);
 
     AppendLog(std::wstring(T(L"app.log.starting_prefix")) + WINDOW_TITLE + L" " + APP_VERSION + L".");
+    std::wstring checksumError;
+    if (!UpdateService::WriteSha256SumsFile(
+            GetExecutablePath(), executableDirectory + L"\\SHA256SUMS.txt", checksumError)) {
+        AppendLog(std::wstring(T(L"app.log.checksum_write_failed_prefix")) + L" " + checksumError);
+    }
     if (!blacklistLoaded) {
         AppendLog(std::wstring(T(L"app.log.blacklist_load_warning_prefix")) + L" " + blacklistLoadError);
     }
@@ -2165,13 +2188,16 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             std::thread([windowHandle, updateService, latestTag, targetPath, tmpPath]() {
                 auto* installResult = new UpdateInstallTaskResult();
                 std::wstring error;
-                if (!updateService.DownloadReleaseExecutable(latestTag, tmpPath, error)) {
+                std::wstring verifiedSha256;
+                if (!updateService.DownloadReleaseExecutable(
+                        latestTag, tmpPath, verifiedSha256, error)) {
                     installResult->success = false;
                     installResult->error = error;
                     PostOwnedMessage(windowHandle, WM_UPDATE_INSTALL_COMPLETE, installResult);
                     return;
                 }
-                if (!updateService.LaunchUpdaterProcess(GetCurrentProcessId(), tmpPath, targetPath, error)) {
+                if (!updateService.LaunchUpdaterProcess(
+                        GetCurrentProcessId(), tmpPath, targetPath, verifiedSha256, error)) {
                     installResult->success = false;
                     installResult->error = error;
                     PostOwnedMessage(windowHandle, WM_UPDATE_INSTALL_COMPLETE, installResult);
@@ -4585,6 +4611,7 @@ void Application::CreateOrActivateInfoWindow(InfoWindowKind kind, HWND& targetHa
         return;
     }
 
+    ApplyDarkTitleBar(infoWindow);
     targetHandle = infoWindow;
     ShowWindow(infoWindow, SW_SHOWNORMAL);
     UpdateWindow(infoWindow);
@@ -4868,7 +4895,8 @@ std::vector<std::wstring> Application::SelectExecutableApplications() {
 int Application::ShowStyledMessageDialog(const wchar_t* title,
                                          const std::wstring& bodyText,
                                          const wchar_t* primaryButtonText,
-                                         const wchar_t* secondaryButtonText) {
+                                         const wchar_t* secondaryButtonText,
+                                         bool secondaryCopiesText) {
     if (!m_hWnd || !IsWindow(m_hWnd)) {
         return IDCANCEL;
     }
@@ -4881,6 +4909,7 @@ int Application::ShowStyledMessageDialog(const wchar_t* title,
     state->primaryButtonText = primaryButtonText ? primaryButtonText : T(L"app.button.ok");
     state->secondaryButtonText = secondaryButtonText ? secondaryButtonText : L"";
     state->hasSecondaryButton = secondaryButtonText != nullptr;
+    state->secondaryCopiesText = secondaryCopiesText;
     state->useMonoFont = state->title.find(L"Ошибка") != std::wstring::npos
         || state->title.find(L"Error") != std::wstring::npos
         || state->text.find(L"stderr:") != std::wstring::npos
@@ -4915,6 +4944,7 @@ int Application::ShowStyledMessageDialog(const wchar_t* title,
         return IDCANCEL;
     }
 
+    ApplyDarkTitleBar(messageWindow);
     EnableWindow(m_hWnd, FALSE);
     ShowWindow(messageWindow, SW_SHOWNORMAL);
     UpdateWindow(messageWindow);
@@ -4936,7 +4966,9 @@ int Application::ShowStyledMessageDialog(const wchar_t* title,
 }
 
 void Application::ShowStyledMessage(const std::wstring& title, const std::wstring& message) {
-    ShowStyledMessageDialog(title.c_str(), message, T(L"app.button.ok"), nullptr);
+    ShowStyledMessageDialog(
+        title.c_str(), message, T(L"app.button.ok"), T(L"menu.copy"), true
+    );
 }
 
 void Application::CheckForUpdates() {
@@ -5826,12 +5858,18 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
                         }
                     }
                 }
-                state->result = state->hasSecondaryButton ? IDYES : IDOK;
+                state->result = state->hasSecondaryButton && !state->secondaryCopiesText
+                    ? IDYES : IDOK;
                 DestroyWindow(hWnd);
                 return 0;
             }
             if (id == ID_MESSAGE_SECONDARY || id == IDCANCEL) {
-                state->result = state->hasSecondaryButton ? IDNO : IDCANCEL;
+                if (id == ID_MESSAGE_SECONDARY && state->secondaryCopiesText) {
+                    ClipboardUtils::WriteText(hWnd, state->text);
+                    return 0;
+                }
+                state->result = state->hasSecondaryButton && !state->secondaryCopiesText
+                    ? IDNO : IDCANCEL;
                 DestroyWindow(hWnd);
                 return 0;
             }
@@ -5840,7 +5878,8 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
 
     case WM_CLOSE:
         if (state) {
-            state->result = state->hasSecondaryButton ? IDNO : IDCANCEL;
+            state->result = state->hasSecondaryButton && !state->secondaryCopiesText
+                ? IDNO : IDCANCEL;
         }
         DestroyWindow(hWnd);
         return 0;

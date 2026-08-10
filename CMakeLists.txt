@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(TextMagic
-    VERSION 0.1.0
+    VERSION 1.0.0
     DESCRIPTION "Global text transformer host for Windows hotkey scripts"
     LANGUAGES CXX RC
 )
@@ -85,6 +85,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
+    bcrypt
     comctl32
     dwmapi
     gdi32
@@ -95,7 +96,6 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     uxtheme
     user32
     winhttp
-    wintrust
 )
 
 if(MSVC)
@@ -310,7 +310,7 @@ target_include_directories(TextMagicUpdateServiceTests PRIVATE
 )
 
 target_compile_features(TextMagicUpdateServiceTests PRIVATE cxx_std_17)
-target_link_libraries(TextMagicUpdateServiceTests PRIVATE crypt32 winhttp wintrust)
+target_link_libraries(TextMagicUpdateServiceTests PRIVATE bcrypt winhttp)
 
 add_test(NAME TextMagicUpdateServiceTests COMMAND TextMagicUpdateServiceTests)
 

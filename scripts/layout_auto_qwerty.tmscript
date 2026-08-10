@@ -1,5 +1,5 @@
 name=Layout Auto QWERTY
-description=Automatically converts text between RU and EN QWERTY layouts
+description=Converts mistyped text between Russian and English QWERTY layouts while preserving letter case
 hotkey=Shift+Shift
 enabled=true
 output_layout=auto

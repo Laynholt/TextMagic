@@ -136,7 +136,8 @@ private:
     int ShowStyledMessageDialog(const wchar_t* title,
                                 const std::wstring& bodyText,
                                 const wchar_t* primaryButtonText,
-                                const wchar_t* secondaryButtonText = nullptr);
+                                const wchar_t* secondaryButtonText = nullptr,
+                                bool secondaryCopiesText = false);
     void ShowStyledMessage(const std::wstring& title, const std::wstring& message);
     void CheckForUpdates();
 

@@ -1,8 +1,8 @@
 # Release Integrity and UI Implementation Plan
 
-**Goal:** Ship stable `0.1.0` with checksum-verified updates, dark native title bars, and copyable message dialogs.
+**Goal:** Ship stable `1.0.0` with checksum-verified updates, dark native title bars, and copyable message dialogs.
 
-**Constraints:** Reuse the existing updater and clipboard helper, add no third-party dependency, and never stage `scripts/sample_lowercase.tmscript`.
+**Constraints:** Reuse the existing updater and clipboard helper, add no third-party dependency, and preserve every script body and hotkey while updating descriptions.
 
 ### Task 1: Checksum tests and implementation
 
@@ -18,8 +18,9 @@
 
 ### Task 3: Verification and publication
 
+- Give every supplied `.tmscript` a concise English `description`.
 - Reconfigure and rebuild the root `build` directory from scratch.
 - Run all CTest tests and `git diff --check`.
 - Launch `TextMagic.exe`, validate its generated checksum file, and close it.
-- Commit intended tracked changes, push `master`, create and push `v0.1.0`.
-- Create the normal GitHub Release `0.1.0` with `TextMagic.exe` and `SHA256SUMS.txt`.
+- Commit intended tracked changes, push `master`, create and push `v1.0.0`.
+- Create the normal GitHub Release `1.0.0` with `TextMagic.exe` and `SHA256SUMS.txt`.

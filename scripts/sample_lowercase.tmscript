@@ -1,10 +1,10 @@
-name=Uppercase
-description=Converts selected or recently typed text to uppercase
-hotkey=Ctrl+Alt+U
+name=Lowercase
+description=Converts selected or recently typed text to lowercase
+hotkey=Ctrl+Alt+L
 enabled=true
 ---
 [Console]::InputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 $inputText = [Console]::In.ReadToEnd()
-[Console]::Out.Write($inputText.ToUpperInvariant())
+[Console]::Out.Write($inputText.ToLowerInvariant())

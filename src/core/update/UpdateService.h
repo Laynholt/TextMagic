@@ -15,15 +15,29 @@ struct UpdateCheckResult {
 class UpdateService {
 public:
     UpdateCheckResult CheckForUpdates(const std::wstring& currentVersion) const;
-    bool DownloadReleaseExecutable(const std::wstring& tag, const std::wstring& destinationPath, std::wstring& errorMessage) const;
+    bool DownloadReleaseExecutable(const std::wstring& tag,
+                                   const std::wstring& destinationPath,
+                                   std::wstring& verifiedSha256,
+                                   std::wstring& errorMessage) const;
     bool LaunchUpdaterProcess(DWORD currentProcessId,
                               const std::wstring& downloadedExePath,
                               const std::wstring& targetExePath,
+                              const std::wstring& expectedSha256,
                               std::wstring& errorMessage) const;
-    static bool VerifyExecutableTrust(const std::wstring& executablePath,
-                                      std::wstring& errorMessage);
+    static bool WriteSha256SumsFile(const std::wstring& filePath,
+                                    const std::wstring& sumsPath,
+                                    std::wstring& errorMessage);
+    static bool VerifySha256SumsFile(const std::wstring& filePath,
+                                     const std::wstring& sumsPath,
+                                     const std::wstring& entryName,
+                                     std::wstring& errorMessage,
+                                     std::wstring* verifiedSha256 = nullptr);
 
 private:
+    bool DownloadReleaseAsset(const std::wstring& tag,
+                              const std::wstring& assetName,
+                              const std::wstring& destinationPath,
+                              std::wstring& errorMessage) const;
     bool ResolveLatestReleaseTag(std::wstring& latestTag, std::wstring& errorMessage) const;
 
     static std::wstring NormalizeVersionFromTag(const std::wstring& rawTag);

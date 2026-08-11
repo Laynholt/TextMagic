@@ -417,6 +417,36 @@ int CalculateMinimumTrackHeight(
         static_cast<int>(requiredClient.bottom - requiredClient.top));
 }
 
+int CalculateMinimumTrackWidth(
+    HWND hWnd,
+    int minimumClientWidth,
+    int fallbackOuterWidth
+) {
+    RECT requiredClient = {
+        0,
+        0,
+        minimumClientWidth,
+        1,
+    };
+    const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(hWnd, GWL_STYLE));
+    const DWORD extendedStyle = static_cast<DWORD>(GetWindowLongPtrW(hWnd, GWL_EXSTYLE));
+    const BOOL hasMenu = GetMenu(hWnd) != nullptr;
+    const UINT dpi = GetDpiForWindow(hWnd);
+    const UINT effectiveDpi = dpi == 0 ? USER_DEFAULT_SCREEN_DPI : dpi;
+    if (!AdjustWindowRectExForDpi(
+            &requiredClient,
+            style,
+            hasMenu,
+            extendedStyle,
+            effectiveDpi)
+        && !AdjustWindowRectEx(&requiredClient, style, hasMenu, extendedStyle)) {
+        return std::max(fallbackOuterWidth, minimumClientWidth);
+    }
+    return std::max(
+        fallbackOuterWidth,
+        static_cast<int>(requiredClient.right - requiredClient.left));
+}
+
 LRESULT CALLBACK DarkHeaderSubclassProc(
     HWND hWnd,
     UINT message,
@@ -5381,7 +5411,11 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             const bool isLogs = state->kind == static_cast<int>(Application::InfoWindowKind::Logs);
             const bool isBlacklist = state->kind == static_cast<int>(Application::InfoWindowKind::ApplicationBlacklist);
             const bool isAbout = state->kind == static_cast<int>(Application::InfoWindowKind::About);
-            info->ptMinTrackSize.x = isLogs ? LOGS_MIN_WIDTH
+            info->ptMinTrackSize.x = isLogs
+                ? CalculateMinimumTrackWidth(
+                    hWnd,
+                    info_window_layout_detail::kLogsMinimumClientWidth,
+                    LOGS_MIN_WIDTH)
                 : (isBlacklist ? BLACKLIST_MIN_WIDTH : (isAbout ? ABOUT_MIN_WIDTH : INFO_MIN_WIDTH));
             info->ptMinTrackSize.y = isLogs
                 ? CalculateMinimumTrackHeight(

@@ -35,6 +35,16 @@ int main() {
           "logs footer follows panel");
     Check(IsInside(logs.closeButton, 900, 600), "logs close button stays inside");
 
+    Check(info_window_layout_detail::kLogsMinimumSubtitleWidth == 392,
+          "logs subtitle minimum width is explicit");
+    Check(info_window_layout_detail::kLogsMinimumClientWidth == 424,
+          "logs client minimum width includes outer insets");
+    const LogsWindowLayout minimumWidthLogs = CalculateLogsWindowLayout(
+        info_window_layout_detail::kLogsMinimumClientWidth, 600);
+    Check(minimumWidthLogs.subtitle.width
+              >= info_window_layout_detail::kLogsMinimumSubtitleWidth,
+          "logs subtitle keeps supporting text width at the minimum outer width");
+
     const int logsMinimumClientHeight = info_window_layout_detail::kLogsMinimumClientHeight;
     const LogsWindowLayout minimumLogs = CalculateLogsWindowLayout(400, logsMinimumClientHeight);
     Check(minimumLogs.content.height == info_window_layout_detail::kLogsContentMinimumHeight,

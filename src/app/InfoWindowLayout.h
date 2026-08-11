@@ -42,6 +42,8 @@ constexpr int kFooterGap = 14;
 constexpr int kButtonGap = 10;
 
 constexpr int kLogsContentMinimumHeight = 80;
+constexpr int kLogsMinimumSubtitleWidth = 392;
+constexpr int kLogsMinimumClientWidth = kLogsMinimumSubtitleWidth + 2 * kOuterInset;
 constexpr int kLogsMinimumClientHeight = kOuterInset
     + kTitleHeight
     + kContentInset

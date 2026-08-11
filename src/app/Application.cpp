@@ -144,6 +144,7 @@ struct InfoWindowState {
     std::wstring title;
     std::wstring text;
     HBRUSH editBrush = nullptr;
+    HFONT supportingFont = nullptr;
     bool richEdit = false;
     bool logPlaceholderVisible = false;
     std::vector<std::wstring> logRows;
@@ -234,6 +235,10 @@ LRESULT CALLBACK LogListSubclassProc(
     return DefSubclassProc(hWnd, message, wParam, lParam);
 }
 
+constexpr COLORREF INFO_LIST_SURFACE = RGB(37, 37, 37);
+constexpr COLORREF INFO_MUTED_TEXT = RGB(170, 170, 175);
+constexpr COLORREF INFO_PANEL_BORDER = RGB(52, 52, 56);
+
 bool DrawLogListBoxItem(const DRAWITEMSTRUCT* item, const InfoWindowState* state) {
     if (!item || !state || item->CtlType != ODT_LISTBOX || item->hwndItem != state->logList
         || item->itemID == static_cast<UINT>(-1)) {
@@ -244,7 +249,7 @@ bool DrawLogListBoxItem(const DRAWITEMSTRUCT* item, const InfoWindowState* state
     const bool focused = (item->itemState & ODS_FOCUS) != 0;
     const bool hovered = static_cast<int>(item->itemID) == state->hoveredLogIndex;
     const COLORREF background = selected ? RGB(58, 58, 64)
-        : ((hovered || focused) ? RGB(36, 36, 40) : RGB(24, 24, 26));
+        : ((hovered || focused) ? RGB(36, 36, 40) : INFO_LIST_SURFACE);
     SetDCBrushColor(item->hDC, background);
     FillRect(item->hDC, &item->rcItem, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
 
@@ -5373,6 +5378,13 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
 
     case WM_CREATE:
         if (state) {
+            state->supportingFont = CreateFontW(
+                -14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+            if (!state->supportingFont) {
+                return -1;
+            }
             state->titleLabel = CreateWindowExW(
                 0, L"STATIC", state->title.c_str(),
                 WS_CHILD | WS_VISIBLE | SS_LEFT,
@@ -5573,7 +5585,7 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
 
             const bool isLogs = state->kind == static_cast<int>(Application::InfoWindowKind::Logs);
             HFONT textFont = isLogs ? state->owner->m_hMonoFont : state->owner->m_hFont;
-            SendMessageW(state->titleLabel, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
+            SendMessageW(state->titleLabel, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hTitleFont), TRUE);
             if (state->textControl) {
                 SendMessageW(state->textControl, WM_SETFONT, reinterpret_cast<WPARAM>(textFont), TRUE);
             }
@@ -5610,7 +5622,7 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 SendMessageW(state->updateHintLabel, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
             }
             if (state->subtitleLabel) {
-                SendMessageW(state->subtitleLabel, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
+                SendMessageW(state->subtitleLabel, WM_SETFONT, reinterpret_cast<WPARAM>(state->supportingFont), TRUE);
             }
             if (state->emptyLabel) {
                 SendMessageW(state->emptyLabel, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
@@ -5847,7 +5859,7 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                     layout.content.x + layout.content.width,
                     layout.content.y + layout.content.height,
                 };
-                UiRenderer::DrawRoundedPanel(hdc, content, RGB(24, 24, 26), RGB(52, 52, 56));
+                UiRenderer::DrawRoundedPanel(hdc, content, INFO_LIST_SURFACE, INFO_PANEL_BORDER);
             } else if (state && state->kind == static_cast<int>(Application::InfoWindowKind::About)) {
                 const AboutWindowLayout layout = CalculateAboutWindowLayout(r.right - r.left, r.bottom - r.top);
                 const RECT identityPanel = {
@@ -5891,10 +5903,13 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 SetTextColor(hdc, RGB(255, 255, 255));
                 return reinterpret_cast<INT_PTR>(state->owner->m_hCardBrush);
             }
+            if (control == state->subtitleLabel) {
+                SetTextColor(hdc, INFO_MUTED_TEXT);
+                return reinterpret_cast<INT_PTR>(state->owner->m_hCardBrush);
+            }
             if (control == state->emptyLabel) {
                 SetTextColor(hdc, RGB(230, 230, 230));
-                SetDCBrushColor(hdc, RGB(24, 24, 26));
-                return reinterpret_cast<INT_PTR>(GetStockObject(DC_BRUSH));
+                return reinterpret_cast<INT_PTR>(state->owner->m_hListBrush);
             }
             if (control == state->productLabel) {
                 SetTextColor(hdc, RGB(255, 255, 255));
@@ -5948,10 +5963,9 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
     case WM_CTLCOLORLISTBOX:
         if (state && reinterpret_cast<HWND>(lParam) == state->logList) {
             HDC hdc = reinterpret_cast<HDC>(wParam);
-            SetBkColor(hdc, RGB(24, 24, 26));
+            SetBkColor(hdc, INFO_LIST_SURFACE);
             SetTextColor(hdc, RGB(235, 235, 235));
-            SetDCBrushColor(hdc, RGB(24, 24, 26));
-            return reinterpret_cast<INT_PTR>(GetStockObject(DC_BRUSH));
+            return reinterpret_cast<INT_PTR>(state->owner->m_hListBrush);
         }
         break;
 
@@ -6085,6 +6099,9 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
         if (state) {
             if (state->editBrush) {
                 DeleteObject(state->editBrush);
+            }
+            if (state->supportingFont) {
+                DeleteObject(state->supportingFont);
             }
             if (state->owner) {
                 state->owner->OnInfoWindowClosed(static_cast<Application::InfoWindowKind>(state->kind));

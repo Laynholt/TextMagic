@@ -20,6 +20,12 @@ bool IsInside(const InfoRect& child, int width, int height) {
 
 int main() {
     const LogsWindowLayout logs = CalculateLogsWindowLayout(900, 600);
+    Check(logs.title.height == 32,
+          "logs title reserves the main-heading height");
+    Check(logs.subtitle.height == 18,
+          "logs subtitle uses the compact supporting height");
+    Check(logs.subtitle.y > logs.title.y + logs.title.height,
+          "logs subtitle follows the enlarged title");
     Check(logs.subtitle.y > logs.title.y + logs.title.height,
           "logs subtitle follows title");
     Check(logs.content.y > logs.subtitle.y + logs.subtitle.height,

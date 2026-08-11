@@ -31,8 +31,8 @@ struct AboutWindowLayout {
 namespace info_window_layout_detail {
 constexpr int kOuterInset = 16;
 constexpr int kContentInset = 14;
-constexpr int kTitleHeight = 28;
-constexpr int kSubtitleHeight = 20;
+constexpr int kTitleHeight = 32;
+constexpr int kSubtitleHeight = 18;
 constexpr int kButtonHeight = 36;
 constexpr int kFooterGap = 14;
 constexpr int kButtonGap = 10;
@@ -52,7 +52,7 @@ constexpr int kAboutDescriptionHeight = 40;
 constexpr int kAboutIdentityHeight = 64;
 constexpr int kAboutDetailsHeight = 132;
 constexpr int kAboutPathHeight = 40;
-constexpr int kAboutCompactGap = 1;
+constexpr int kAboutCompactGap = 0;
 
 inline int NonNegative(int value) {
     return std::max(0, value);

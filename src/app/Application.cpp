@@ -6363,14 +6363,11 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
 
             MoveWindow(state->titleLabel, m, m, w - 2 * m, titleH, TRUE);
             MoveWindow(state->textControl, m, textTop, w - 2 * m, textHeight, TRUE);
-            RECT textRect = {};
-            if (state->textControl && GetClientRect(state->textControl, &textRect)) {
-                ApplyRoundedChildRegion(
-                    state->textControl,
-                    textRect.right - textRect.left,
-                    textRect.bottom - textRect.top,
-                    content_surface_style::kCornerRadius);
-            }
+            ApplyRoundedChildRegion(
+                state->textControl,
+                (std::max)(1, w - 2 * m),
+                (std::max)(1, textHeight),
+                content_surface_style::kCornerRadius);
             if (state->usesListBox && state->textControl && !state->runningApplicationSelection) {
                 FillListBoxWithWrappedText(state->textControl, state->text);
             }

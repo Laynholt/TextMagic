@@ -13,6 +13,7 @@
 #include "UiRenderer.h"
 #include "InputBuffer.h"
 #include "MainWindowLayout.h"
+#include "ContentSurfaceStyle.h"
 #include "InfoWindowLayout.h"
 #include "InfoWindowModel.h"
 #include "LogFile.h"
@@ -2872,14 +2873,23 @@ void Application::OnResize(int width, int height) {
 
     const int listTop = header.listTop;
     const int listHeight = std::max(90, buttonRowY - listTop - 14);
+    const int scriptListX = innerX + LIST_CONTENT_PADDING;
+    const int scriptListY = listTop + LIST_CONTENT_PADDING;
+    const int scriptListWidth = std::max(1, innerWidth - 2 * LIST_CONTENT_PADDING);
+    const int scriptListHeight = std::max(1, listHeight - 2 * LIST_CONTENT_PADDING);
     MoveWindow(
         m_hScriptList,
-        innerX + LIST_CONTENT_PADDING,
-        listTop + LIST_CONTENT_PADDING,
-        std::max(1, innerWidth - 2 * LIST_CONTENT_PADDING),
-        std::max(1, listHeight - 2 * LIST_CONTENT_PADDING),
+        scriptListX,
+        scriptListY,
+        scriptListWidth,
+        scriptListHeight,
         TRUE
     );
+    ApplyRoundedChildRegion(
+        m_hScriptList,
+        scriptListWidth,
+        scriptListHeight,
+        content_surface_style::kCornerRadius);
 
     const int buttonsTotalWidth = buttonCount * buttonWidth + buttonGap * (buttonCount - 1);
     int x = innerX + std::max(0, (innerWidth - buttonsTotalWidth) / 2);
@@ -2903,7 +2913,13 @@ void Application::OnPaint() {
     UiRenderer::DrawBackground(hdc, clientRect);
     UiRenderer::DrawCard(hdc, m_cardRect);
     UiRenderer::DrawCard(hdc, m_statusCardRect);
-    UiRenderer::DrawEditBorder(m_hWnd, m_hScriptList, LIST_CONTENT_PADDING);
+    UiRenderer::DrawRoundedControlFrame(
+        m_hWnd,
+        m_hScriptList,
+        LIST_CONTENT_PADDING,
+        content_surface_style::kListFill,
+        content_surface_style::kListBorder,
+        content_surface_style::kCornerRadius);
     EndPaint(m_hWnd, &ps);
 }
 
@@ -5013,7 +5029,7 @@ std::vector<std::wstring> Application::SelectRunningApplications() {
     state->runningApplicationSelection = true;
     state->runningApplications = std::move(applications);
     state->selectedApplicationPathsOut = &selectedPaths;
-    state->editBrush = CreateSolidBrush(RGB(45, 45, 45));
+    state->editBrush = CreateSolidBrush(content_surface_style::kMessageFill);
 
     RECT ownerRect = {};
     HWND dialogOwner = m_hApplicationBlacklistWindow;
@@ -5160,7 +5176,7 @@ int Application::ShowStyledMessageDialog(const wchar_t* title,
         || state->text.find(L"stderr:") != std::wstring::npos
         || state->text.find(L"stdout:") != std::wstring::npos;
     state->resultOut = &result;
-    state->editBrush = CreateSolidBrush(RGB(45, 45, 45));
+    state->editBrush = CreateSolidBrush(content_surface_style::kMessageFill);
 
     RECT ownerRect = {};
     GetWindowRect(m_hWnd, &ownerRect);
@@ -5810,6 +5826,11 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                     layout.fullscreenCheckbox.width, layout.fullscreenCheckbox.height, TRUE);
                 MoveWindow(state->blacklistList, layout.list.x, layout.list.y,
                     layout.list.width, layout.list.height, TRUE);
+                ApplyRoundedChildRegion(
+                    state->blacklistList,
+                    layout.list.width,
+                    layout.list.height,
+                    content_surface_style::kCornerRadius);
                 MoveWindow(state->runningPickerButton, layout.runningButton.x,
                     layout.runningButton.y, layout.runningButton.width,
                     layout.runningButton.height, TRUE);
@@ -5967,6 +5988,22 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                     ABOUT_CARD_SURFACE, ABOUT_CARD_BORDER);
                 SetDCBrushColor(hdc, ABOUT_CARD_BORDER);
                 FillRect(hdc, &divider, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+            } else if (state && state->kind == static_cast<int>(Application::InfoWindowKind::ApplicationBlacklist)) {
+                const BlacklistWindowLayout layout = CalculateBlacklistWindowLayout(
+                    r.right - r.left,
+                    r.bottom - r.top);
+                const RECT list = {
+                    layout.list.x,
+                    layout.list.y,
+                    layout.list.x + layout.list.width,
+                    layout.list.y + layout.list.height,
+                };
+                UiRenderer::DrawRoundedPanel(
+                    hdc,
+                    list,
+                    content_surface_style::kListFill,
+                    content_surface_style::kListBorder,
+                    content_surface_style::kCornerRadius);
             }
             EndPaint(hWnd, &ps);
         }
@@ -6326,6 +6363,14 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
 
             MoveWindow(state->titleLabel, m, m, w - 2 * m, titleH, TRUE);
             MoveWindow(state->textControl, m, textTop, w - 2 * m, textHeight, TRUE);
+            RECT textRect = {};
+            if (state->textControl && GetClientRect(state->textControl, &textRect)) {
+                ApplyRoundedChildRegion(
+                    state->textControl,
+                    textRect.right - textRect.left,
+                    textRect.bottom - textRect.top,
+                    content_surface_style::kCornerRadius);
+            }
             if (state->usesListBox && state->textControl && !state->runningApplicationSelection) {
                 FillListBoxWithWrappedText(state->textControl, state->text);
             }
@@ -6409,7 +6454,15 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
             UiRenderer::DrawCard(hdc, card);
             EndPaint(hWnd, &ps);
             if (state && state->textControl) {
-                UiRenderer::DrawEditBorder(hWnd, state->textControl);
+                const COLORREF fill = state->runningApplicationSelection
+                    ? content_surface_style::kListFill
+                    : content_surface_style::kMessageFill;
+                const COLORREF border = state->runningApplicationSelection
+                    ? content_surface_style::kListBorder
+                    : content_surface_style::kMessageBorder;
+                UiRenderer::DrawRoundedControlFrame(
+                    hWnd, state->textControl, 0, fill, border,
+                    content_surface_style::kCornerRadius);
             }
         }
         return 0;
@@ -6431,7 +6484,7 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
     case WM_CTLCOLOREDIT:
         if (state && state->editBrush) {
             HDC hdc = reinterpret_cast<HDC>(wParam);
-            SetBkColor(hdc, RGB(45, 45, 45));
+            SetBkColor(hdc, content_surface_style::kMessageFill);
             SetTextColor(hdc, RGB(245, 245, 245));
             return reinterpret_cast<INT_PTR>(state->editBrush);
         }
@@ -6440,9 +6493,9 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
     case WM_CTLCOLORLISTBOX:
         if (state && state->usesListBox) {
             HDC hdc = reinterpret_cast<HDC>(wParam);
-            SetBkColor(hdc, RGB(37, 37, 37));
+            SetBkColor(hdc, content_surface_style::kMessageFill);
             SetTextColor(hdc, RGB(245, 245, 245));
-            return reinterpret_cast<INT_PTR>(state->owner->m_hListBrush);
+            return reinterpret_cast<INT_PTR>(state->editBrush);
         }
         break;
 

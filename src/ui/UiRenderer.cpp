@@ -274,13 +274,20 @@ void UiRenderer::DrawRoundedPanel(HDC hdc, const RECT& rect, COLORREF background
     graphics.DrawPath(&borderPen, &path);
 }
 
-void UiRenderer::DrawEditBorder(HWND parentWindow, HWND editControl, int padding) {
-    if (!editControl || !parentWindow) {
+void UiRenderer::DrawRoundedControlFrame(
+    HWND parentWindow,
+    HWND control,
+    int padding,
+    COLORREF background,
+    COLORREF border,
+    int radius
+) {
+    if (!control || !parentWindow) {
         return;
     }
 
-    RECT rect;
-    GetWindowRect(editControl, &rect);
+    RECT rect = {};
+    GetWindowRect(control, &rect);
     ScreenToClient(parentWindow, reinterpret_cast<LPPOINT>(&rect.left));
     ScreenToClient(parentWindow, reinterpret_cast<LPPOINT>(&rect.right));
     InflateRect(&rect, (std::max)(0, padding), (std::max)(0, padding));
@@ -290,17 +297,7 @@ void UiRenderer::DrawEditBorder(HWND parentWindow, HWND editControl, int padding
         return;
     }
 
-    HPEN hPen = CreatePen(PS_SOLID, 1, RGB(62, 62, 62));
-    HPEN hOldPen = static_cast<HPEN>(SelectObject(hdc, hPen));
-
-    MoveToEx(hdc, rect.left - 1, rect.top - 1, nullptr);
-    LineTo(hdc, rect.right, rect.top - 1);
-    LineTo(hdc, rect.right, rect.bottom);
-    LineTo(hdc, rect.left - 1, rect.bottom);
-    LineTo(hdc, rect.left - 1, rect.top - 1);
-
-    SelectObject(hdc, hOldPen);
-    DeleteObject(hPen);
+    DrawRoundedPanel(hdc, rect, background, border, radius);
     ReleaseDC(parentWindow, hdc);
 }
 

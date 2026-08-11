@@ -1,4 +1,5 @@
 #include "InfoWindowLayout.h"
+#include "../src/app/ContentSurfaceStyle.h"
 #include "../src/app/MainWindowLayout.h"
 
 #include <cstdlib>
@@ -180,5 +181,14 @@ int main() {
     Check(mainHeader.hintY + mainHeader.hintHeight
               <= mainHeader.listTop,
           "main hint does not overlap list");
+
+    Check(content_surface_style::kCornerRadius == 10,
+          "large content surfaces use the Logs radius");
+    Check(content_surface_style::kMessageFill == RGB(42, 42, 44),
+          "message surface uses the approved soft fill");
+    Check(content_surface_style::kMessageBorder == RGB(55, 55, 58),
+          "message surface uses the approved soft border");
+    Check(content_surface_style::kListFill == RGB(37, 37, 37),
+          "existing list fill remains unchanged");
     return 0;
 }

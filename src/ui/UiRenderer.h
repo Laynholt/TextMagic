@@ -19,7 +19,13 @@ public:
     static void DrawBackground(HDC hdc, const RECT& rect);
     static void DrawCard(HDC hdc, const RECT& rect, const std::wstring& title = L"");
     static void DrawRoundedPanel(HDC hdc, const RECT& rect, COLORREF background, COLORREF border, int radius = 10);
-    static void DrawEditBorder(HWND parentWindow, HWND editControl, int padding = 0);
+    static void DrawRoundedControlFrame(
+        HWND parentWindow,
+        HWND control,
+        int padding,
+        COLORREF background,
+        COLORREF border,
+        int radius = 10);
     static void DrawMenuCheckMark(HDC hdc, const RECT& itemRect, COLORREF color);
     static void DrawMenuChevron(HDC hdc, const RECT& itemRect, COLORREF color);
     static void DrawPopupMenu(HDC hdc, const RECT& rect, const std::vector<PopupMenuItem>& items, UINT hoveredItemId);

@@ -20,9 +20,13 @@ struct LogsWindowLayout {
 struct AboutWindowLayout {
     InfoRect title;
     InfoRect description;
-    InfoRect identityPanel;
+    InfoRect versionLine;
     InfoRect detailsPanel;
-    InfoRect pathValue;
+    InfoRect loadedScriptsLabel;
+    InfoRect loadedScriptsValue;
+    InfoRect divider;
+    InfoRect directoryLabel;
+    InfoRect directoryValue;
     InfoRect hint;
     InfoRect actionButton;
     InfoRect closeButton;
@@ -47,12 +51,14 @@ constexpr int kLogsMinimumClientHeight = kOuterInset
     + kFooterGap
     + kOuterInset
     + kButtonHeight;
-constexpr int kAboutPanelMinimumHeight = 110;
+constexpr int kAboutMinimumClientHeight = 400;
 constexpr int kAboutDescriptionHeight = 40;
-constexpr int kAboutIdentityHeight = 64;
-constexpr int kAboutDetailsHeight = 132;
+constexpr int kAboutVersionLineHeight = 20;
+constexpr int kAboutDetailsHeight = 160;
+constexpr int kAboutRowLabelHeight = 18;
+constexpr int kAboutValueHeight = 24;
 constexpr int kAboutPathHeight = 40;
-constexpr int kAboutCompactGap = 0;
+constexpr int kAboutDividerHeight = 1;
 
 inline int NonNegative(int value) {
     return std::max(0, value);
@@ -144,71 +150,69 @@ inline AboutWindowLayout CalculateAboutWindowLayout(int clientWidth, int clientH
         outerWidth,
         info_window_layout_detail::kTitleHeight,
     };
-
-    const int normalDetailsY = title.y + title.height
-        + info_window_layout_detail::kContentInset
-        + info_window_layout_detail::kAboutDescriptionHeight
-        + info_window_layout_detail::kContentInset
-        + info_window_layout_detail::kAboutIdentityHeight
-        + info_window_layout_detail::kContentInset;
-    const int normalDetailsHeight = std::max(
-        info_window_layout_detail::kAboutPanelMinimumHeight,
-        info_window_layout_detail::kAboutDetailsHeight);
-    const int normalHintBottom = normalDetailsY + normalDetailsHeight
-        + info_window_layout_detail::kContentInset
-        + info_window_layout_detail::kSubtitleHeight;
-    const int anchoredFooterY = info_window_layout_detail::FooterY(clientHeight);
-    const bool compact = anchoredFooterY < normalHintBottom;
-    const int sectionGap = compact
-        ? info_window_layout_detail::kAboutCompactGap
-        : info_window_layout_detail::kContentInset;
-    const int footerY = compact
-        ? std::max(
-            info_window_layout_detail::kOuterInset,
-            info_window_layout_detail::NonNegative(clientHeight)
-                - info_window_layout_detail::kButtonHeight)
-        : anchoredFooterY;
-
     const InfoRect description{
         contentX,
-        title.y + title.height + sectionGap,
+        title.y + title.height + info_window_layout_detail::kContentInset,
         contentWidth,
         info_window_layout_detail::kAboutDescriptionHeight,
     };
-    const InfoRect identityPanel{
+    const InfoRect versionLine{
         contentX,
-        description.y + description.height + sectionGap,
+        description.y + description.height + info_window_layout_detail::kContentInset,
         contentWidth,
-        info_window_layout_detail::kAboutIdentityHeight,
+        info_window_layout_detail::kAboutVersionLineHeight,
     };
-    const int detailsY = identityPanel.y + identityPanel.height + sectionGap;
-    const int detailsHeight = compact
-        ? std::max(
-            info_window_layout_detail::kAboutPanelMinimumHeight,
-            std::min(
-                info_window_layout_detail::kAboutDetailsHeight,
-                footerY - detailsY))
-        : normalDetailsHeight;
     const InfoRect detailsPanel{
         contentX,
-        detailsY,
+        versionLine.y + versionLine.height + info_window_layout_detail::kContentInset,
         contentWidth,
-        detailsHeight,
+        info_window_layout_detail::kAboutDetailsHeight,
     };
-    const InfoRect pathValue{
-        detailsPanel.x + info_window_layout_detail::kContentInset,
-        detailsPanel.y + info_window_layout_detail::kContentInset,
-        info_window_layout_detail::NonNegative(
-            detailsPanel.width - 2 * info_window_layout_detail::kContentInset),
+
+    const int detailsInset = info_window_layout_detail::kContentInset;
+    const int detailsX = detailsPanel.x + detailsInset;
+    const int detailsWidth = info_window_layout_detail::NonNegative(
+        detailsPanel.width - 2 * detailsInset);
+    const int rowGap = 4;
+    const int dividerGap = 10;
+    const int loadedScriptsLabelY = detailsPanel.y + detailsInset;
+    const InfoRect loadedScriptsLabel{
+        detailsX,
+        loadedScriptsLabelY,
+        detailsWidth,
+        info_window_layout_detail::kAboutRowLabelHeight,
+    };
+    const InfoRect loadedScriptsValue{
+        detailsX,
+        loadedScriptsLabel.y + loadedScriptsLabel.height + rowGap,
+        detailsWidth,
+        info_window_layout_detail::kAboutValueHeight,
+    };
+    const InfoRect divider{
+        detailsX,
+        loadedScriptsValue.y + loadedScriptsValue.height + dividerGap,
+        detailsWidth,
+        info_window_layout_detail::kAboutDividerHeight,
+    };
+    const InfoRect directoryLabel{
+        detailsX,
+        divider.y + divider.height + dividerGap,
+        detailsWidth,
+        info_window_layout_detail::kAboutRowLabelHeight,
+    };
+    const InfoRect directoryValue{
+        detailsX,
+        directoryLabel.y + directoryLabel.height + rowGap,
+        detailsWidth,
         info_window_layout_detail::kAboutPathHeight,
     };
+    const int effectiveClientHeight = std::max(
+        info_window_layout_detail::NonNegative(clientHeight),
+        info_window_layout_detail::kAboutMinimumClientHeight);
+    const int footerY = info_window_layout_detail::FooterY(effectiveClientHeight);
     const InfoRect hint{
         contentX,
-        compact
-            ? detailsPanel.y + detailsPanel.height
-                - info_window_layout_detail::kSubtitleHeight
-            : detailsPanel.y + detailsPanel.height
-                + info_window_layout_detail::kContentInset,
+        detailsPanel.y + detailsPanel.height + info_window_layout_detail::kContentInset,
         contentWidth,
         info_window_layout_detail::kSubtitleHeight,
     };
@@ -219,16 +223,26 @@ inline AboutWindowLayout CalculateAboutWindowLayout(int clientWidth, int clientH
         - info_window_layout_detail::kOuterInset;
     const InfoRect closeButton = info_window_layout_detail::RightAlignedButton(
         clientWidth, footerY, closeWidth, rightEdge);
-    const int actionRightEdge = closeButton.x - info_window_layout_detail::kButtonGap;
-    const InfoRect actionButton = info_window_layout_detail::RightAlignedButton(
-        clientWidth, footerY, actionWidth, actionRightEdge);
+    const int actionAvailableWidth = info_window_layout_detail::NonNegative(
+        closeButton.x - info_window_layout_detail::kButtonGap
+            - info_window_layout_detail::kOuterInset);
+    const InfoRect actionButton{
+        info_window_layout_detail::kOuterInset,
+        footerY,
+        std::min(actionWidth, actionAvailableWidth),
+        info_window_layout_detail::kButtonHeight,
+    };
 
     return {
         title,
         description,
-        identityPanel,
+        versionLine,
         detailsPanel,
-        pathValue,
+        loadedScriptsLabel,
+        loadedScriptsValue,
+        divider,
+        directoryLabel,
+        directoryValue,
         hint,
         actionButton,
         closeButton,

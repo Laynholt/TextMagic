@@ -32,6 +32,16 @@ struct AboutWindowLayout {
     InfoRect closeButton;
 };
 
+struct BlacklistWindowLayout {
+    InfoRect title;
+    InfoRect fullscreenCheckbox;
+    InfoRect list;
+    InfoRect runningButton;
+    InfoRect exeButton;
+    InfoRect removeButton;
+    InfoRect closeButton;
+};
+
 namespace info_window_layout_detail {
 constexpr int kOuterInset = 16;
 constexpr int kContentInset = 14;
@@ -72,6 +82,26 @@ constexpr int kAboutMinimumClientHeight = kOuterInset
     + kSubtitleHeight
     + kFooterGap
     + kButtonHeight
+    + kOuterInset;
+constexpr int kBlacklistInitialOuterWidth = 760;
+constexpr int kBlacklistInitialOuterHeight = 560;
+constexpr int kBlacklistMinimumOuterWidth = 640;
+constexpr int kBlacklistMinimumOuterHeight = 460;
+constexpr int kBlacklistTitleHeight = 40;
+constexpr int kBlacklistTitleGap = 8;
+constexpr int kBlacklistCheckboxHeight = 28;
+constexpr int kBlacklistListGap = 8;
+constexpr int kBlacklistListMinimumHeight = 100;
+constexpr int kBlacklistFooterGap = 12;
+constexpr int kBlacklistButtonHeight = 34;
+constexpr int kBlacklistMinimumClientHeight = kOuterInset
+    + kBlacklistTitleHeight
+    + kBlacklistTitleGap
+    + kBlacklistCheckboxHeight
+    + kBlacklistListGap
+    + kBlacklistListMinimumHeight
+    + kBlacklistFooterGap
+    + kBlacklistButtonHeight
     + kOuterInset;
 
 inline int NonNegative(int value) {
@@ -261,4 +291,46 @@ inline AboutWindowLayout CalculateAboutWindowLayout(int clientWidth, int clientH
         actionButton,
         closeButton,
     };
+}
+
+inline BlacklistWindowLayout CalculateBlacklistWindowLayout(
+    int clientWidth,
+    int clientHeight
+) {
+    using namespace info_window_layout_detail;
+    const int safeWidth = ClientWidth(clientWidth);
+    const int effectiveHeight = std::max(
+        NonNegative(clientHeight), kBlacklistMinimumClientHeight);
+    const int contentWidth = NonNegative(safeWidth - 2 * kOuterInset);
+
+    const InfoRect title{
+        kOuterInset, kOuterInset, contentWidth, kBlacklistTitleHeight};
+    const InfoRect checkbox{
+        kOuterInset,
+        title.y + title.height + kBlacklistTitleGap,
+        contentWidth,
+        kBlacklistCheckboxHeight};
+    const int listY = checkbox.y + checkbox.height + kBlacklistListGap;
+    const int footerY = effectiveHeight - kOuterInset - kBlacklistButtonHeight;
+    const InfoRect list{
+        kOuterInset,
+        listY,
+        contentWidth,
+        std::max(kBlacklistListMinimumHeight,
+                 footerY - kBlacklistFooterGap - listY)};
+
+    constexpr int runningWidth = 180;
+    constexpr int exeWidth = 130;
+    constexpr int removeWidth = 110;
+    const InfoRect running{kOuterInset, footerY, runningWidth, kBlacklistButtonHeight};
+    const InfoRect exe{
+        running.x + running.width + kButtonGap,
+        footerY, exeWidth, kBlacklistButtonHeight};
+    const InfoRect remove{
+        exe.x + exe.width + kButtonGap,
+        footerY, removeWidth, kBlacklistButtonHeight};
+    const InfoRect close{
+        std::max(kOuterInset, safeWidth - kOuterInset - 130),
+        footerY, std::min(130, contentWidth), kBlacklistButtonHeight};
+    return {title, checkbox, list, running, exe, remove, close};
 }

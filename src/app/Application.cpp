@@ -333,8 +333,6 @@ constexpr UINT TRAY_ICON_ID = 1;
 constexpr int LOGS_MIN_WIDTH = 400;
 constexpr int LOGS_MIN_HEIGHT = 260;
 constexpr int LOGS_PANEL_CORNER_RADIUS = 10;
-constexpr int BLACKLIST_MIN_WIDTH = 640;
-constexpr int BLACKLIST_MIN_HEIGHT = 420;
 constexpr int INFO_MIN_WIDTH = 500;
 constexpr int INFO_MIN_HEIGHT = 300;
 constexpr int ABOUT_MIN_WIDTH = 620;
@@ -4816,8 +4814,12 @@ void Application::CreateOrActivateInfoWindow(InfoWindowKind kind, HWND& targetHa
         : (isApplicationBlacklistWindow
             ? WS_OVERLAPPEDWINDOW
             : (WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX));
-    int width = isApplicationBlacklistWindow ? 760 : (isLogsWindow ? 900 : 560);
-    int height = isApplicationBlacklistWindow ? 520 : (isLogsWindow ? 600 : 360);
+    int width = isApplicationBlacklistWindow
+        ? info_window_layout_detail::kBlacklistInitialOuterWidth
+        : (isLogsWindow ? 900 : 560);
+    int height = isApplicationBlacklistWindow
+        ? info_window_layout_detail::kBlacklistInitialOuterHeight
+        : (isLogsWindow ? 600 : 360);
     if (kind == InfoWindowKind::About) {
         RECT aboutClient = { 0, 0, 620, 440 };
         AdjustWindowRectEx(&aboutClient, infoStyle, FALSE, 0);
@@ -5416,7 +5418,9 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                     hWnd,
                     info_window_layout_detail::kLogsMinimumClientWidth,
                     LOGS_MIN_WIDTH)
-                : (isBlacklist ? BLACKLIST_MIN_WIDTH : (isAbout ? ABOUT_MIN_WIDTH : INFO_MIN_WIDTH));
+                : (isBlacklist
+                    ? info_window_layout_detail::kBlacklistMinimumOuterWidth
+                    : (isAbout ? ABOUT_MIN_WIDTH : INFO_MIN_WIDTH));
             info->ptMinTrackSize.y = isLogs
                 ? CalculateMinimumTrackHeight(
                     hWnd,
@@ -5424,7 +5428,7 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                     info_window_layout_detail::kLogsMinimumClientHeight,
                     LOGS_MIN_HEIGHT)
                 : (isBlacklist
-                    ? BLACKLIST_MIN_HEIGHT
+                    ? info_window_layout_detail::kBlacklistMinimumOuterHeight
                     : (isAbout
                         ? CalculateMinimumTrackHeight(
                             hWnd,
@@ -5785,18 +5789,25 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 return 0;
             }
             if (state->kind == static_cast<int>(Application::InfoWindowKind::ApplicationBlacklist)) {
-                MoveWindow(state->fullscreenCheckbox, m, textTop, w - 2 * m, 28, TRUE);
-                const int listTop = textTop + 36;
-                const int listHeight = std::max(100, h - listTop - m - bh - footerGap);
-                const int y = listTop + listHeight + footerGap;
-                const int runningW = 180;
-                const int exeW = 130;
-                const int removeW = 110;
-                MoveWindow(state->blacklistList, m, listTop, w - 2 * m, listHeight, TRUE);
-                MoveWindow(state->runningPickerButton, m, y, runningW, bh, TRUE);
-                MoveWindow(state->exePickerButton, m + runningW + gap, y, exeW, bh, TRUE);
-                MoveWindow(state->removeButton, m + runningW + gap + exeW + gap, y, removeW, bh, TRUE);
-                MoveWindow(state->closeButton, w - m - closeW, h - m - bh, closeW, bh, TRUE);
+                const BlacklistWindowLayout layout = CalculateBlacklistWindowLayout(w, h);
+                MoveWindow(state->titleLabel, layout.title.x, layout.title.y,
+                    layout.title.width, layout.title.height, TRUE);
+                MoveWindow(state->fullscreenCheckbox,
+                    layout.fullscreenCheckbox.x, layout.fullscreenCheckbox.y,
+                    layout.fullscreenCheckbox.width, layout.fullscreenCheckbox.height, TRUE);
+                MoveWindow(state->blacklistList, layout.list.x, layout.list.y,
+                    layout.list.width, layout.list.height, TRUE);
+                MoveWindow(state->runningPickerButton, layout.runningButton.x,
+                    layout.runningButton.y, layout.runningButton.width,
+                    layout.runningButton.height, TRUE);
+                MoveWindow(state->exePickerButton, layout.exeButton.x,
+                    layout.exeButton.y, layout.exeButton.width, layout.exeButton.height, TRUE);
+                MoveWindow(state->removeButton, layout.removeButton.x,
+                    layout.removeButton.y, layout.removeButton.width,
+                    layout.removeButton.height, TRUE);
+                MoveWindow(state->closeButton, layout.closeButton.x,
+                    layout.closeButton.y, layout.closeButton.width,
+                    layout.closeButton.height, TRUE);
                 ListView_SetColumnWidth(state->blacklistList, 0, 190);
                 ListView_SetColumnWidth(state->blacklistList, 1, std::max(240, w - 2 * m - 194));
                 return 0;

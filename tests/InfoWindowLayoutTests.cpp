@@ -132,6 +132,36 @@ int main() {
               <= minimumAbout.actionButton.y,
           "about minimum hint stays above footer");
 
+    Check(info_window_layout_detail::kBlacklistInitialOuterWidth == 760,
+          "blacklist initial width remains approved");
+    Check(info_window_layout_detail::kBlacklistInitialOuterHeight == 560,
+          "blacklist initial height gains vertical room");
+    Check(info_window_layout_detail::kBlacklistMinimumOuterWidth == 640,
+          "blacklist minimum width remains approved");
+    Check(info_window_layout_detail::kBlacklistMinimumOuterHeight == 460,
+          "blacklist minimum height gains vertical room");
+
+    const int blacklistMinimumClientHeight =
+        info_window_layout_detail::kBlacklistMinimumClientHeight;
+    const BlacklistWindowLayout blacklist = CalculateBlacklistWindowLayout(
+        640, blacklistMinimumClientHeight);
+    Check(blacklist.title.height == 40,
+          "blacklist title leaves room for descenders");
+    Check(blacklist.title.y + blacklist.title.height + 8
+              <= blacklist.fullscreenCheckbox.y,
+          "blacklist checkbox follows the title gap");
+    Check(blacklist.fullscreenCheckbox.y + blacklist.fullscreenCheckbox.height
+              < blacklist.list.y,
+          "blacklist list follows the checkbox");
+    Check(blacklist.list.y + blacklist.list.height
+              + info_window_layout_detail::kBlacklistFooterGap
+              <= blacklist.runningButton.y,
+          "blacklist list stays above the footer");
+    Check(blacklist.runningButton.y == blacklist.closeButton.y,
+          "blacklist footer buttons share a baseline");
+    Check(IsInside(blacklist.closeButton, 640, blacklistMinimumClientHeight),
+          "blacklist close button stays inside the minimum client");
+
     const MainWindowHeaderLayout mainHeader =
         CalculateMainWindowHeaderLayout(100);
     Check(mainHeader.titleY == 106,

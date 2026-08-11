@@ -366,21 +366,27 @@ struct CheckboxVisualState {
 
 void PaintDarkListViewHeader(HWND header, HDC hdc);
 
-void ApplyRoundedChildRegion(HWND control, int width, int height, int radius) {
+void ApplyRoundedChildRegion(
+    HWND control,
+    int width,
+    int height,
+    int radius,
+    int borderInset = content_surface_style::kDefaultRegionInset
+) {
     if (!control || width <= 0 || height <= 0) {
         return;
     }
 
-    constexpr int borderInset = 1;
-    if (width <= 2 * borderInset || height <= 2 * borderInset) {
+    const int inset = (std::max)(0, borderInset);
+    if (width <= 2 * inset || height <= 2 * inset) {
         SetWindowRgn(control, nullptr, TRUE);
         return;
     }
     HRGN region = CreateRoundRectRgn(
-        borderInset,
-        borderInset,
-        width - borderInset,
-        height - borderInset,
+        inset,
+        inset,
+        width - inset,
+        height - inset,
         radius * 2,
         radius * 2);
     if (region && SetWindowRgn(control, region, TRUE) == 0) {
@@ -5560,7 +5566,8 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 ListView_SetBkColor(state->blacklistList, RGB(37, 37, 37));
                 ListView_SetTextBkColor(state->blacklistList, RGB(37, 37, 37));
                 ListView_SetTextColor(state->blacklistList, RGB(245, 245, 245));
-                ApplyDarkScrollBar(state->blacklistList);
+                SetWindowTheme(state->blacklistList, L"", L"");
+                ApplyDarkScrollBar(state->blacklistList, false);
 
                 LVCOLUMNW column = {};
                 column.mask = LVCF_TEXT | LVCF_WIDTH;
@@ -5768,10 +5775,18 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                     layout.content.width, layout.content.height, TRUE);
                 MoveWindow(state->emptyLabel, layout.content.x, layout.content.y,
                     layout.content.width, layout.content.height, TRUE);
-                ApplyRoundedChildRegion(state->logList, layout.content.width, layout.content.height,
-                    LOGS_PANEL_CORNER_RADIUS);
-                ApplyRoundedChildRegion(state->emptyLabel, layout.content.width, layout.content.height,
-                    LOGS_PANEL_CORNER_RADIUS);
+                ApplyRoundedChildRegion(
+                    state->logList,
+                    layout.content.width,
+                    layout.content.height,
+                    LOGS_PANEL_CORNER_RADIUS,
+                    content_surface_style::kLogsRegionInset);
+                ApplyRoundedChildRegion(
+                    state->emptyLabel,
+                    layout.content.width,
+                    layout.content.height,
+                    LOGS_PANEL_CORNER_RADIUS,
+                    content_surface_style::kLogsRegionInset);
                 MoveWindow(state->copyAllButton, layout.copyAllButton.x, layout.copyAllButton.y,
                     layout.copyAllButton.width, layout.copyAllButton.height, TRUE);
                 MoveWindow(state->closeButton, layout.closeButton.x, layout.closeButton.y,
@@ -6305,7 +6320,8 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
                         );
                     }
                 }
-                ApplyDarkScrollBar(state->textControl);
+                SetWindowTheme(state->textControl, L"", L"");
+                ApplyDarkScrollBar(state->textControl, false);
             } else {
                 const DWORD listStyle = LBS_NOINTEGRALHEIGHT | LBS_NOSEL;
                 state->textControl = CreateWindowExW(

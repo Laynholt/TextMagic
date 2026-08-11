@@ -190,6 +190,13 @@ int main() {
           "message surface uses the approved soft border");
     Check(content_surface_style::kListFill == RGB(37, 37, 37),
           "existing list fill remains unchanged");
+    Check(content_surface_style::kDefaultRegionInset == 1,
+          "shared rounded controls keep their existing inset");
+    Check(content_surface_style::kLogsRegionInset == 2,
+          "logs expose enough parent border to show rounded corners");
+    Check(content_surface_style::kLogsRegionInset
+              > content_surface_style::kDefaultRegionInset,
+          "logs use a stronger clip without changing shared surfaces");
 
     const RunningPickerWindowLayout runningPicker =
         CalculateRunningPickerWindowLayout(760, 520);

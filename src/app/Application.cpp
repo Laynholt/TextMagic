@@ -322,6 +322,7 @@ constexpr UINT MORE_POPUP_TRACK_TIMER_ID = 0x4D31;
 constexpr UINT TRAY_ICON_ID = 1;
 constexpr int LOGS_MIN_WIDTH = 400;
 constexpr int LOGS_MIN_HEIGHT = 260;
+constexpr int LOGS_PANEL_CORNER_RADIUS = 10;
 constexpr int BLACKLIST_MIN_WIDTH = 640;
 constexpr int BLACKLIST_MIN_HEIGHT = 420;
 constexpr int INFO_MIN_WIDTH = 500;
@@ -355,6 +356,51 @@ struct CheckboxVisualState {
 };
 
 void PaintDarkListViewHeader(HWND header, HDC hdc);
+
+void ApplyRoundedChildRegion(HWND control, int width, int height, int radius) {
+    if (!control || width <= 0 || height <= 0) {
+        return;
+    }
+
+    constexpr int borderInset = 1;
+    if (width <= 2 * borderInset || height <= 2 * borderInset) {
+        SetWindowRgn(control, nullptr, TRUE);
+        return;
+    }
+    HRGN region = CreateRoundRectRgn(
+        borderInset,
+        borderInset,
+        width - borderInset,
+        height - borderInset,
+        radius * 2,
+        radius * 2);
+    if (region && SetWindowRgn(control, region, TRUE) == 0) {
+        DeleteObject(region);
+    }
+}
+
+int CalculateLogsMinimumTrackHeight(HWND hWnd) {
+    RECT requiredClient = {
+        0,
+        0,
+        LOGS_MIN_WIDTH,
+        info_window_layout_detail::kLogsMinimumClientHeight,
+    };
+    const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(hWnd, GWL_STYLE));
+    const DWORD extendedStyle = static_cast<DWORD>(GetWindowLongPtrW(hWnd, GWL_EXSTYLE));
+    const UINT dpi = GetDpiForWindow(hWnd);
+    if (!AdjustWindowRectExForDpi(
+            &requiredClient,
+            style,
+            GetMenu(hWnd) != nullptr,
+            extendedStyle,
+            dpi == 0 ? USER_DEFAULT_SCREEN_DPI : dpi)) {
+        AdjustWindowRectEx(&requiredClient, style, GetMenu(hWnd) != nullptr, extendedStyle);
+    }
+    return std::max(
+        LOGS_MIN_HEIGHT,
+        static_cast<int>(requiredClient.bottom - requiredClient.top));
+}
 
 LRESULT CALLBACK DarkHeaderSubclassProc(
     HWND hWnd,
@@ -5319,7 +5365,7 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             const bool isAbout = state->kind == static_cast<int>(Application::InfoWindowKind::About);
             info->ptMinTrackSize.x = isLogs ? LOGS_MIN_WIDTH
                 : (isBlacklist ? BLACKLIST_MIN_WIDTH : (isAbout ? ABOUT_MIN_WIDTH : INFO_MIN_WIDTH));
-            info->ptMinTrackSize.y = isLogs ? LOGS_MIN_HEIGHT
+            info->ptMinTrackSize.y = isLogs ? CalculateLogsMinimumTrackHeight(hWnd)
                 : (isBlacklist ? BLACKLIST_MIN_HEIGHT : (isAbout ? ABOUT_MIN_HEIGHT : INFO_MIN_HEIGHT));
             return 0;
         }
@@ -5618,11 +5664,14 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 MoveWindow(state->titleLabel, layout.title.x, layout.title.y, layout.title.width, layout.title.height, TRUE);
                 MoveWindow(state->subtitleLabel, layout.subtitle.x, layout.subtitle.y,
                     layout.subtitle.width, layout.subtitle.height, TRUE);
-                constexpr int panelInset = 1;
-                MoveWindow(state->logList, layout.content.x + panelInset, layout.content.y + panelInset,
-                    layout.content.width - 2 * panelInset, layout.content.height - 2 * panelInset, TRUE);
-                MoveWindow(state->emptyLabel, layout.content.x + panelInset, layout.content.y + panelInset,
-                    layout.content.width - 2 * panelInset, layout.content.height - 2 * panelInset, TRUE);
+                MoveWindow(state->logList, layout.content.x, layout.content.y,
+                    layout.content.width, layout.content.height, TRUE);
+                MoveWindow(state->emptyLabel, layout.content.x, layout.content.y,
+                    layout.content.width, layout.content.height, TRUE);
+                ApplyRoundedChildRegion(state->logList, layout.content.width, layout.content.height,
+                    LOGS_PANEL_CORNER_RADIUS);
+                ApplyRoundedChildRegion(state->emptyLabel, layout.content.width, layout.content.height,
+                    LOGS_PANEL_CORNER_RADIUS);
                 MoveWindow(state->copyAllButton, layout.copyAllButton.x, layout.copyAllButton.y,
                     layout.copyAllButton.width, layout.copyAllButton.height, TRUE);
                 MoveWindow(state->closeButton, layout.closeButton.x, layout.closeButton.y,
@@ -5833,6 +5882,11 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             HDC hdc = reinterpret_cast<HDC>(wParam);
             HWND control = reinterpret_cast<HWND>(lParam);
             SetBkMode(hdc, TRANSPARENT);
+            const auto surfaceBrush = [hdc](COLORREF color) {
+                SetBkColor(hdc, color);
+                SetDCBrushColor(hdc, color);
+                return reinterpret_cast<INT_PTR>(GetStockObject(DC_BRUSH));
+            };
             if (control == state->titleLabel) {
                 SetTextColor(hdc, RGB(255, 255, 255));
                 return reinterpret_cast<INT_PTR>(state->owner->m_hCardBrush);
@@ -5842,14 +5896,28 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 SetDCBrushColor(hdc, RGB(24, 24, 26));
                 return reinterpret_cast<INT_PTR>(GetStockObject(DC_BRUSH));
             }
-            if (control == state->productLabel || control == state->versionValue
-                || control == state->loadedScriptsValue) {
+            if (control == state->productLabel) {
                 SetTextColor(hdc, RGB(255, 255, 255));
-                return reinterpret_cast<INT_PTR>(state->owner->m_hCardBrush);
+                return surfaceBrush(RGB(34, 34, 37));
             }
-            if (control == state->descriptionLabel || control == state->versionLabel
-                || control == state->loadedScriptsLabel || control == state->directoryLabel
-                || control == state->updateHintLabel) {
+            if (control == state->versionLabel || control == state->versionValue) {
+                SetTextColor(hdc,
+                    control == state->versionValue
+                        ? RGB(255, 255, 255)
+                        : RGB(170, 170, 175));
+                return surfaceBrush(RGB(56, 56, 62));
+            }
+            if (control == state->loadedScriptsLabel || control == state->loadedScriptsValue
+                || control == state->directoryLabel || control == state->directoryValue) {
+                SetTextColor(hdc,
+                    control == state->loadedScriptsValue
+                        ? RGB(255, 255, 255)
+                        : (control == state->directoryValue
+                            ? RGB(245, 245, 245)
+                            : RGB(170, 170, 175)));
+                return surfaceBrush(RGB(24, 24, 26));
+            }
+            if (control == state->descriptionLabel || control == state->updateHintLabel) {
                 SetTextColor(hdc, RGB(170, 170, 175));
                 return reinterpret_cast<INT_PTR>(state->owner->m_hCardBrush);
             }

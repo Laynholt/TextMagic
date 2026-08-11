@@ -38,6 +38,15 @@ constexpr int kFooterGap = 14;
 constexpr int kButtonGap = 10;
 
 constexpr int kLogsContentMinimumHeight = 80;
+constexpr int kLogsMinimumClientHeight = kOuterInset
+    + kTitleHeight
+    + kContentInset
+    + kSubtitleHeight
+    + kContentInset
+    + kLogsContentMinimumHeight
+    + kFooterGap
+    + kOuterInset
+    + kButtonHeight;
 constexpr int kAboutPanelMinimumHeight = 110;
 constexpr int kAboutDescriptionHeight = 40;
 constexpr int kAboutIdentityHeight = 64;
@@ -96,7 +105,9 @@ inline LogsWindowLayout CalculateLogsWindowLayout(int clientWidth, int clientHei
         title.width,
         info_window_layout_detail::kSubtitleHeight,
     };
-    const int footerY = info_window_layout_detail::FooterY(clientHeight);
+    const int footerY = info_window_layout_detail::FooterY(std::max(
+        info_window_layout_detail::NonNegative(clientHeight),
+        info_window_layout_detail::kLogsMinimumClientHeight));
     const int contentY = subtitle.y + subtitle.height
         + info_window_layout_detail::kContentInset;
     const int availableContentHeight = footerY - info_window_layout_detail::kFooterGap - contentY;

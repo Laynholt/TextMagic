@@ -28,6 +28,24 @@ int main() {
           "logs footer follows panel");
     Check(IsInside(logs.closeButton, 900, 600), "logs close button stays inside");
 
+    const int logsMinimumClientHeight = info_window_layout_detail::kLogsMinimumClientHeight;
+    const LogsWindowLayout minimumLogs = CalculateLogsWindowLayout(400, logsMinimumClientHeight);
+    Check(minimumLogs.content.height == info_window_layout_detail::kLogsContentMinimumHeight,
+          "logs minimum client height keeps the minimum content size");
+    Check(minimumLogs.content.y + minimumLogs.content.height
+              + info_window_layout_detail::kFooterGap
+              <= minimumLogs.copyAllButton.y,
+          "logs minimum client height keeps content above the footer");
+
+    const LogsWindowLayout tooShortLogs = CalculateLogsWindowLayout(
+        400, logsMinimumClientHeight - 1);
+    Check(tooShortLogs.content.height >= info_window_layout_detail::kLogsContentMinimumHeight,
+          "logs preserve the minimum content height");
+    Check(tooShortLogs.content.y + tooShortLogs.content.height
+              + info_window_layout_detail::kFooterGap
+              <= tooShortLogs.copyAllButton.y,
+          "logs minimum content stays above the footer");
+
     const AboutWindowLayout about = CalculateAboutWindowLayout(620, 440);
     Check(about.identityPanel.y > about.description.y + about.description.height,
           "about identity follows description");

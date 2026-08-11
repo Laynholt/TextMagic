@@ -6491,7 +6491,7 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
         break;
 
     case WM_CTLCOLORLISTBOX:
-        if (state && state->usesListBox) {
+        if (state && state->usesListBox && !state->runningApplicationSelection) {
             HDC hdc = reinterpret_cast<HDC>(wParam);
             SetBkColor(hdc, content_surface_style::kMessageFill);
             SetTextColor(hdc, RGB(245, 245, 245));

@@ -115,6 +115,23 @@ void TestEmbeddedLanguagesContainScriptActionKeys() {
     }
 }
 
+void TestEmbeddedLanguagesContainConciseMainHint() {
+    const std::wstring english = Localization::GetTextByName(L"hint.label", L"en");
+    const std::wstring russian = Localization::GetTextByName(L"hint.label", L"ru");
+
+    CHECK(english ==
+        L"Scripts work with selected text, the last typed word, or all typed text.\r\n"
+        L"Double-click a script to apply it to text from the clipboard.");
+    CHECK(russian ==
+        L"\u0421\u043a\u0440\u0438\u043f\u0442\u044b \u0440\u0430\u0431\u043e\u0442\u0430\u044e\u0442 \u0441 \u0432\u044b\u0434\u0435\u043b\u0435\u043d\u043d\u044b\u043c \u0442\u0435\u043a\u0441\u0442\u043e\u043c, "
+        L"\u043f\u043e\u0441\u043b\u0435\u0434\u043d\u0438\u043c \u0432\u0432\u0435\u0434\u0451\u043d\u043d\u044b\u043c \u0441\u043b\u043e\u0432\u043e\u043c \u0438\u043b\u0438 \u0432\u0441\u0435\u043c \u0432\u0432\u0435\u0434\u0451\u043d\u043d\u044b\u043c \u0442\u0435\u043a\u0441\u0442\u043e\u043c.\r\n"
+        L"\u0414\u0432\u043e\u0439\u043d\u043e\u0439 \u0449\u0435\u043b\u0447\u043e\u043a \u043f\u0440\u0438\u043c\u0435\u043d\u044f\u0435\u0442 \u0432\u044b\u0431\u0440\u0430\u043d\u043d\u044b\u0439 \u0441\u043a\u0440\u0438\u043f\u0442 \u043a \u0442\u0435\u043a\u0441\u0442\u0443 \u0438\u0437 \u0431\u0443\u0444\u0435\u0440\u0430 \u043e\u0431\u043c\u0435\u043d\u0430.");
+    CHECK(english.find(L"Global text scripts") == std::wstring::npos);
+    CHECK(russian.find(
+        L"\u0413\u043b\u043e\u0431\u0430\u043b\u044c\u043d\u044b\u0435 \u0441\u043a\u0440\u0438\u043f\u0442\u044b")
+        == std::wstring::npos);
+}
+
 void TestCurrentLanguageIsSafeDuringConcurrentSwitches(const fs::path& root) {
     const fs::path languageDirectory = root / L"concurrent-language";
     fs::create_directories(languageDirectory);
@@ -177,6 +194,7 @@ int main() {
     TestExternalLanguageIsAvailable(root);
     TestEmbeddedLanguagesContainApplicationBlacklistKeys();
     TestEmbeddedLanguagesContainScriptActionKeys();
+    TestEmbeddedLanguagesContainConciseMainHint();
     TestCurrentLanguageIsSafeDuringConcurrentSwitches(root);
 
     fs::remove_all(root, cleanupError);

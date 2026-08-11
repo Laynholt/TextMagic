@@ -175,6 +175,7 @@ private:
     HWND m_hMoreSubPopupWindow = nullptr;
 
     HFONT m_hTitleFont = nullptr;
+    HFONT m_hHintFont = nullptr;
     HFONT m_hFont = nullptr;
     HFONT m_hMonoFont = nullptr;
 

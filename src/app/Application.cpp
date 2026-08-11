@@ -2170,6 +2170,10 @@ void Application::Shutdown() {
         DeleteObject(m_hTitleFont);
         m_hTitleFont = nullptr;
     }
+    if (m_hHintFont) {
+        DeleteObject(m_hHintFont);
+        m_hHintFont = nullptr;
+    }
     if (m_hFont) {
         DeleteObject(m_hFont);
         m_hFont = nullptr;
@@ -2717,6 +2721,10 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 SetTextColor(hdc, RGB(200, 200, 200));
                 return reinterpret_cast<INT_PTR>(m_hCardBrush);
             }
+            if (control == m_hHintLabel) {
+                SetTextColor(hdc, INFO_MUTED_TEXT);
+                return reinterpret_cast<INT_PTR>(m_hCardBrush);
+            }
             SetTextColor(hdc, RGB(230, 230, 230));
             return reinterpret_cast<INT_PTR>(m_hCardBrush);
         }
@@ -2741,6 +2749,11 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
 void Application::CreateControls() {
     m_hTitleFont = CreateFontW(-26, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+
+    m_hHintFont = CreateFontW(-14, 0, 0, 0, FW_NORMAL,
+        FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
 
     m_hFont = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
@@ -2779,7 +2792,7 @@ void Application::CreateControls() {
         m_hWnd, reinterpret_cast<HMENU>(ID_STATUS_LABEL), m_hInstance, nullptr);
 
     SendMessageW(m_hTitleLabel, WM_SETFONT, reinterpret_cast<WPARAM>(m_hTitleFont), TRUE);
-    SendMessageW(m_hHintLabel, WM_SETFONT, reinterpret_cast<WPARAM>(m_hFont), TRUE);
+    SendMessageW(m_hHintLabel, WM_SETFONT, reinterpret_cast<WPARAM>(m_hHintFont), TRUE);
     SendMessageW(m_hScriptList, WM_SETFONT, reinterpret_cast<WPARAM>(m_hMonoFont), TRUE);
     SendMessageW(m_hScriptList, LB_SETITEMHEIGHT, 0, LIST_ITEM_HEIGHT);
     SendMessageW(m_hReloadButton, WM_SETFONT, reinterpret_cast<WPARAM>(m_hFont), TRUE);

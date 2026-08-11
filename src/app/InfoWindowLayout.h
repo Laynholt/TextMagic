@@ -51,14 +51,26 @@ constexpr int kLogsMinimumClientHeight = kOuterInset
     + kFooterGap
     + kOuterInset
     + kButtonHeight;
-constexpr int kAboutMinimumClientHeight = 400;
 constexpr int kAboutDescriptionHeight = 40;
-constexpr int kAboutVersionLineHeight = 20;
-constexpr int kAboutDetailsHeight = 160;
-constexpr int kAboutRowLabelHeight = 18;
-constexpr int kAboutValueHeight = 24;
+constexpr int kAboutVersionLineHeight = 26;
+constexpr int kAboutDetailsHeight = 174;
+constexpr int kAboutRowLabelHeight = 24;
+constexpr int kAboutValueHeight = 26;
 constexpr int kAboutPathHeight = 40;
 constexpr int kAboutDividerHeight = 1;
+constexpr int kAboutMinimumClientHeight = kOuterInset
+    + kTitleHeight
+    + kContentInset
+    + kAboutDescriptionHeight
+    + kContentInset
+    + kAboutVersionLineHeight
+    + kContentInset
+    + kAboutDetailsHeight
+    + kContentInset
+    + kSubtitleHeight
+    + kFooterGap
+    + kButtonHeight
+    + kOuterInset;
 
 inline int NonNegative(int value) {
     return std::max(0, value);
@@ -159,7 +171,7 @@ inline AboutWindowLayout CalculateAboutWindowLayout(int clientWidth, int clientH
     const InfoRect versionLine{
         contentX,
         description.y + description.height + info_window_layout_detail::kContentInset,
-        contentWidth,
+        std::min(132, contentWidth),
         info_window_layout_detail::kAboutVersionLineHeight,
     };
     const InfoRect detailsPanel{

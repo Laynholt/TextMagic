@@ -1,4 +1,5 @@
 #include "InfoWindowLayout.h"
+#include "../src/app/MainWindowLayout.h"
 
 #include <cstdlib>
 #include <iostream>
@@ -53,6 +54,20 @@ int main() {
           "logs minimum content stays above the footer");
 
     const AboutWindowLayout about = CalculateAboutWindowLayout(620, 440);
+    Check(about.versionLine.width == 132,
+          "about version chip stays compact");
+    Check(about.versionLine.height == 26,
+          "about version chip reserves a complete text line");
+    Check(about.detailsPanel.height == 174,
+          "about softened card reserves expanded row heights");
+    Check(about.loadedScriptsLabel.height == 24,
+          "about loaded label leaves descender space");
+    Check(about.loadedScriptsValue.height == 26,
+          "about loaded value leaves descender space");
+    Check(about.directoryLabel.height == 24,
+          "about directory label leaves descender space");
+    Check(info_window_layout_detail::kAboutMinimumClientHeight == 428,
+          "about minimum client height derives from expanded sections");
     Check(about.versionLine.y > about.description.y + about.description.height,
           "about version follows description");
     Check(about.detailsPanel.y > about.versionLine.y + about.versionLine.height,
@@ -106,5 +121,24 @@ int main() {
     Check(minimumAbout.hint.y + minimumAbout.hint.height
               <= minimumAbout.actionButton.y,
           "about minimum hint stays above footer");
+
+    const MainWindowHeaderLayout mainHeader =
+        CalculateMainWindowHeaderLayout(100);
+    Check(mainHeader.titleY == 106,
+          "main title keeps its top inset");
+    Check(mainHeader.titleHeight == 40,
+          "main title leaves room for descenders");
+    Check(mainHeader.hintY == 152,
+          "main hint follows the expanded title");
+    Check(mainHeader.hintHeight == 48,
+          "main hint height remains unchanged");
+    Check(mainHeader.listTop == 208,
+          "main list preserves its gap below the shifted hint");
+    Check(mainHeader.titleY + mainHeader.titleHeight
+              <= mainHeader.hintY,
+          "main title does not overlap hint");
+    Check(mainHeader.hintY + mainHeader.hintHeight
+              <= mainHeader.listTop,
+          "main hint does not overlap list");
     return 0;
 }

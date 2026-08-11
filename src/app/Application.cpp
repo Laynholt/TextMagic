@@ -12,6 +12,7 @@
 #include "ToolTip.h"
 #include "UiRenderer.h"
 #include "InputBuffer.h"
+#include "MainWindowLayout.h"
 #include "InfoWindowLayout.h"
 #include "InfoWindowModel.h"
 #include "LogFile.h"
@@ -237,6 +238,11 @@ LRESULT CALLBACK LogListSubclassProc(
 constexpr COLORREF INFO_LIST_SURFACE = RGB(37, 37, 37);
 constexpr COLORREF INFO_MUTED_TEXT = RGB(170, 170, 175);
 constexpr COLORREF INFO_PANEL_BORDER = RGB(52, 52, 56);
+constexpr COLORREF ABOUT_CARD_SURFACE = RGB(42, 42, 44);
+constexpr COLORREF ABOUT_CARD_BORDER = RGB(55, 55, 58);
+constexpr COLORREF ABOUT_VERSION_SURFACE = RGB(48, 48, 50);
+constexpr COLORREF ABOUT_VERSION_LABEL_TEXT = RGB(160, 160, 165);
+constexpr COLORREF ABOUT_VERSION_VALUE_TEXT = RGB(205, 205, 210);
 
 bool DrawLogListBoxItem(const DRAWITEMSTRUCT* item, const InfoWindowState* state) {
     if (!item || !state || item->CtlType != ODT_LISTBOX || item->hwndItem != state->logList
@@ -2810,8 +2816,12 @@ void Application::OnResize(int width, int height) {
     const int innerY = m_cardRect.top + 16;
     const int innerWidth = std::max(120, static_cast<int>((m_cardRect.right - m_cardRect.left) - 44));
 
-    MoveWindow(m_hTitleLabel, innerX, innerY + 6, innerWidth, 34, TRUE);
-    MoveWindow(m_hHintLabel, innerX, innerY + 46, innerWidth, 48, TRUE);
+    const MainWindowHeaderLayout header =
+        CalculateMainWindowHeaderLayout(innerY);
+    MoveWindow(m_hTitleLabel,
+        innerX, header.titleY, innerWidth, header.titleHeight, TRUE);
+    MoveWindow(m_hHintLabel,
+        innerX, header.hintY, innerWidth, header.hintHeight, TRUE);
 
     const int buttonHeight = 36;
     const int buttonGap = 10;
@@ -2819,7 +2829,7 @@ void Application::OnResize(int width, int height) {
     const int buttonWidth = std::max(84, (innerWidth - buttonGap * (buttonCount - 1)) / buttonCount);
     const int buttonRowY = std::max(innerY + 180, static_cast<int>(m_cardRect.bottom - 58));
 
-    const int listTop = innerY + 102;
+    const int listTop = header.listTop;
     const int listHeight = std::max(90, buttonRowY - listTop - 14);
     MoveWindow(
         m_hScriptList,
@@ -4765,7 +4775,7 @@ void Application::CreateOrActivateInfoWindow(InfoWindowKind kind, HWND& targetHa
     if (kind != InfoWindowKind::Logs) {
         state->text = bodyText;
     }
-    state->editBrush = CreateSolidBrush(kind == InfoWindowKind::About ? INFO_LIST_SURFACE : RGB(45, 45, 45));
+    state->editBrush = CreateSolidBrush(kind == InfoWindowKind::About ? ABOUT_CARD_SURFACE : RGB(45, 45, 45));
 
     RECT ownerRect = {};
     GetWindowRect(m_hWnd, &ownerRect);
@@ -5623,8 +5633,8 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             }
             if (state->descriptionLabel) {
                 SendMessageW(state->descriptionLabel, WM_SETFONT, reinterpret_cast<WPARAM>(state->supportingFont), TRUE);
-                SendMessageW(state->versionLabel, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
-                SendMessageW(state->versionValue, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
+                SendMessageW(state->versionLabel, WM_SETFONT, reinterpret_cast<WPARAM>(state->supportingFont), TRUE);
+                SendMessageW(state->versionValue, WM_SETFONT, reinterpret_cast<WPARAM>(state->supportingFont), TRUE);
                 SendMessageW(state->loadedScriptsLabel, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
                 SendMessageW(state->loadedScriptsValue, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
                 SendMessageW(state->directoryLabel, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
@@ -5704,18 +5714,20 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             }
             if (state->kind == static_cast<int>(Application::InfoWindowKind::About)) {
                 const AboutWindowLayout layout = CalculateAboutWindowLayout(w, h);
-                constexpr int versionLabelWidth = 76;
+                constexpr int versionInset = 8;
+                constexpr int versionLabelWidth = 68;
 
                 MoveWindow(state->titleLabel, layout.title.x, layout.title.y,
                     layout.title.width, layout.title.height, TRUE);
                 MoveWindow(state->descriptionLabel, layout.description.x, layout.description.y,
                     layout.description.width, layout.description.height, TRUE);
                 MoveWindow(state->versionLabel,
-                    layout.versionLine.x, layout.versionLine.y,
+                    layout.versionLine.x + versionInset, layout.versionLine.y,
                     versionLabelWidth, layout.versionLine.height, TRUE);
                 MoveWindow(state->versionValue,
-                    layout.versionLine.x + versionLabelWidth, layout.versionLine.y,
-                    std::max(0, layout.versionLine.width - versionLabelWidth),
+                    layout.versionLine.x + versionInset + versionLabelWidth, layout.versionLine.y,
+                    std::max(0, layout.versionLine.width
+                        - 2 * versionInset - versionLabelWidth),
                     layout.versionLine.height, TRUE);
                 MoveWindow(state->loadedScriptsLabel, layout.loadedScriptsLabel.x,
                     layout.loadedScriptsLabel.y, layout.loadedScriptsLabel.width,
@@ -5871,6 +5883,12 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 UiRenderer::DrawRoundedPanel(hdc, content, INFO_LIST_SURFACE, INFO_PANEL_BORDER);
             } else if (state && state->kind == static_cast<int>(Application::InfoWindowKind::About)) {
                 const AboutWindowLayout layout = CalculateAboutWindowLayout(r.right - r.left, r.bottom - r.top);
+                const RECT versionChip = {
+                    layout.versionLine.x,
+                    layout.versionLine.y,
+                    layout.versionLine.x + layout.versionLine.width,
+                    layout.versionLine.y + layout.versionLine.height,
+                };
                 const RECT detailsPanel = {
                     layout.detailsPanel.x,
                     layout.detailsPanel.y,
@@ -5883,8 +5901,13 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                     layout.divider.x + layout.divider.width,
                     layout.divider.y + layout.divider.height,
                 };
-                UiRenderer::DrawRoundedPanel(hdc, detailsPanel, INFO_LIST_SURFACE, INFO_PANEL_BORDER);
-                SetDCBrushColor(hdc, INFO_PANEL_BORDER);
+                UiRenderer::DrawRoundedPanel(
+                    hdc, versionChip,
+                    ABOUT_VERSION_SURFACE, ABOUT_VERSION_SURFACE, 7);
+                UiRenderer::DrawRoundedPanel(
+                    hdc, detailsPanel,
+                    ABOUT_CARD_SURFACE, ABOUT_CARD_BORDER);
+                SetDCBrushColor(hdc, ABOUT_CARD_BORDER);
                 FillRect(hdc, &divider, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
             }
             EndPaint(hWnd, &ps);
@@ -5910,18 +5933,19 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             }
             if (control == state->versionLabel || control == state->versionValue) {
                 SetTextColor(hdc, control == state->versionValue
-                    ? RGB(255, 255, 255)
-                    : INFO_MUTED_TEXT);
-                SetBkColor(hdc, INFO_LIST_SURFACE);
-                return reinterpret_cast<INT_PTR>(state->owner->m_hListBrush);
+                    ? ABOUT_VERSION_VALUE_TEXT
+                    : ABOUT_VERSION_LABEL_TEXT);
+                SetBkColor(hdc, ABOUT_VERSION_SURFACE);
+                SetDCBrushColor(hdc, ABOUT_VERSION_SURFACE);
+                return reinterpret_cast<INT_PTR>(GetStockObject(DC_BRUSH));
             }
             if (control == state->loadedScriptsLabel || control == state->loadedScriptsValue
                 || control == state->directoryLabel || control == state->directoryValue) {
                 const bool isValue = control == state->loadedScriptsValue
                     || control == state->directoryValue;
                 SetTextColor(hdc, isValue ? RGB(255, 255, 255) : INFO_MUTED_TEXT);
-                SetBkColor(hdc, INFO_LIST_SURFACE);
-                return reinterpret_cast<INT_PTR>(state->owner->m_hListBrush);
+                SetBkColor(hdc, ABOUT_CARD_SURFACE);
+                return reinterpret_cast<INT_PTR>(state->editBrush);
             }
             if (control == state->descriptionLabel || control == state->updateHintLabel) {
                 SetTextColor(hdc, INFO_MUTED_TEXT);
@@ -5945,7 +5969,7 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
         if (state && state->editBrush) {
             HDC hdc = reinterpret_cast<HDC>(wParam);
             const bool isAboutDirectory = reinterpret_cast<HWND>(lParam) == state->directoryValue;
-            SetBkColor(hdc, isAboutDirectory ? INFO_LIST_SURFACE : RGB(45, 45, 45));
+            SetBkColor(hdc, isAboutDirectory ? ABOUT_CARD_SURFACE : RGB(45, 45, 45));
             SetTextColor(hdc, RGB(245, 245, 245));
             return reinterpret_cast<INT_PTR>(state->editBrush);
         }

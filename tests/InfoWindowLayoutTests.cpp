@@ -190,5 +190,30 @@ int main() {
           "message surface uses the approved soft border");
     Check(content_surface_style::kListFill == RGB(37, 37, 37),
           "existing list fill remains unchanged");
+
+    const RunningPickerWindowLayout runningPicker =
+        CalculateRunningPickerWindowLayout(760, 520);
+    Check(runningPicker.title.height == 40,
+          "running picker title leaves room for the large heading");
+    Check(runningPicker.list.y
+              >= runningPicker.title.y + runningPicker.title.height + 8,
+          "running picker list follows the approved title gap");
+    Check(runningPicker.list.y + runningPicker.list.height + 10
+              <= runningPicker.primaryButton.y,
+          "running picker list stays above the footer");
+    Check(runningPicker.primaryButton.y == runningPicker.secondaryButton.y,
+          "running picker buttons share a baseline");
+    Check(IsInside(runningPicker.title, 760, 520),
+          "running picker title stays inside the client");
+    Check(IsInside(runningPicker.list, 760, 520),
+          "running picker list stays inside the client");
+    Check(IsInside(runningPicker.primaryButton, 760, 520),
+          "running picker primary button stays inside the client");
+    Check(IsInside(runningPicker.secondaryButton, 760, 520),
+          "running picker secondary button stays inside the client");
+    Check(info_window_layout_detail::kMessageCompactTitleHeight == 24,
+          "generic message title height remains compact");
+    Check(info_window_layout_detail::kMessageCompactTitleGap == 6,
+          "generic message title gap remains unchanged");
     return 0;
 }

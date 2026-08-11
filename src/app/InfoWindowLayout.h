@@ -42,6 +42,13 @@ struct BlacklistWindowLayout {
     InfoRect closeButton;
 };
 
+struct RunningPickerWindowLayout {
+    InfoRect title;
+    InfoRect list;
+    InfoRect secondaryButton;
+    InfoRect primaryButton;
+};
+
 namespace info_window_layout_detail {
 constexpr int kOuterInset = 16;
 constexpr int kContentInset = 14;
@@ -103,6 +110,16 @@ constexpr int kBlacklistMinimumClientHeight = kOuterInset
     + kBlacklistFooterGap
     + kBlacklistButtonHeight
     + kOuterInset;
+constexpr int kMessageOuterInset = 14;
+constexpr int kMessageCompactTitleHeight = 24;
+constexpr int kMessageCompactTitleGap = 6;
+constexpr int kRunningPickerTitleHeight = 40;
+constexpr int kRunningPickerTitleGap = 8;
+constexpr int kMessageButtonHeight = 34;
+constexpr int kMessageButtonGap = 10;
+constexpr int kMessageFooterGap = 10;
+constexpr int kRunningPickerButtonWidth = 180;
+constexpr int kRunningPickerListMinimumHeight = 50;
 
 inline int NonNegative(int value) {
     return std::max(0, value);
@@ -333,4 +350,48 @@ inline BlacklistWindowLayout CalculateBlacklistWindowLayout(
         std::max(kOuterInset, safeWidth - kOuterInset - 130),
         footerY, std::min(130, contentWidth), kBlacklistButtonHeight};
     return {title, checkbox, list, running, exe, remove, close};
+}
+
+inline RunningPickerWindowLayout CalculateRunningPickerWindowLayout(
+    int clientWidth,
+    int clientHeight
+) {
+    using namespace info_window_layout_detail;
+    const int safeWidth = ClientWidth(clientWidth);
+    const int safeHeight = NonNegative(clientHeight);
+    const InfoRect title{
+        kMessageOuterInset,
+        kMessageOuterInset,
+        NonNegative(safeWidth - 2 * kMessageOuterInset),
+        kRunningPickerTitleHeight,
+    };
+    const int listY = title.y + title.height + kRunningPickerTitleGap;
+    const int desiredFooterY = safeHeight - kMessageOuterInset - kMessageButtonHeight;
+    const int footerY = std::max(
+        listY + kRunningPickerListMinimumHeight + kMessageFooterGap,
+        desiredFooterY);
+    const InfoRect list{
+        kMessageOuterInset,
+        listY,
+        NonNegative(safeWidth - 2 * kMessageOuterInset),
+        std::max(kRunningPickerListMinimumHeight,
+                 footerY - kMessageFooterGap - listY),
+    };
+    const InfoRect primary{
+        std::max(kMessageOuterInset,
+                 safeWidth - kMessageOuterInset - kRunningPickerButtonWidth),
+        footerY,
+        std::min(kRunningPickerButtonWidth,
+                 NonNegative(safeWidth - 2 * kMessageOuterInset)),
+        kMessageButtonHeight,
+    };
+    const InfoRect secondary{
+        std::max(kMessageOuterInset,
+                 primary.x - kMessageButtonGap - kRunningPickerButtonWidth),
+        footerY,
+        std::min(kRunningPickerButtonWidth,
+                 NonNegative(primary.x - kMessageButtonGap - kMessageOuterInset)),
+        kMessageButtonHeight,
+    };
+    return {title, list, secondary, primary};
 }

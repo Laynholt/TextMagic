@@ -5055,6 +5055,7 @@ std::vector<std::wstring> Application::SelectRunningApplications() {
         return selectedPaths;
     }
 
+    ApplyDarkTitleBar(messageWindow);
     EnableWindow(dialogOwner, FALSE);
     ShowWindow(messageWindow, SW_SHOWNORMAL);
     UpdateWindow(messageWindow);
@@ -6333,7 +6334,14 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
                     hWnd, reinterpret_cast<HMENU>(ID_MESSAGE_SECONDARY), GetModuleHandleW(nullptr), nullptr
                 );
             }
-            SendMessageW(state->titleLabel, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
+            SendMessageW(
+                state->titleLabel,
+                WM_SETFONT,
+                reinterpret_cast<WPARAM>(state->runningApplicationSelection
+                    ? state->owner->m_hTitleFont
+                    : state->owner->m_hFont),
+                TRUE
+            );
             HFONT textFont = state->useMonoFont ? state->owner->m_hMonoFont : state->owner->m_hFont;
             SendMessageW(state->textControl, WM_SETFONT, reinterpret_cast<WPARAM>(textFont), TRUE);
             if (state->runningApplicationSelection) {
@@ -6350,10 +6358,32 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
         if (state) {
             const int w = LOWORD(lParam);
             const int h = HIWORD(lParam);
+            if (state->runningApplicationSelection) {
+                const RunningPickerWindowLayout layout =
+                    CalculateRunningPickerWindowLayout(w, h);
+                MoveWindow(state->titleLabel, layout.title.x, layout.title.y,
+                    layout.title.width, layout.title.height, TRUE);
+                MoveWindow(state->textControl, layout.list.x, layout.list.y,
+                    layout.list.width, layout.list.height, TRUE);
+                ApplyRoundedChildRegion(
+                    state->textControl,
+                    layout.list.width,
+                    layout.list.height,
+                    content_surface_style::kCornerRadius);
+                if (state->secondaryButton) {
+                    MoveWindow(state->secondaryButton,
+                        layout.secondaryButton.x, layout.secondaryButton.y,
+                        layout.secondaryButton.width, layout.secondaryButton.height, TRUE);
+                }
+                MoveWindow(state->primaryButton, layout.primaryButton.x,
+                    layout.primaryButton.y, layout.primaryButton.width,
+                    layout.primaryButton.height, TRUE);
+                return 0;
+            }
             const int m = 14;
             const int titleH = 24;
             const int bh = 34;
-            const int bw = state->runningApplicationSelection ? 180 : 126;
+            const int bw = 126;
             const int gap = 10;
             const int footerGap = 10;
 

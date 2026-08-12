@@ -7,14 +7,15 @@
 #include <wincrypt.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
-#include <filesystem>
-#include <fstream>
-#include <iterator>
 #include <string>
 #include <vector>
 
 namespace {
+constexpr std::uint64_t kMaxCapturedStreamBytes = 16ull * 1024ull * 1024ull;
+constexpr DWORD kTerminationWaitMs = 5000;
+
 const wchar_t* T(const wchar_t* key) {
     return Localization::GetTextByName(key);
 }
@@ -50,12 +51,64 @@ std::wstring BytesToWide(const std::string& text) {
     return EncodingUtils::Utf8ToWide(text);
 }
 
-std::string ReadFileToString(const std::wstring& filePath) {
-    std::ifstream input(std::filesystem::path(filePath), std::ios::binary);
-    return {
-        std::istreambuf_iterator<char>(input),
-        std::istreambuf_iterator<char>()
-    };
+bool ReadFileToString(const std::wstring& filePath, std::string* text, DWORD* error) {
+    if (!text || !error) {
+        return false;
+    }
+    text->clear();
+    *error = ERROR_SUCCESS;
+
+    HANDLE file = CreateFileW(
+        filePath.c_str(),
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr
+    );
+    if (file == INVALID_HANDLE_VALUE) {
+        *error = GetLastError();
+        return false;
+    }
+
+    LARGE_INTEGER size = {};
+    if (!GetFileSizeEx(file, &size)) {
+        *error = GetLastError();
+        CloseHandle(file);
+        return false;
+    }
+    if (size.QuadPart < 0
+        || static_cast<std::uint64_t>(size.QuadPart) > kMaxCapturedStreamBytes) {
+        *error = ERROR_FILE_TOO_LARGE;
+        CloseHandle(file);
+        return false;
+    }
+
+    text->resize(static_cast<size_t>(size.QuadPart));
+    size_t offset = 0;
+    while (offset < text->size()) {
+        const DWORD requested = static_cast<DWORD>(std::min<size_t>(
+            text->size() - offset,
+            MAXDWORD
+        ));
+        DWORD bytesRead = 0;
+        if (!ReadFile(file, text->data() + offset, requested, &bytesRead, nullptr)) {
+            *error = GetLastError();
+            text->clear();
+            CloseHandle(file);
+            return false;
+        }
+        if (bytesRead == 0) {
+            *error = ERROR_HANDLE_EOF;
+            text->clear();
+            CloseHandle(file);
+            return false;
+        }
+        offset += bytesRead;
+    }
+    CloseHandle(file);
+    return true;
 }
 
 std::wstring Base64Encode(const unsigned char* data, size_t size) {
@@ -173,6 +226,16 @@ bool ScriptRunner::Execute(
     }
 
     const std::string utf8Input = EncodingUtils::WideToUtf8(inputText);
+    if (utf8Input.size() > MAXDWORD) {
+        cleanupTempFile(childStdIn, stdinTempFilePath);
+        cleanupTempFile(childStdOut, stdoutTempFilePath);
+        cleanupTempFile(childStdErr, stderrTempFilePath);
+        if (errorText) {
+            *errorText = std::wstring(T(L"script_runner.error.write_file_prefix"))
+                + std::to_wstring(ERROR_FILE_TOO_LARGE);
+        }
+        return false;
+    }
     DWORD writtenBytes = 0;
     const BOOL wroteInput = utf8Input.empty() || WriteFile(
         childStdIn,
@@ -182,7 +245,7 @@ bool ScriptRunner::Execute(
         nullptr
     );
     LARGE_INTEGER fileStart = {};
-    if (!wroteInput || writtenBytes != utf8Input.size()
+    if (!wroteInput || writtenBytes != static_cast<DWORD>(utf8Input.size())
         || !SetFilePointerEx(childStdIn, fileStart, nullptr, FILE_BEGIN)) {
         const DWORD writeError = GetLastError();
         cleanupTempFile(childStdIn, stdinTempFilePath);
@@ -212,52 +275,193 @@ bool ScriptRunner::Execute(
         nullptr,
         nullptr,
         TRUE,
-        CREATE_NO_WINDOW,
+        CREATE_SUSPENDED | CREATE_NO_WINDOW,
         nullptr,
         nullptr,
         &si,
         &pi
     );
 
-    closeHandle(childStdIn);
-    closeHandle(childStdOut);
-    closeHandle(childStdErr);
-
     if (!started) {
+        const DWORD createError = GetLastError();
+        closeHandle(childStdIn);
+        closeHandle(childStdOut);
+        closeHandle(childStdErr);
         DeleteFileW(stdinTempFilePath);
         DeleteFileW(stdoutTempFilePath);
         DeleteFileW(stderrTempFilePath);
         if (errorText) {
-            *errorText = std::wstring(T(L"script_runner.error.create_process_prefix")) + std::to_wstring(GetLastError());
+            *errorText = std::wstring(T(L"script_runner.error.create_process_prefix")) + std::to_wstring(createError);
         }
         return false;
     }
 
-    const DWORD waitResult = WaitForSingleObject(pi.hProcess, timeoutMs);
-    if (waitResult == WAIT_TIMEOUT) {
+    HANDLE job = CreateJobObjectW(nullptr, nullptr);
+    if (!job) {
+        const DWORD jobError = GetLastError();
         TerminateProcess(pi.hProcess, 1);
-        WaitForSingleObject(pi.hProcess, INFINITE);
+        WaitForSingleObject(pi.hProcess, kTerminationWaitMs);
+        closeHandle(childStdIn);
+        closeHandle(childStdOut);
+        closeHandle(childStdErr);
         closeHandle(pi.hThread);
         closeHandle(pi.hProcess);
         DeleteFileW(stdinTempFilePath);
         DeleteFileW(stdoutTempFilePath);
         DeleteFileW(stderrTempFilePath);
         if (errorText) {
-            *errorText = T(L"script_runner.error.timeout");
+            *errorText = std::wstring(T(L"script_runner.error.create_job_prefix")) + std::to_wstring(jobError);
+        }
+        return false;
+    }
+
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+        const DWORD jobError = GetLastError();
+        TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, kTerminationWaitMs);
+        closeHandle(childStdIn);
+        closeHandle(childStdOut);
+        closeHandle(childStdErr);
+        closeHandle(pi.hThread);
+        closeHandle(pi.hProcess);
+        closeHandle(job);
+        DeleteFileW(stdinTempFilePath);
+        DeleteFileW(stdoutTempFilePath);
+        DeleteFileW(stderrTempFilePath);
+        if (errorText) {
+            *errorText = std::wstring(T(L"script_runner.error.configure_job_prefix")) + std::to_wstring(jobError);
+        }
+        return false;
+    }
+
+    if (!AssignProcessToJobObject(job, pi.hProcess)) {
+        const DWORD jobError = GetLastError();
+        TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, kTerminationWaitMs);
+        closeHandle(childStdIn);
+        closeHandle(childStdOut);
+        closeHandle(childStdErr);
+        closeHandle(pi.hThread);
+        closeHandle(pi.hProcess);
+        closeHandle(job);
+        DeleteFileW(stdinTempFilePath);
+        DeleteFileW(stdoutTempFilePath);
+        DeleteFileW(stderrTempFilePath);
+        if (errorText) {
+            *errorText = std::wstring(T(L"script_runner.error.assign_job_prefix")) + std::to_wstring(jobError);
+        }
+        return false;
+    }
+
+    if (ResumeThread(pi.hThread) == DWORD(-1)) {
+        const DWORD resumeError = GetLastError();
+        TerminateJobObject(job, 1);
+        WaitForSingleObject(pi.hProcess, kTerminationWaitMs);
+        closeHandle(childStdIn);
+        closeHandle(childStdOut);
+        closeHandle(childStdErr);
+        closeHandle(pi.hThread);
+        closeHandle(pi.hProcess);
+        closeHandle(job);
+        DeleteFileW(stdinTempFilePath);
+        DeleteFileW(stdoutTempFilePath);
+        DeleteFileW(stderrTempFilePath);
+        if (errorText) {
+            *errorText = std::wstring(T(L"script_runner.error.resume_thread_prefix")) + std::to_wstring(resumeError);
+        }
+        return false;
+    }
+
+    closeHandle(childStdIn);
+    closeHandle(childStdOut);
+    closeHandle(childStdErr);
+
+    const DWORD waitResult = WaitForSingleObject(pi.hProcess, timeoutMs);
+    if (waitResult == WAIT_TIMEOUT) {
+        DWORD terminationError = ERROR_SUCCESS;
+        if (!TerminateJobObject(job, 1)) {
+            terminationError = GetLastError();
+        }
+        const DWORD terminationWait = WaitForSingleObject(pi.hProcess, kTerminationWaitMs);
+        if (terminationError == ERROR_SUCCESS && terminationWait != WAIT_OBJECT_0) {
+            terminationError = terminationWait == WAIT_FAILED ? GetLastError() : ERROR_TIMEOUT;
+        }
+        closeHandle(pi.hThread);
+        closeHandle(pi.hProcess);
+        closeHandle(job);
+        DeleteFileW(stdinTempFilePath);
+        DeleteFileW(stdoutTempFilePath);
+        DeleteFileW(stderrTempFilePath);
+        if (errorText) {
+            if (terminationError == ERROR_SUCCESS) {
+                *errorText = T(L"script_runner.error.timeout");
+            } else {
+                *errorText = std::wstring(T(L"script_runner.error.terminate_job_prefix"))
+                    + std::to_wstring(terminationError);
+            }
+        }
+        return false;
+    }
+
+    if (waitResult != WAIT_OBJECT_0) {
+        const DWORD waitError = waitResult == WAIT_FAILED ? GetLastError() : ERROR_INVALID_DATA;
+        TerminateJobObject(job, 1);
+        WaitForSingleObject(pi.hProcess, kTerminationWaitMs);
+        closeHandle(pi.hThread);
+        closeHandle(pi.hProcess);
+        closeHandle(job);
+        DeleteFileW(stdinTempFilePath);
+        DeleteFileW(stdoutTempFilePath);
+        DeleteFileW(stderrTempFilePath);
+        if (errorText) {
+            *errorText = std::wstring(T(L"script_runner.error.wait_process_prefix")) + std::to_wstring(waitError);
         }
         return false;
     }
 
     DWORD exitCode = 0;
-    GetExitCodeProcess(pi.hProcess, &exitCode);
+    if (!GetExitCodeProcess(pi.hProcess, &exitCode)) {
+        const DWORD exitCodeError = GetLastError();
+        closeHandle(pi.hThread);
+        closeHandle(pi.hProcess);
+        closeHandle(job);
+        DeleteFileW(stdinTempFilePath);
+        DeleteFileW(stdoutTempFilePath);
+        DeleteFileW(stderrTempFilePath);
+        if (errorText) {
+            *errorText = std::wstring(T(L"script_runner.error.get_exit_code_prefix"))
+                + std::to_wstring(exitCodeError);
+        }
+        return false;
+    }
     closeHandle(pi.hThread);
     closeHandle(pi.hProcess);
+    closeHandle(job);
 
-    const std::string utf8Output = ReadFileToString(stdoutTempFilePath);
-    const std::string stderrBytes = ReadFileToString(stderrTempFilePath);
+    std::string utf8Output;
+    std::string stderrBytes;
+    DWORD stdoutError = ERROR_SUCCESS;
+    DWORD stderrError = ERROR_SUCCESS;
+    const bool stdoutRead = ReadFileToString(stdoutTempFilePath, &utf8Output, &stdoutError);
+    const bool stderrRead = ReadFileToString(stderrTempFilePath, &stderrBytes, &stderrError);
     DeleteFileW(stdinTempFilePath);
     DeleteFileW(stdoutTempFilePath);
     DeleteFileW(stderrTempFilePath);
+
+    if (!stdoutRead || !stderrRead) {
+        const DWORD readError = !stdoutRead ? stdoutError : stderrError;
+        if (errorText) {
+            if (readError == ERROR_FILE_TOO_LARGE) {
+                *errorText = T(L"script_runner.error.output_limit");
+            } else {
+                *errorText = std::wstring(T(L"script_runner.error.read_output_prefix"))
+                    + std::to_wstring(readError);
+            }
+        }
+        return false;
+    }
 
     const std::wstring output = BytesToWide(utf8Output);
     const std::wstring stderrText = BytesToWide(stderrBytes);

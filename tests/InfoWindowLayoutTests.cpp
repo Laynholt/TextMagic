@@ -227,6 +227,11 @@ int main() {
           "custom draw preserves keyboard focus indication");
     Check(content_surface_style::kTableRegionInset == 2,
           "tables expose a two-pixel rounded frame");
+    Check(content_surface_style::ResolveTableFrameOwner()
+              == content_surface_style::TableFrameOwner::Parent,
+          "table frames remain parent-owned");
+    Check(!content_surface_style::UsesNativeTableHeaderTheme(),
+          "table headers use custom non-themed painting");
     Check(content_surface_style::kDefaultRegionInset == 1,
           "shared rounded controls keep their existing inset");
     Check(content_surface_style::kLogsRegionInset == 2,

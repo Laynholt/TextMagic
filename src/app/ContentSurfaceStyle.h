@@ -27,6 +27,19 @@ struct ListRowPaint {
     UINT itemState;
 };
 
+enum class TableFrameOwner {
+    Parent,
+    Child,
+};
+
+constexpr TableFrameOwner ResolveTableFrameOwner() {
+    return TableFrameOwner::Parent;
+}
+
+constexpr bool UsesNativeTableHeaderTheme() {
+    return false;
+}
+
 struct SurfaceRect {
     int x;
     int y;

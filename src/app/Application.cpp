@@ -380,60 +380,6 @@ void StripNativeListViewFrame(HWND listView) {
             | SWP_FRAMECHANGED);
 }
 
-void PaintDarkListViewSurfaceFrame(HWND listView) {
-    if (!listView) {
-        return;
-    }
-    const HDC hdc = GetWindowDC(listView);
-    if (!hdc) {
-        return;
-    }
-
-    const HGDIOBJ previousPen = SelectObject(hdc, GetStockObject(DC_PEN));
-    const HGDIOBJ previousBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-    SetDCPenColor(hdc, content_surface_style::kListBorder);
-
-    RECT windowRect = {};
-    GetWindowRect(listView, &windowRect);
-    const int width = windowRect.right - windowRect.left;
-    const int height = windowRect.bottom - windowRect.top;
-    const int inset = content_surface_style::kTableRegionInset;
-    RoundRect(
-        hdc,
-        inset,
-        inset,
-        width - inset,
-        height - inset,
-        2 * content_surface_style::kCornerRadius,
-        2 * content_surface_style::kCornerRadius);
-
-    SelectObject(hdc, previousBrush);
-    SelectObject(hdc, previousPen);
-    ReleaseDC(listView, hdc);
-}
-
-LRESULT CALLBACK DarkListViewSurfaceSubclassProc(
-    HWND hWnd,
-    UINT message,
-    WPARAM wParam,
-    LPARAM lParam,
-    UINT_PTR subclassId,
-    DWORD_PTR
-) {
-    if (message == WM_NCDESTROY) {
-        RemoveWindowSubclass(hWnd, DarkListViewSurfaceSubclassProc, subclassId);
-        return DefSubclassProc(hWnd, message, wParam, lParam);
-    }
-    const LRESULT result = DefSubclassProc(hWnd, message, wParam, lParam);
-    if (message == WM_NCPAINT || message == WM_PAINT) {
-        PaintDarkListViewSurfaceFrame(hWnd);
-    }
-    if (message == WM_THEMECHANGED || message == WM_SIZE) {
-        RedrawWindow(hWnd, nullptr, nullptr, RDW_INVALIDATE | RDW_FRAME);
-    }
-    return result;
-}
-
 bool HandleListViewCustomDraw(
     HWND listView,
     NMHDR* header,
@@ -2032,6 +1978,9 @@ LRESULT CALLBACK DarkHeaderSubclassProc(
     if (message == WM_ERASEBKGND) {
         return 1;
     }
+    if (message == WM_NCPAINT) {
+        return 0;
+    }
     if (message == WM_NCDESTROY) {
         RemoveWindowSubclass(hWnd, DarkHeaderSubclassProc, subclassId);
         return DefSubclassProc(hWnd, message, wParam, lParam);
@@ -2058,6 +2007,9 @@ void ApplyDarkListViewHeader(HWND listView) {
         return;
     }
     SendMessageW(header, WM_SETFONT, SendMessageW(listView, WM_GETFONT, 0, 0), TRUE);
+    if (!content_surface_style::UsesNativeTableHeaderTheme()) {
+        SetWindowTheme(header, L"", L"");
+    }
     SetWindowSubclass(header, DarkHeaderSubclassProc, DARK_HEADER_SUBCLASS_ID, 0);
     InvalidateRect(header, nullptr, TRUE);
 }
@@ -5668,7 +5620,6 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 ListView_SetTextBkColor(state->blacklistList, RGB(37, 37, 37));
                 ListView_SetTextColor(state->blacklistList, RGB(245, 245, 245));
                 StripNativeListViewFrame(state->blacklistList);
-                SetWindowSubclass(state->blacklistList, DarkListViewSurfaceSubclassProc, 1, 0);
                 ApplyDarkScrollBar(
                     state->blacklistList,
                     content_surface_style::UsesExplorerScrollbarTheme(
@@ -6403,7 +6354,6 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
                 ListView_SetTextBkColor(state->textControl, RGB(37, 37, 37));
                 ListView_SetTextColor(state->textControl, RGB(245, 245, 245));
                 StripNativeListViewFrame(state->textControl);
-                SetWindowSubclass(state->textControl, DarkListViewSurfaceSubclassProc, 1, 0);
 
                 LVCOLUMNW column = {};
                 column.mask = LVCF_TEXT | LVCF_WIDTH;

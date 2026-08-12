@@ -20,7 +20,7 @@ configure_file(
     @ONLY
 )
 
-file(GLOB TM_LANGUAGE_SOURCE_FILES
+file(GLOB TM_LANGUAGE_SOURCE_FILES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/lang/*.ini"
 )
 list(SORT TM_LANGUAGE_SOURCE_FILES)
@@ -98,18 +98,25 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     winhttp
 )
 
-if(MSVC)
-    target_compile_options(${PROJECT_NAME} PRIVATE
-        /W4
-        /permissive-
-        /utf-8
-    )
-elseif(MINGW)
-    target_compile_options(${PROJECT_NAME} PRIVATE
-        -Wall
-        -Wextra
-        -Wpedantic
-    )
+function(textmagic_apply_warnings target)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE
+            /W4
+            /permissive-
+            /utf-8
+        )
+    elseif(MINGW)
+        target_compile_options(${target} PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+        )
+    endif()
+endfunction()
+
+textmagic_apply_warnings(${PROJECT_NAME})
+
+if(MINGW)
     target_link_options(${PROJECT_NAME} PRIVATE -mwindows)
 endif()
 
@@ -120,7 +127,8 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
 )
 
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${PROJECT_NAME}>/scripts"
+    COMMAND ${CMAKE_COMMAND} -E remove_directory
+        "$<TARGET_FILE_DIR:${PROJECT_NAME}>/scripts"
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_CURRENT_SOURCE_DIR}/scripts"
         "$<TARGET_FILE_DIR:${PROJECT_NAME}>/scripts"
@@ -132,7 +140,14 @@ install(TARGETS ${PROJECT_NAME}
 
 enable_testing()
 
-add_executable(TextMagicAppVersionTests
+function(textmagic_add_test target)
+    add_executable(${target} ${ARGN})
+    target_compile_features(${target} PRIVATE cxx_std_17)
+    textmagic_apply_warnings(${target})
+    add_test(NAME ${target} COMMAND ${target})
+endfunction()
+
+textmagic_add_test(TextMagicAppVersionTests
     tests/AppVersionTests.cpp
 )
 
@@ -140,10 +155,7 @@ target_include_directories(TextMagicAppVersionTests PRIVATE
     ${CMAKE_BINARY_DIR}/generated
 )
 
-target_compile_features(TextMagicAppVersionTests PRIVATE cxx_std_17)
-add_test(NAME TextMagicAppVersionTests COMMAND TextMagicAppVersionTests)
-
-add_executable(TextMagicInputBufferTests
+textmagic_add_test(TextMagicInputBufferTests
     src/core/text/InputBuffer.cpp
     tests/InputBufferTests.cpp
 )
@@ -152,11 +164,7 @@ target_include_directories(TextMagicInputBufferTests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core/text
 )
 
-target_compile_features(TextMagicInputBufferTests PRIVATE cxx_std_17)
-
-add_test(NAME TextMagicInputBufferTests COMMAND TextMagicInputBufferTests)
-
-add_executable(TextMagicLogFileTests
+textmagic_add_test(TextMagicLogFileTests
     src/core/common/EncodingUtils.cpp
     src/core/common/LogFile.cpp
     tests/LogFileTests.cpp
@@ -166,11 +174,7 @@ target_include_directories(TextMagicLogFileTests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
 )
 
-target_compile_features(TextMagicLogFileTests PRIVATE cxx_std_17)
-
-add_test(NAME TextMagicLogFileTests COMMAND TextMagicLogFileTests)
-
-add_executable(TextMagicApplicationBlacklistTests
+textmagic_add_test(TextMagicApplicationBlacklistTests
     src/core/common/ApplicationBlacklist.cpp
     src/core/common/EncodingUtils.cpp
     tests/ApplicationBlacklistTests.cpp
@@ -180,11 +184,7 @@ target_include_directories(TextMagicApplicationBlacklistTests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
 )
 
-target_compile_features(TextMagicApplicationBlacklistTests PRIVATE cxx_std_17)
-
-add_test(NAME TextMagicApplicationBlacklistTests COMMAND TextMagicApplicationBlacklistTests)
-
-add_executable(TextMagicRunningApplicationTests
+textmagic_add_test(TextMagicRunningApplicationTests
     src/core/common/ApplicationBlacklist.cpp
     src/core/common/EncodingUtils.cpp
     tests/RunningApplicationTests.cpp
@@ -195,11 +195,7 @@ target_include_directories(TextMagicRunningApplicationTests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
 )
 
-target_compile_features(TextMagicRunningApplicationTests PRIVATE cxx_std_17)
-
-add_test(NAME TextMagicRunningApplicationTests COMMAND TextMagicRunningApplicationTests)
-
-add_executable(TextMagicScriptExecutionGateTests
+textmagic_add_test(TextMagicScriptExecutionGateTests
     tests/ScriptExecutionGateTests.cpp
 )
 
@@ -207,11 +203,7 @@ target_include_directories(TextMagicScriptExecutionGateTests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/app
 )
 
-target_compile_features(TextMagicScriptExecutionGateTests PRIVATE cxx_std_17)
-
-add_test(NAME TextMagicScriptExecutionGateTests COMMAND TextMagicScriptExecutionGateTests)
-
-add_executable(TextMagicTextBridgeInputUtilsTests
+textmagic_add_test(TextMagicTextBridgeInputUtilsTests
     tests/TextBridgeInputUtilsTests.cpp
 )
 
@@ -219,11 +211,7 @@ target_include_directories(TextMagicTextBridgeInputUtilsTests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core/text
 )
 
-target_compile_features(TextMagicTextBridgeInputUtilsTests PRIVATE cxx_std_17)
-
-add_test(NAME TextMagicTextBridgeInputUtilsTests COMMAND TextMagicTextBridgeInputUtilsTests)
-
-add_executable(TextMagicFullscreenUtilsTests
+textmagic_add_test(TextMagicFullscreenUtilsTests
     src/app/FullscreenUtils.cpp
     tests/FullscreenUtilsTests.cpp
 )
@@ -232,12 +220,9 @@ target_include_directories(TextMagicFullscreenUtilsTests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/app
 )
 
-target_compile_features(TextMagicFullscreenUtilsTests PRIVATE cxx_std_17)
 target_link_libraries(TextMagicFullscreenUtilsTests PRIVATE dwmapi user32)
 
-add_test(NAME TextMagicFullscreenUtilsTests COMMAND TextMagicFullscreenUtilsTests)
-
-add_executable(TextMagicLocalizationTests
+textmagic_add_test(TextMagicLocalizationTests
     src/app/Localization.cpp
     src/core/common/EncodingUtils.cpp
     tests/LocalizationTests.cpp
@@ -250,11 +235,7 @@ target_include_directories(TextMagicLocalizationTests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
 )
 
-target_compile_features(TextMagicLocalizationTests PRIVATE cxx_std_17)
-
-add_test(NAME TextMagicLocalizationTests COMMAND TextMagicLocalizationTests)
-
-add_executable(TextMagicScriptRunnerTests
+textmagic_add_test(TextMagicScriptRunnerTests
     src/app/Localization.cpp
     src/core/common/EncodingUtils.cpp
     src/core/scripts/ScriptManifest.cpp
@@ -270,15 +251,12 @@ target_include_directories(TextMagicScriptRunnerTests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core/scripts
 )
 
-target_compile_features(TextMagicScriptRunnerTests PRIVATE cxx_std_17)
 target_compile_definitions(TextMagicScriptRunnerTests PRIVATE
     TEXTMAGIC_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
 )
 target_link_libraries(TextMagicScriptRunnerTests PRIVATE crypt32)
 
-add_test(NAME TextMagicScriptRunnerTests COMMAND TextMagicScriptRunnerTests)
-
-add_executable(TextMagicClipboardUtilsTests
+textmagic_add_test(TextMagicClipboardUtilsTests
     src/core/common/ClipboardUtils.cpp
     tests/ClipboardUtilsTests.cpp
 )
@@ -287,12 +265,9 @@ target_include_directories(TextMagicClipboardUtilsTests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
 )
 
-target_compile_features(TextMagicClipboardUtilsTests PRIVATE cxx_std_17)
 target_link_libraries(TextMagicClipboardUtilsTests PRIVATE ole32 user32)
 
-add_test(NAME TextMagicClipboardUtilsTests COMMAND TextMagicClipboardUtilsTests)
-
-add_executable(TextMagicUpdateServiceTests
+textmagic_add_test(TextMagicUpdateServiceTests
     src/app/Localization.cpp
     src/core/common/EncodingUtils.cpp
     src/core/common/PowerShellUtils.cpp
@@ -308,12 +283,9 @@ target_include_directories(TextMagicUpdateServiceTests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core/update
 )
 
-target_compile_features(TextMagicUpdateServiceTests PRIVATE cxx_std_17)
 target_link_libraries(TextMagicUpdateServiceTests PRIVATE bcrypt winhttp)
 
-add_test(NAME TextMagicUpdateServiceTests COMMAND TextMagicUpdateServiceTests)
-
-add_executable(TextMagicScriptManifestTests
+textmagic_add_test(TextMagicScriptManifestTests
     src/app/Localization.cpp
     src/core/common/EncodingUtils.cpp
     src/core/scripts/ScriptManifest.cpp
@@ -328,11 +300,7 @@ target_include_directories(TextMagicScriptManifestTests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core/scripts
 )
 
-target_compile_features(TextMagicScriptManifestTests PRIVATE cxx_std_17)
-
-add_test(NAME TextMagicScriptManifestTests COMMAND TextMagicScriptManifestTests)
-
-add_executable(TextMagicPopupMenuNavigationTests
+textmagic_add_test(TextMagicPopupMenuNavigationTests
     tests/PopupMenuNavigationTests.cpp
 )
 
@@ -341,11 +309,7 @@ target_include_directories(TextMagicPopupMenuNavigationTests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ui
 )
 
-target_compile_features(TextMagicPopupMenuNavigationTests PRIVATE cxx_std_17)
-
-add_test(NAME TextMagicPopupMenuNavigationTests COMMAND TextMagicPopupMenuNavigationTests)
-
-add_executable(TextMagicOutputLayoutTests
+textmagic_add_test(TextMagicOutputLayoutTests
     tests/OutputLayoutTests.cpp
 )
 
@@ -353,11 +317,7 @@ target_include_directories(TextMagicOutputLayoutTests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/app
 )
 
-target_compile_features(TextMagicOutputLayoutTests PRIVATE cxx_std_17)
-
-add_test(NAME TextMagicOutputLayoutTests COMMAND TextMagicOutputLayoutTests)
-
-add_executable(TextMagicModifierGestureResolverTests
+textmagic_add_test(TextMagicModifierGestureResolverTests
     tests/ModifierGestureResolverTests.cpp
 )
 
@@ -366,11 +326,7 @@ target_include_directories(TextMagicModifierGestureResolverTests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core/scripts
 )
 
-target_compile_features(TextMagicModifierGestureResolverTests PRIVATE cxx_std_17)
-
-add_test(NAME TextMagicModifierGestureResolverTests COMMAND TextMagicModifierGestureResolverTests)
-
-add_executable(TextMagicInfoWindowModelTests
+textmagic_add_test(TextMagicInfoWindowModelTests
     tests/InfoWindowModelTests.cpp
 )
 
@@ -378,16 +334,10 @@ target_include_directories(TextMagicInfoWindowModelTests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/app
 )
 
-target_compile_features(TextMagicInfoWindowModelTests PRIVATE cxx_std_17)
-add_test(NAME TextMagicInfoWindowModelTests COMMAND TextMagicInfoWindowModelTests)
-
-add_executable(TextMagicInfoWindowLayoutTests
+textmagic_add_test(TextMagicInfoWindowLayoutTests
     tests/InfoWindowLayoutTests.cpp
 )
 
 target_include_directories(TextMagicInfoWindowLayoutTests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/app
 )
-
-target_compile_features(TextMagicInfoWindowLayoutTests PRIVATE cxx_std_17)
-add_test(NAME TextMagicInfoWindowLayoutTests COMMAND TextMagicInfoWindowLayoutTests)

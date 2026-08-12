@@ -37,6 +37,14 @@ bool WriteText(HWND ownerWindow, const std::wstring& text);
 bool ReadText(HWND ownerWindow, std::wstring* text);
 
 namespace Detail {
+enum class ClipboardProbeResult {
+    Empty,
+    NonEmpty,
+    Unavailable,
+};
+
 bool DecodeTextBlock(UINT format, const void* raw, SIZE_T bytes, std::wstring* text);
+bool IsClipboardEnumerationComplete(DWORD terminalError) noexcept;
+ClipboardProbeResult ClassifyClipboardProbe(bool opened, bool empty) noexcept;
 }
 }

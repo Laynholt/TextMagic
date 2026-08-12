@@ -116,5 +116,75 @@ int main() {
         "unterminated ANSI is rejected"
     );
 
+    const unsigned char oddUnicode[] = {0x41, 0x00, 0x00};
+    passed &= Check(
+        !ClipboardUtils::Detail::DecodeTextBlock(
+            CF_UNICODETEXT,
+            oddUnicode,
+            sizeof(oddUnicode),
+            &text
+        ),
+        "odd-sized Unicode is rejected"
+    );
+
+    const wchar_t emptyUnicode[] = {L'\0'};
+    passed &= Check(
+        ClipboardUtils::Detail::DecodeTextBlock(
+            CF_UNICODETEXT,
+            emptyUnicode,
+            sizeof(emptyUnicode),
+            &text
+        ) && text.empty(),
+        "empty Unicode is accepted"
+    );
+    passed &= Check(
+        !ClipboardUtils::Detail::DecodeTextBlock(
+            CF_UNICODETEXT,
+            emptyUnicode,
+            0,
+            &text
+        ),
+        "zero-sized Unicode is rejected"
+    );
+
+    const char emptyAnsi[] = {'\0'};
+    passed &= Check(
+        ClipboardUtils::Detail::DecodeTextBlock(
+            CF_TEXT,
+            emptyAnsi,
+            sizeof(emptyAnsi),
+            &text
+        ) && text.empty(),
+        "empty ANSI is accepted"
+    );
+    passed &= Check(
+        !ClipboardUtils::Detail::DecodeTextBlock(CF_TEXT, nullptr, 0, &text),
+        "zero-sized ANSI is rejected"
+    );
+
+    passed &= Check(
+        ClipboardUtils::Detail::IsClipboardEnumerationComplete(ERROR_SUCCESS),
+        "successful clipboard enumeration is complete"
+    );
+    passed &= Check(
+        !ClipboardUtils::Detail::IsClipboardEnumerationComplete(ERROR_ACCESS_DENIED),
+        "failed clipboard enumeration is incomplete"
+    );
+    passed &= Check(
+        ClipboardUtils::Detail::ClassifyClipboardProbe(false, false)
+            == ClipboardUtils::Detail::ClipboardProbeResult::Unavailable,
+        "clipboard probe open failure is unavailable"
+    );
+    passed &= Check(
+        ClipboardUtils::Detail::ClassifyClipboardProbe(true, true)
+            == ClipboardUtils::Detail::ClipboardProbeResult::Empty,
+        "successful empty clipboard probe is empty"
+    );
+    passed &= Check(
+        ClipboardUtils::Detail::ClassifyClipboardProbe(true, false)
+            == ClipboardUtils::Detail::ClipboardProbeResult::NonEmpty,
+        "successful non-empty clipboard probe is non-empty"
+    );
+
     return passed ? 0 : 1;
 }

@@ -15,13 +15,22 @@ bool OpenClipboardWithRetry(HWND ownerWindow) {
     return false;
 }
 
-bool IsClipboardEmpty(HWND ownerWindow) {
+ClipboardUtils::Detail::ClipboardProbeResult ProbeClipboardEmpty(HWND ownerWindow) {
     if (!OpenClipboardWithRetry(ownerWindow)) {
-        return false;
+        return ClipboardUtils::Detail::ClipboardProbeResult::Unavailable;
     }
-    const bool empty = CountClipboardFormats() == 0;
+
+    SetLastError(ERROR_SUCCESS);
+    const int formatCount = CountClipboardFormats();
+    const DWORD probeError = GetLastError();
+    const auto result = ClipboardUtils::Detail::ClassifyClipboardProbe(
+        true,
+        formatCount == 0
+    );
     CloseClipboard();
-    return empty;
+    return probeError == ERROR_SUCCESS
+        ? result
+        : ClipboardUtils::Detail::ClipboardProbeResult::Unavailable;
 }
 
 void FreeClipboardData(UINT format, HANDLE handle) {
@@ -49,9 +58,25 @@ namespace ClipboardUtils {
 Snapshot::Snapshot() {
     if (OpenClipboardWithRetry(nullptr)) {
         m_complete = true;
-        m_wasEmpty = CountClipboardFormats() == 0;
+        SetLastError(ERROR_SUCCESS);
+        const int formatCount = CountClipboardFormats();
+        const DWORD countError = GetLastError();
+        m_wasEmpty = formatCount == 0 && countError == ERROR_SUCCESS;
+        if (countError != ERROR_SUCCESS) {
+            m_complete = false;
+        }
+
         UINT format = 0;
-        while ((format = EnumClipboardFormats(format)) != 0) {
+        for (;;) {
+            SetLastError(ERROR_SUCCESS);
+            format = EnumClipboardFormats(format);
+            if (format == 0) {
+                if (!Detail::IsClipboardEnumerationComplete(GetLastError())) {
+                    m_complete = false;
+                }
+                break;
+            }
+
             HANDLE source = GetClipboardData(format);
             if (!source) {
                 m_complete = false;
@@ -73,10 +98,10 @@ Snapshot::Snapshot() {
     }
 
     m_hasText = ReadText(nullptr, &m_text);
-    if (!m_hasText) {
+    if (!m_hasText && m_formats.empty() && m_wasEmpty && m_complete) {
         m_text.clear();
-        if (m_formats.empty()) {
-            m_wasEmpty = IsClipboardEmpty(nullptr);
+        if (ProbeClipboardEmpty(nullptr) == Detail::ClipboardProbeResult::Unavailable) {
+            m_complete = false;
         }
     }
 }
@@ -192,6 +217,17 @@ bool WriteText(HWND ownerWindow, const std::wstring& text) {
 }
 
 namespace Detail {
+bool IsClipboardEnumerationComplete(DWORD terminalError) noexcept {
+    return terminalError == ERROR_SUCCESS;
+}
+
+ClipboardProbeResult ClassifyClipboardProbe(bool opened, bool empty) noexcept {
+    if (!opened) {
+        return ClipboardProbeResult::Unavailable;
+    }
+    return empty ? ClipboardProbeResult::Empty : ClipboardProbeResult::NonEmpty;
+}
+
 bool DecodeTextBlock(UINT format, const void* raw, SIZE_T bytes, std::wstring* text) {
     if (text) {
         text->clear();
@@ -202,7 +238,7 @@ bool DecodeTextBlock(UINT format, const void* raw, SIZE_T bytes, std::wstring* t
     }
 
     if (format == CF_UNICODETEXT) {
-        if (bytes < sizeof(wchar_t)) {
+        if (bytes == 0 || bytes % sizeof(wchar_t) != 0) {
             return false;
         }
         const auto* begin = static_cast<const wchar_t*>(raw);

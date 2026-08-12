@@ -76,11 +76,19 @@ int main() {
         MOD_SHIFT, VK_SHIFT);
     passed &= CheckHotkey(L"Ctrl+Alt+L", ScriptManifest::HotkeyKind::KeyChord,
         MOD_CONTROL | MOD_ALT, 'L');
+    for (int keyIndex = 1; keyIndex <= 24; ++keyIndex) {
+        const std::wstring text = L"Ctrl+F" + std::to_wstring(keyIndex);
+        passed &= CheckHotkey(text.c_str(), ScriptManifest::HotkeyKind::KeyChord,
+            MOD_CONTROL, static_cast<UINT>(VK_F1 + keyIndex - 1));
+    }
     passed &= CheckHotkeyRejects(L"L");
     passed &= CheckHotkeyRejects(L"Ctrl+L+M");
     passed &= CheckHotkeyRejects(L"Shift+Shift+Shift");
     passed &= CheckHotkeyRejects(L"Ctrl+Ctrl+L");
     passed &= CheckHotkeyRejects(L"Ctrl+Shift+Ctrl");
+    for (const auto* invalid : {L"F1suffix", L"Ctrl++A", L"+A", L"A+", L"Ctrl+ +A"}) {
+        passed &= CheckHotkeyRejects(invalid);
+    }
 
     const std::filesystem::path directory =
         std::filesystem::temp_directory_path() / L"TextMagic-manifest-tests";

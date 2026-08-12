@@ -23,8 +23,6 @@ public:
         m_hasRelease = true;
     }
 
-    bool IsReserved() const noexcept { return m_reserved; }
-
 private:
     bool m_reserved = false;
     bool m_hasRelease = false;
@@ -139,10 +137,6 @@ constexpr bool RearmOnReleasedKey(
     }
     armed = true;
     return true;
-}
-
-constexpr bool ShouldTrackInput(bool blocked) noexcept {
-    return !blocked;
 }
 
 constexpr bool ShouldRearmBlockedKeyEvent(bool keyUp) noexcept {

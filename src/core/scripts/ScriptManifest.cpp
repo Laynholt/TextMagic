@@ -4,6 +4,7 @@
 #include "Localization.h"
 
 #include <algorithm>
+#include <cwchar>
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
@@ -71,8 +72,10 @@ bool ParseVirtualKey(const std::wstring& token, UINT* virtualKey) {
     }
 
     if (token.size() >= 2 && token[0] == L'F') {
-        const int keyIndex = _wtoi(token.c_str() + 1);
-        if (keyIndex >= 1 && keyIndex <= 24) {
+        wchar_t* end = nullptr;
+        const long keyIndex = std::wcstol(token.c_str() + 1, &end, 10);
+        if (end != token.c_str() + 1 && *end == L'\0'
+            && keyIndex >= 1 && keyIndex <= 24) {
             *virtualKey = static_cast<UINT>(VK_F1 + (keyIndex - 1));
             return true;
         }
@@ -439,7 +442,10 @@ bool ScriptManifest::ParseHotkey(
     for (const std::wstring& rawToken : parts) {
         const std::wstring token = ToUpperAscii(Trim(rawToken));
         if (token.empty()) {
-            continue;
+            if (error) {
+                *error = T(L"manifest.error.primary_key_missing");
+            }
+            return false;
         }
 
         ModifierToken modifier{};

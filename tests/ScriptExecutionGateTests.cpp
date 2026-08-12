@@ -41,7 +41,6 @@ int main() {
     Expect(!zeroReleaseGate.TryReserve(1), "release at zero must start cooldown");
     Expect(zeroReleaseGate.TryReserve(250), "zero-time cooldown boundary must reserve");
 
-    Expect(!HotkeyDispatch::ShouldTrackInput(true), "blocked input must bypass tracking");
     Expect(HotkeyDispatch::Decide(true, true, false) == HotkeyDispatch::Action::PassThrough,
            "blocked hotkey must pass through");
     Expect(HotkeyDispatch::Decide(false, true, false) == HotkeyDispatch::Action::Consume,

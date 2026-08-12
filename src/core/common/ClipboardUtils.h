@@ -14,22 +14,29 @@ public:
     Snapshot(const Snapshot&) = delete;
     Snapshot& operator=(const Snapshot&) = delete;
 
+    bool IsComplete() const noexcept;
+    bool Restore();
+
 private:
     struct FormatData {
         UINT format = 0;
         HANDLE handle = nullptr;
     };
 
-    void Restore();
-
     std::vector<FormatData> m_formats;
     std::wstring m_text;
+    bool m_complete = false;
     bool m_hasText = false;
     bool m_wasEmpty = false;
+    bool m_restoreAttempted = false;
     bool m_restored = false;
 };
 
 bool Clear(HWND ownerWindow);
 bool WriteText(HWND ownerWindow, const std::wstring& text);
 bool ReadText(HWND ownerWindow, std::wstring* text);
+
+namespace Detail {
+bool DecodeTextBlock(UINT format, const void* raw, SIZE_T bytes, std::wstring* text);
+}
 }

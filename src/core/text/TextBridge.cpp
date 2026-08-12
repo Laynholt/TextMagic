@@ -110,6 +110,9 @@ bool TextBridge::ReplaceText(
 
 std::wstring TextBridge::CopyFromActiveControl() const {
     ClipboardUtils::Snapshot snapshot;
+    if (!snapshot.IsComplete()) {
+        return L"";
+    }
 
     if (!WaitForModifiersRelease()) {
         return L"";

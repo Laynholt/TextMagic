@@ -1,6 +1,8 @@
 #include "ClipboardUtils.h"
 
+#include <algorithm>
 #include <cstring>
+#include <limits>
 
 namespace {
 bool OpenClipboardWithRetry(HWND ownerWindow) {
@@ -46,16 +48,26 @@ void FreeClipboardData(UINT format, HANDLE handle) {
 namespace ClipboardUtils {
 Snapshot::Snapshot() {
     if (OpenClipboardWithRetry(nullptr)) {
+        m_complete = true;
         m_wasEmpty = CountClipboardFormats() == 0;
         UINT format = 0;
         while ((format = EnumClipboardFormats(format)) != 0) {
             HANDLE source = GetClipboardData(format);
-            HANDLE duplicate = source
-                ? OleDuplicateData(source, static_cast<CLIPFORMAT>(format), 0)
-                : nullptr;
-            if (duplicate) {
-                m_formats.push_back({format, duplicate});
+            if (!source) {
+                m_complete = false;
+                continue;
             }
+
+            HANDLE duplicate = OleDuplicateData(
+                source,
+                static_cast<CLIPFORMAT>(format),
+                0
+            );
+            if (!duplicate) {
+                m_complete = false;
+                continue;
+            }
+            m_formats.push_back({format, duplicate});
         }
         CloseClipboard();
     }
@@ -76,40 +88,60 @@ Snapshot::~Snapshot() {
     }
 }
 
-void Snapshot::Restore() {
+bool Snapshot::IsComplete() const noexcept {
+    return m_complete;
+}
+
+bool Snapshot::Restore() {
     if (m_restored) {
-        return;
+        return true;
+    }
+    if (m_restoreAttempted || !m_complete) {
+        return false;
     }
 
-    if (!m_formats.empty() && OpenClipboardWithRetry(nullptr)) {
-        bool restoredAny = false;
-        if (EmptyClipboard()) {
-            for (FormatData& item : m_formats) {
-                if (item.handle && SetClipboardData(item.format, item.handle)) {
-                    item.handle = nullptr;
-                    restoredAny = true;
-                }
+    if (!m_formats.empty()) {
+        if (!OpenClipboardWithRetry(nullptr)) {
+            return false;
+        }
+
+        if (!EmptyClipboard()) {
+            CloseClipboard();
+            return false;
+        }
+
+        m_restoreAttempted = true;
+        bool restoredAll = true;
+        for (FormatData& item : m_formats) {
+            if (item.handle && SetClipboardData(item.format, item.handle)) {
+                item.handle = nullptr;
+            } else {
+                restoredAll = false;
             }
         }
         CloseClipboard();
-        if (restoredAny) {
+
+        if (restoredAll) {
             m_restored = true;
-            return;
         }
+        return restoredAll;
     }
 
     if (m_hasText) {
         if (WriteText(nullptr, m_text)) {
             m_restored = true;
+            return true;
         }
-        return;
+        return false;
     }
 
     if (m_wasEmpty) {
         if (Clear(nullptr)) {
             m_restored = true;
+            return true;
         }
     }
+    return false;
 }
 
 bool Clear(HWND ownerWindow) {
@@ -159,6 +191,84 @@ bool WriteText(HWND ownerWindow, const std::wstring& text) {
     return true;
 }
 
+namespace Detail {
+bool DecodeTextBlock(UINT format, const void* raw, SIZE_T bytes, std::wstring* text) {
+    if (text) {
+        text->clear();
+    }
+
+    if (!raw) {
+        return false;
+    }
+
+    if (format == CF_UNICODETEXT) {
+        if (bytes < sizeof(wchar_t)) {
+            return false;
+        }
+        const auto* begin = static_cast<const wchar_t*>(raw);
+        const size_t characterCount = bytes / sizeof(wchar_t);
+        const wchar_t* end = begin + characterCount;
+        const wchar_t* terminator = std::find(begin, end, L'\0');
+        if (terminator == end) {
+            return false;
+        }
+        if (text) {
+            text->assign(begin, terminator);
+        }
+        return true;
+    }
+
+    if (format != CF_TEXT || bytes == 0) {
+        return false;
+    }
+
+    const auto* begin = static_cast<const char*>(raw);
+    const char* end = begin + bytes;
+    const char* terminator = std::find(begin, end, '\0');
+    if (terminator == end) {
+        return false;
+    }
+
+    const size_t byteCount = static_cast<size_t>(terminator - begin);
+    if (byteCount > static_cast<size_t>((std::numeric_limits<int>::max)())) {
+        return false;
+    }
+
+    if (byteCount == 0) {
+        return true;
+    }
+
+    const int requiredChars = MultiByteToWideChar(
+        CP_ACP,
+        0,
+        begin,
+        static_cast<int>(byteCount),
+        nullptr,
+        0
+    );
+    if (requiredChars <= 0) {
+        return false;
+    }
+
+    if (text) {
+        std::wstring wideText(static_cast<size_t>(requiredChars), L'\0');
+        const int convertedChars = MultiByteToWideChar(
+            CP_ACP,
+            0,
+            begin,
+            static_cast<int>(byteCount),
+            &wideText[0],
+            requiredChars
+        );
+        if (convertedChars != requiredChars) {
+            return false;
+        }
+        *text = wideText;
+    }
+    return true;
+}
+}
+
 bool ReadText(HWND ownerWindow, std::wstring* text) {
     if (text) {
         text->clear();
@@ -169,17 +279,16 @@ bool ReadText(HWND ownerWindow, std::wstring* text) {
 
     HANDLE handle = GetClipboardData(CF_UNICODETEXT);
     if (handle) {
-        const wchar_t* raw = static_cast<const wchar_t*>(GlobalLock(handle));
+        const SIZE_T bytes = GlobalSize(handle);
+        const void* raw = GlobalLock(handle);
         if (!raw) {
             CloseClipboard();
             return false;
         }
-        if (text) {
-            *text = raw;
-        }
+        const bool decoded = Detail::DecodeTextBlock(CF_UNICODETEXT, raw, bytes, text);
         GlobalUnlock(handle);
         CloseClipboard();
-        return true;
+        return decoded;
     }
 
     handle = GetClipboardData(CF_TEXT);
@@ -188,30 +297,17 @@ bool ReadText(HWND ownerWindow, std::wstring* text) {
         return false;
     }
 
-    const char* rawAnsi = static_cast<const char*>(GlobalLock(handle));
-    if (!rawAnsi) {
+    const SIZE_T bytes = GlobalSize(handle);
+    const void* raw = GlobalLock(handle);
+    if (!raw) {
         CloseClipboard();
         return false;
     }
 
-    const int requiredChars = MultiByteToWideChar(CP_ACP, 0, rawAnsi, -1, nullptr, 0);
-    if (requiredChars <= 0) {
-        GlobalUnlock(handle);
-        CloseClipboard();
-        return false;
-    }
-
-    if (text) {
-        std::wstring wideText(static_cast<size_t>(requiredChars), L'\0');
-        MultiByteToWideChar(CP_ACP, 0, rawAnsi, -1, &wideText[0], requiredChars);
-        if (!wideText.empty() && wideText.back() == L'\0') {
-            wideText.pop_back();
-        }
-        *text = wideText;
-    }
-
+    const bool decoded = Detail::DecodeTextBlock(CF_TEXT, raw, bytes, text);
     GlobalUnlock(handle);
+
     CloseClipboard();
-    return true;
+    return decoded;
 }
 }

@@ -76,9 +76,14 @@ int main() {
     {
         ClipboardUtils::Snapshot snapshot;
         passed &= Check(
+            snapshot.IsComplete(),
+            "fully duplicated snapshot is restorable"
+        );
+        passed &= Check(
             ClipboardUtils::WriteText(nullptr, L"temporary"),
             "clipboard is temporarily replaced"
         );
+        passed &= Check(snapshot.Restore(), "snapshot restore reports success");
     }
 
     std::wstring restoredText;
@@ -87,6 +92,29 @@ int main() {
         "text is restored"
     );
     passed &= Check(HasCustomValue(customFormat), "non-text format is restored");
+
+    const wchar_t unterminatedUnicode[] = {L'u', L't'};
+    std::wstring text;
+    passed &= Check(
+        !ClipboardUtils::Detail::DecodeTextBlock(
+            CF_UNICODETEXT,
+            unterminatedUnicode,
+            sizeof(unterminatedUnicode),
+            &text
+        ),
+        "unterminated Unicode is rejected"
+    );
+
+    const char unterminatedAnsi[] = {'a', 'n'};
+    passed &= Check(
+        !ClipboardUtils::Detail::DecodeTextBlock(
+            CF_TEXT,
+            unterminatedAnsi,
+            sizeof(unterminatedAnsi),
+            &text
+        ),
+        "unterminated ANSI is rejected"
+    );
 
     return passed ? 0 : 1;
 }

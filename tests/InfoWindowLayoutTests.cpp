@@ -183,9 +183,14 @@ int main() {
           "main hint does not overlap list");
 
     Check(content_surface_style::kCornerRadius == 10,
-          "large content surfaces use the Logs radius");
-    Check(content_surface_style::kLogsCornerRadius == 14,
-          "logs use the stronger rounded panel radius");
+          "main and Logs lists share the rounded corner radius");
+    Check(content_surface_style::kRoundedListContentPadding == 6,
+          "main and Logs lists share six-pixel content padding");
+    Check(content_surface_style::kRoundedListRegionInset == 1,
+          "main and Logs list children share a one-pixel region inset");
+    Check(content_surface_style::kRoundedListRegionInset
+              == content_surface_style::kDefaultRegionInset,
+          "rounded list geometry does not add a second inset");
     Check(content_surface_style::kMessageFill == RGB(42, 42, 44),
           "message surface uses the approved soft fill");
     Check(content_surface_style::kMessageBorder == RGB(55, 55, 58),
@@ -234,17 +239,16 @@ int main() {
           "table headers use custom non-themed painting");
     Check(content_surface_style::kDefaultRegionInset == 1,
           "shared rounded controls keep their existing inset");
-    Check(content_surface_style::kLogsRegionInset == 2,
-          "logs expose enough parent border to show rounded corners");
-    Check(content_surface_style::kLogsRegionInset
-              > content_surface_style::kDefaultRegionInset,
-          "logs use a stronger clip without changing shared surfaces");
 
-    const auto insetSurface = content_surface_style::InsetSurfaceRect(100, 80, 2);
-    Check(insetSurface.x == 2 && insetSurface.y == 2
-              && insetSurface.width == 96 && insetSurface.height == 76,
-          "logs child inset exposes the rounded parent frame");
-    const auto tinySurface = content_surface_style::InsetSurfaceRect(3, 2, 2);
+    const content_surface_style::SurfaceRect outerSurface = {0, 0, 100, 80};
+    const auto insetSurface = content_surface_style::InsetSurfaceRect(
+        outerSurface, content_surface_style::kRoundedListContentPadding);
+    Check(insetSurface.x == 6 && insetSurface.y == 6
+              && insetSurface.width == 88 && insetSurface.height == 68,
+          "rounded list child uses one six-pixel outer padding");
+    const auto tinySurface = content_surface_style::InsetSurfaceRect(
+        content_surface_style::SurfaceRect{0, 0, 3, 2},
+        content_surface_style::kRoundedListContentPadding);
     Check(tinySurface.width == 0 && tinySurface.height == 0,
           "tiny inset surfaces clamp dimensions to zero");
 

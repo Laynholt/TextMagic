@@ -337,7 +337,6 @@ constexpr int INFO_MIN_WIDTH = 500;
 constexpr int INFO_MIN_HEIGHT = 300;
 constexpr int ABOUT_MIN_WIDTH = 620;
 constexpr int ABOUT_MIN_HEIGHT = 440;
-constexpr int LIST_CONTENT_PADDING = 6;
 constexpr int LIST_ITEM_HEIGHT = 24;
 constexpr int LIST_TEXT_PADDING = 9;
 constexpr UINT_PTR DARK_HEADER_SUBCLASS_ID = 1;
@@ -2942,23 +2941,23 @@ void Application::OnResize(int width, int height) {
 
     const int listTop = header.listTop;
     const int listHeight = std::max(90, buttonRowY - listTop - 14);
-    const int scriptListX = innerX + LIST_CONTENT_PADDING;
-    const int scriptListY = listTop + LIST_CONTENT_PADDING;
-    const int scriptListWidth = std::max(1, innerWidth - 2 * LIST_CONTENT_PADDING);
-    const int scriptListHeight = std::max(1, listHeight - 2 * LIST_CONTENT_PADDING);
+    const auto scriptList = content_surface_style::InsetSurfaceRect(
+        content_surface_style::SurfaceRect{innerX, listTop, innerWidth, listHeight},
+        content_surface_style::kRoundedListContentPadding);
     MoveWindow(
         m_hScriptList,
-        scriptListX,
-        scriptListY,
-        scriptListWidth,
-        scriptListHeight,
+        scriptList.x,
+        scriptList.y,
+        (std::max)(1, scriptList.width),
+        (std::max)(1, scriptList.height),
         TRUE
     );
     ApplyRoundedChildRegion(
         m_hScriptList,
-        scriptListWidth,
-        scriptListHeight,
-        content_surface_style::kCornerRadius);
+        (std::max)(1, scriptList.width),
+        (std::max)(1, scriptList.height),
+        content_surface_style::kCornerRadius,
+        content_surface_style::kRoundedListRegionInset);
 
     const int buttonsTotalWidth = buttonCount * buttonWidth + buttonGap * (buttonCount - 1);
     int x = innerX + std::max(0, (innerWidth - buttonsTotalWidth) / 2);
@@ -2985,7 +2984,7 @@ void Application::OnPaint() {
     UiRenderer::DrawRoundedControlFrame(
         m_hWnd,
         m_hScriptList,
-        LIST_CONTENT_PADDING,
+        content_surface_style::kRoundedListContentPadding,
         content_surface_style::kListFill,
         content_surface_style::kListBorder,
         content_surface_style::kCornerRadius);
@@ -5842,18 +5841,22 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 MoveWindow(state->subtitleLabel, layout.subtitle.x, layout.subtitle.y,
                     layout.subtitle.width, layout.subtitle.height, TRUE);
                 const auto child = content_surface_style::InsetSurfaceRect(
-                    layout.content.width,
-                    layout.content.height,
-                    content_surface_style::kLogsRegionInset);
+                    content_surface_style::SurfaceRect{
+                        layout.content.x,
+                        layout.content.y,
+                        layout.content.width,
+                        layout.content.height,
+                    },
+                    content_surface_style::kRoundedListContentPadding);
                 MoveWindow(state->logList,
-                    layout.content.x + child.x,
-                    layout.content.y + child.y,
+                    child.x,
+                    child.y,
                     child.width,
                     child.height,
                     TRUE);
                 MoveWindow(state->emptyLabel,
-                    layout.content.x + child.x,
-                    layout.content.y + child.y,
+                    child.x,
+                    child.y,
                     child.width,
                     child.height,
                     TRUE);
@@ -5861,14 +5864,14 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                     state->logList,
                     child.width,
                     child.height,
-                    content_surface_style::kLogsCornerRadius,
-                    content_surface_style::kLogsRegionInset);
+                    content_surface_style::kCornerRadius,
+                    content_surface_style::kRoundedListRegionInset);
                 ApplyRoundedChildRegion(
                     state->emptyLabel,
                     child.width,
                     child.height,
-                    content_surface_style::kLogsCornerRadius,
-                    content_surface_style::kLogsRegionInset);
+                    content_surface_style::kCornerRadius,
+                    content_surface_style::kRoundedListRegionInset);
                 MoveWindow(state->copyAllButton, layout.copyAllButton.x, layout.copyAllButton.y,
                     layout.copyAllButton.width, layout.copyAllButton.height, TRUE);
                 MoveWindow(state->closeButton, layout.closeButton.x, layout.closeButton.y,
@@ -6052,18 +6055,6 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             UiRenderer::DrawCard(hdc, card);
             if (state && state->kind == static_cast<int>(Application::InfoWindowKind::Logs)) {
                 const LogsWindowLayout layout = CalculateLogsWindowLayout(r.right - r.left, r.bottom - r.top);
-                const RECT content = {
-                    layout.content.x,
-                    layout.content.y,
-                    layout.content.x + layout.content.width,
-                    layout.content.y + layout.content.height,
-                };
-                UiRenderer::DrawRoundedPanel(
-                    hdc,
-                    content,
-                    INFO_LIST_SURFACE,
-                    content_surface_style::kListBorder,
-                    content_surface_style::kLogsCornerRadius);
             } else if (state && state->kind == static_cast<int>(Application::InfoWindowKind::About)) {
                 const AboutWindowLayout layout = CalculateAboutWindowLayout(r.right - r.left, r.bottom - r.top);
                 const RECT versionChip = {
@@ -6094,6 +6085,15 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 FillRect(hdc, &divider, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
             }
             EndPaint(hWnd, &ps);
+            if (state && state->kind == static_cast<int>(Application::InfoWindowKind::Logs)) {
+                UiRenderer::DrawRoundedControlFrame(
+                    hWnd,
+                    IsWindowVisible(state->logList) ? state->logList : state->emptyLabel,
+                    content_surface_style::kRoundedListContentPadding,
+                    content_surface_style::kListFill,
+                    content_surface_style::kListBorder,
+                    content_surface_style::kCornerRadius);
+            }
             if (state
                 && state->kind == static_cast<int>(Application::InfoWindowKind::ApplicationBlacklist)) {
                 DrawDarkListViewFrame(hWnd, state->blacklistList);

@@ -5,9 +5,9 @@
 
 namespace content_surface_style {
 constexpr int kCornerRadius = 10;
-constexpr int kLogsCornerRadius = 14;
 constexpr int kDefaultRegionInset = 1;
-constexpr int kLogsRegionInset = 2;
+constexpr int kRoundedListContentPadding = 6;
+constexpr int kRoundedListRegionInset = kDefaultRegionInset;
 constexpr int kTableRegionInset = 2;
 constexpr COLORREF kListFill = RGB(37, 37, 37);
 constexpr COLORREF kListBorder = RGB(62, 62, 62);
@@ -47,16 +47,20 @@ struct SurfaceRect {
     int height;
 };
 
-constexpr SurfaceRect InsetSurfaceRect(int width, int height, int inset) {
-    const int safeWidth = width > 0 ? width : 0;
-    const int safeHeight = height > 0 ? height : 0;
+constexpr SurfaceRect InsetSurfaceRect(SurfaceRect surface, int inset) {
+    const int safeWidth = surface.width > 0 ? surface.width : 0;
+    const int safeHeight = surface.height > 0 ? surface.height : 0;
     const int safeInset = inset > 0 ? inset : 0;
     return {
-        safeInset,
-        safeInset,
+        surface.x + safeInset,
+        surface.y + safeInset,
         safeWidth > 2 * safeInset ? safeWidth - 2 * safeInset : 0,
         safeHeight > 2 * safeInset ? safeHeight - 2 * safeInset : 0,
     };
+}
+
+constexpr SurfaceRect InsetSurfaceRect(int width, int height, int inset) {
+    return InsetSurfaceRect(SurfaceRect{0, 0, width, height}, inset);
 }
 
 constexpr DWORD StripListViewFrameStyle(DWORD style) {

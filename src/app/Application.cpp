@@ -682,14 +682,8 @@ HHOOK g_keyboardHook = nullptr;
 HHOOK g_mouseHook = nullptr;
 constexpr UINT HOTKEY_MODIFIER_MASK = MOD_ALT | MOD_CONTROL | MOD_SHIFT | MOD_WIN;
 
-struct ForegroundBlockCache {
-    HWND window = nullptr;
-    std::uint64_t blacklistGeneration = 0;
-    bool blocked = false;
-};
-
-ForegroundBlockCache& GetForegroundBlockCache() {
-    static ForegroundBlockCache cache;
+FullscreenUtils::ForegroundBlockCache& GetForegroundBlockCache() {
+    static FullscreenUtils::ForegroundBlockCache cache;
     return cache;
 }
 
@@ -808,40 +802,29 @@ std::vector<RunningApplication> EnumerateVisibleRunningApplications() {
 }
 
 bool IsForegroundHandlingBlocked() {
-    if (g_disableHotkeysInFullscreen
-        && FullscreenUtils::IsForegroundWindowFullscreen()) {
-        return true;
-    }
-    if (!g_applicationBlacklist) {
-        return false;
-    }
-
     const HWND foregroundWindow = GetForegroundWindow();
-    if (!foregroundWindow) {
-        return false;
+    const std::uint64_t generation = g_applicationBlacklist
+        ? g_applicationBlacklist->Generation()
+        : 0;
+    FullscreenUtils::ForegroundBlockCache& cache = GetForegroundBlockCache();
+    if (cache.Matches(foregroundWindow, generation, g_disableHotkeysInFullscreen)) {
+        return cache.Blocked();
     }
 
-    ForegroundBlockCache& cache = GetForegroundBlockCache();
-    const std::uint64_t generation = g_applicationBlacklist->Generation();
-    if (cache.window == foregroundWindow
-        && cache.blacklistGeneration == generation) {
-        return cache.blocked;
+    bool blocked = g_disableHotkeysInFullscreen
+        && FullscreenUtils::IsForegroundWindowFullscreen();
+    if (!blocked && g_applicationBlacklist && foregroundWindow) {
+        std::wstring executablePath;
+        blocked = TryGetWindowExecutablePath(foregroundWindow, &executablePath)
+            && g_applicationBlacklist->Contains(executablePath);
     }
 
-    std::wstring executablePath;
-    cache.window = foregroundWindow;
-    cache.blacklistGeneration = generation;
-    cache.blocked = false;
-    if (!TryGetWindowExecutablePath(foregroundWindow, &executablePath)) {
-        return cache.blocked;
-    }
-
-    cache.blocked = g_applicationBlacklist->Contains(executablePath);
-    return cache.blocked;
+    cache.Store(foregroundWindow, generation, g_disableHotkeysInFullscreen, blocked);
+    return blocked;
 }
 
 void InvalidateForegroundBlockCache() {
-    GetForegroundBlockCache() = {};
+    GetForegroundBlockCache().Invalidate();
 }
 
 bool IsHotkeyMatchedByKeyEvent(UINT modifiers, UINT virtualKey, DWORD inputVkCode, UINT currentModifiers) {
@@ -1166,6 +1149,12 @@ bool InstallInputHooks(HINSTANCE hInstance) {
     }
     if (!g_mouseHook) {
         g_mouseHook = SetWindowsHookExW(WH_MOUSE_LL, InputMouseHookProc, hInstance, 0);
+    }
+    if (!g_mouseHook) {
+        UnhookWindowsHookEx(g_keyboardHook);
+        g_keyboardHook = nullptr;
+        g_hookKeyState.Clear();
+        return false;
     }
     return true;
 }
@@ -6267,6 +6256,7 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 state->owner->m_disableHotkeysInFullscreen =
                     SendMessageW(state->fullscreenCheckbox, BM_GETCHECK, 0, 0) == BST_CHECKED;
                 g_disableHotkeysInFullscreen = state->owner->m_disableHotkeysInFullscreen;
+                InvalidateForegroundBlockCache();
                 SaveDisableFullscreenHotkeysSetting(
                     GetLanguageSettingsPath(state->owner->GetExecutableDirectory()),
                     state->owner->m_disableHotkeysInFullscreen

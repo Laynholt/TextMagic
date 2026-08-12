@@ -1,5 +1,6 @@
 #include "FullscreenUtils.h"
 
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 
@@ -36,5 +37,27 @@ int main() {
            "client fallback must avoid invisible resize-border false positives");
     Expect(FullscreenUtils::IsFullscreenBounds(covering, fullscreen, monitor, false),
            "client fallback must accept a true monitor-covering client");
+
+    FullscreenUtils::ForegroundBlockCache cache;
+    const HWND window = reinterpret_cast<HWND>(static_cast<std::uintptr_t>(1));
+    const HWND otherWindow = reinterpret_cast<HWND>(static_cast<std::uintptr_t>(2));
+    constexpr std::uint64_t generation = 7;
+    constexpr bool fullscreenSetting = true;
+
+    Expect(!cache.Matches(window, generation, fullscreenSetting),
+           "an empty foreground block cache must miss");
+    cache.Store(window, generation, fullscreenSetting, true);
+    Expect(cache.Matches(window, generation, fullscreenSetting),
+           "an unchanged foreground block decision must be reusable");
+    Expect(cache.Blocked(), "the cache must retain the final blocked result");
+    Expect(!cache.Matches(otherWindow, generation, fullscreenSetting),
+           "a foreground window change must invalidate the cached decision");
+    Expect(!cache.Matches(window, generation + 1, fullscreenSetting),
+           "a blacklist change must invalidate the cached decision");
+    Expect(!cache.Matches(window, generation, !fullscreenSetting),
+           "a fullscreen setting change must invalidate the cached decision");
+    cache.Invalidate();
+    Expect(!cache.Matches(window, generation, fullscreenSetting),
+           "an explicitly invalidated foreground block cache must miss");
     return 0;
 }

@@ -120,6 +120,7 @@ enum MessageControlId {
 struct InfoWindowState {
     Application* owner = nullptr;
     int kind = 0;
+    WindowOuterSize minimumOuterSize{0, 0};
     HWND titleLabel = nullptr;
     HWND textControl = nullptr;
     HWND closeButton = nullptr;
@@ -154,6 +155,7 @@ struct InfoWindowState {
 
 struct MessageWindowState {
     Application* owner = nullptr;
+    WindowOuterSize minimumOuterSize{0, 0};
     HWND titleLabel = nullptr;
     HWND textControl = nullptr;
     HWND primaryButton = nullptr;
@@ -330,12 +332,6 @@ constexpr UINT WM_EXPORT_ZIP_COMPLETE = WM_APP + 6;
 constexpr UINT WM_MODIFIER_HOTKEY = WM_APP + 7;
 constexpr UINT MORE_POPUP_TRACK_TIMER_ID = 0x4D31;
 constexpr UINT TRAY_ICON_ID = 1;
-constexpr int LOGS_MIN_WIDTH = 400;
-constexpr int LOGS_MIN_HEIGHT = 260;
-constexpr int INFO_MIN_WIDTH = 500;
-constexpr int INFO_MIN_HEIGHT = 300;
-constexpr int ABOUT_MIN_WIDTH = 620;
-constexpr int ABOUT_MIN_HEIGHT = 440;
 constexpr int LIST_ITEM_HEIGHT = 24;
 constexpr int LIST_TEXT_PADDING = 9;
 constexpr UINT_PTR DARK_HEADER_SUBCLASS_ID = 1;
@@ -356,6 +352,8 @@ constexpr int MORE_POPUP_ITEM_EXTRA_WIDTH = 34;
 constexpr int MORE_POPUP_WIDTH_PADDING = 14;
 constexpr int MORE_POPUP_TRACK_INTERVAL_MS = 25;
 constexpr UINT MODIFIER_GESTURE_TIMER_ID = 0x4D32;
+constexpr int kMainWindowOuterWidth = 940;
+constexpr int kMainWindowOuterHeight = 620;
 
 struct CheckboxVisualState {
     bool hot = false;
@@ -447,64 +445,6 @@ void ApplyRoundedChildRegion(
     if (region && SetWindowRgn(control, region, TRUE) == 0) {
         DeleteObject(region);
     }
-}
-
-int CalculateMinimumTrackHeight(
-    HWND hWnd,
-    int minimumClientWidth,
-    int minimumClientHeight,
-    int fallbackOuterHeight
-) {
-    RECT requiredClient = {
-        0,
-        0,
-        minimumClientWidth,
-        minimumClientHeight,
-    };
-    const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(hWnd, GWL_STYLE));
-    const DWORD extendedStyle = static_cast<DWORD>(GetWindowLongPtrW(hWnd, GWL_EXSTYLE));
-    const UINT dpi = GetDpiForWindow(hWnd);
-    if (!AdjustWindowRectExForDpi(
-            &requiredClient,
-            style,
-            GetMenu(hWnd) != nullptr,
-            extendedStyle,
-            dpi == 0 ? USER_DEFAULT_SCREEN_DPI : dpi)) {
-        AdjustWindowRectEx(&requiredClient, style, GetMenu(hWnd) != nullptr, extendedStyle);
-    }
-    return std::max(
-        fallbackOuterHeight,
-        static_cast<int>(requiredClient.bottom - requiredClient.top));
-}
-
-int CalculateMinimumTrackWidth(
-    HWND hWnd,
-    int minimumClientWidth,
-    int fallbackOuterWidth
-) {
-    RECT requiredClient = {
-        0,
-        0,
-        minimumClientWidth,
-        1,
-    };
-    const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(hWnd, GWL_STYLE));
-    const DWORD extendedStyle = static_cast<DWORD>(GetWindowLongPtrW(hWnd, GWL_EXSTYLE));
-    const BOOL hasMenu = GetMenu(hWnd) != nullptr;
-    const UINT dpi = GetDpiForWindow(hWnd);
-    const UINT effectiveDpi = dpi == 0 ? USER_DEFAULT_SCREEN_DPI : dpi;
-    if (!AdjustWindowRectExForDpi(
-            &requiredClient,
-            style,
-            hasMenu,
-            extendedStyle,
-            effectiveDpi)
-        && !AdjustWindowRectEx(&requiredClient, style, hasMenu, extendedStyle)) {
-        return std::max(fallbackOuterWidth, minimumClientWidth);
-    }
-    return std::max(
-        fallbackOuterWidth,
-        static_cast<int>(requiredClient.right - requiredClient.left));
 }
 
 LRESULT CALLBACK DarkHeaderSubclassProc(
@@ -2178,8 +2118,8 @@ bool Application::Initialize(HINSTANCE hInstance) {
         return false;
     }
 
-    const int windowWidth = 940;
-    const int windowHeight = 620;
+    constexpr int windowWidth = kMainWindowOuterWidth;
+    constexpr int windowHeight = kMainWindowOuterHeight;
     const int x = (GetSystemMetrics(SM_CXSCREEN) - windowWidth) / 2;
     const int y = (GetSystemMetrics(SM_CYSCREEN) - windowHeight) / 2;
 
@@ -2710,8 +2650,8 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_GETMINMAXINFO:
         {
             auto* info = reinterpret_cast<MINMAXINFO*>(lParam);
-            info->ptMinTrackSize.x = MIN_WINDOW_WIDTH;
-            info->ptMinTrackSize.y = MIN_WINDOW_HEIGHT;
+            info->ptMinTrackSize.x = kMainWindowOuterWidth;
+            info->ptMinTrackSize.y = kMainWindowOuterHeight;
         }
         return 0;
 
@@ -5024,10 +4964,20 @@ void Application::CreateOrActivateInfoWindow(InfoWindowKind kind, HWND& targetHa
         : (isLogsWindow ? 600 : 360);
     if (kind == InfoWindowKind::About) {
         RECT aboutClient = { 0, 0, 620, 440 };
-        AdjustWindowRectEx(&aboutClient, infoStyle, FALSE, 0);
+        const UINT dpi = GetDpiForWindow(m_hWnd);
+        const UINT effectiveDpi = dpi == 0 ? USER_DEFAULT_SCREEN_DPI : dpi;
+        if (!AdjustWindowRectExForDpi(
+                &aboutClient,
+                infoStyle,
+                FALSE,
+                0,
+                effectiveDpi)) {
+            AdjustWindowRectEx(&aboutClient, infoStyle, FALSE, 0);
+        }
         width = aboutClient.right - aboutClient.left;
         height = aboutClient.bottom - aboutClient.top;
     }
+    state->minimumOuterSize = ResolveMinimumOuterSize({width, height});
     const int x = ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2;
     const int y = ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2;
 
@@ -5209,6 +5159,7 @@ std::vector<std::wstring> Application::SelectRunningApplications() {
     GetWindowRect(dialogOwner, &ownerRect);
     const int width = 760;
     const int height = 520;
+    state->minimumOuterSize = ResolveMinimumOuterSize({width, height});
     const int x = ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2;
     const int y = ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2;
     HWND messageWindow = CreateWindowExW(
@@ -5356,6 +5307,7 @@ int Application::ShowStyledMessageDialog(const wchar_t* title,
     GetWindowRect(m_hWnd, &ownerRect);
     const int width = 500;
     const int height = 230;
+    state->minimumOuterSize = ResolveMinimumOuterSize({width, height});
     const int x = ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2;
     const int y = ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2;
 
@@ -5617,32 +5569,8 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
     case WM_GETMINMAXINFO:
         if (state) {
             auto* info = reinterpret_cast<MINMAXINFO*>(lParam);
-            const bool isLogs = state->kind == static_cast<int>(Application::InfoWindowKind::Logs);
-            const bool isBlacklist = state->kind == static_cast<int>(Application::InfoWindowKind::ApplicationBlacklist);
-            const bool isAbout = state->kind == static_cast<int>(Application::InfoWindowKind::About);
-            info->ptMinTrackSize.x = isLogs
-                ? CalculateMinimumTrackWidth(
-                    hWnd,
-                    info_window_layout_detail::kLogsMinimumClientWidth,
-                    LOGS_MIN_WIDTH)
-                : (isBlacklist
-                    ? info_window_layout_detail::kBlacklistMinimumOuterWidth
-                    : (isAbout ? ABOUT_MIN_WIDTH : INFO_MIN_WIDTH));
-            info->ptMinTrackSize.y = isLogs
-                ? CalculateMinimumTrackHeight(
-                    hWnd,
-                    LOGS_MIN_WIDTH,
-                    info_window_layout_detail::kLogsMinimumClientHeight,
-                    LOGS_MIN_HEIGHT)
-                : (isBlacklist
-                    ? info_window_layout_detail::kBlacklistMinimumOuterHeight
-                    : (isAbout
-                        ? CalculateMinimumTrackHeight(
-                            hWnd,
-                            ABOUT_MIN_WIDTH,
-                            info_window_layout_detail::kAboutMinimumClientHeight,
-                            ABOUT_MIN_HEIGHT)
-                        : INFO_MIN_HEIGHT));
+            info->ptMinTrackSize.x = state->minimumOuterSize.width;
+            info->ptMinTrackSize.y = state->minimumOuterSize.height;
             return 0;
         }
         break;
@@ -6433,10 +6361,11 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
 
     switch (message) {
     case WM_GETMINMAXINFO:
-        if (state && state->runningApplicationSelection) {
+        if (state && state->minimumOuterSize.width > 0
+            && state->minimumOuterSize.height > 0) {
             auto* info = reinterpret_cast<MINMAXINFO*>(lParam);
-            info->ptMinTrackSize.x = LOGS_MIN_WIDTH;
-            info->ptMinTrackSize.y = LOGS_MIN_HEIGHT;
+            info->ptMinTrackSize.x = state->minimumOuterSize.width;
+            info->ptMinTrackSize.y = state->minimumOuterSize.height;
             return 0;
         }
         break;

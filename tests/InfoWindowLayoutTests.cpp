@@ -21,6 +21,31 @@ bool IsInside(const InfoRect& child, int width, int height) {
 }
 
 int main() {
+    const WindowOuterSize mainDefault{940, 620};
+    const WindowOuterSize logsDefault{900, 600};
+    const WindowOuterSize blacklistDefault{760, 560};
+    const WindowOuterSize runningPickerDefault{760, 520};
+    const WindowOuterSize messageDefault{500, 230};
+    const WindowOuterSize aboutDefault{636, 479};
+    Check(ResolveMinimumOuterSize(mainDefault).width == mainDefault.width
+              && ResolveMinimumOuterSize(mainDefault).height == mainDefault.height,
+          "main minimum uses its coded outer creation size");
+    Check(ResolveMinimumOuterSize(logsDefault).width == logsDefault.width
+              && ResolveMinimumOuterSize(logsDefault).height == logsDefault.height,
+          "logs minimum uses its coded outer creation size");
+    Check(ResolveMinimumOuterSize(blacklistDefault).width == blacklistDefault.width
+              && ResolveMinimumOuterSize(blacklistDefault).height == blacklistDefault.height,
+          "blacklist minimum uses its coded outer creation size");
+    Check(ResolveMinimumOuterSize(runningPickerDefault).width == runningPickerDefault.width
+              && ResolveMinimumOuterSize(runningPickerDefault).height == runningPickerDefault.height,
+          "running picker minimum uses its coded outer creation size");
+    Check(ResolveMinimumOuterSize(messageDefault).width == messageDefault.width
+              && ResolveMinimumOuterSize(messageDefault).height == messageDefault.height,
+          "styled message keeps its coded outer creation size as policy");
+    Check(ResolveMinimumOuterSize(aboutDefault).width == aboutDefault.width
+              && ResolveMinimumOuterSize(aboutDefault).height == aboutDefault.height,
+          "about minimum uses the outer size converted from its 620x440 client design");
+
     const LogsWindowLayout logs = CalculateLogsWindowLayout(900, 600);
     Check(logs.title.height == 32,
           "logs title reserves the main-heading height");

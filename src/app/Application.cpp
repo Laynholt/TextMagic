@@ -324,7 +324,6 @@ void SetRunningApplicationSortIndicator(HWND listView, int column, bool ascendin
 constexpr int HOTKEY_BASE = 5000;
 constexpr UINT WM_TRAYICON = WM_APP + 1;
 constexpr UINT WM_SCRIPT_EXECUTION_COMPLETE = WM_APP + 2;
-constexpr LRESULT SCRIPT_EXECUTION_COMPLETE_HANDLED = 1;
 constexpr UINT WM_UPDATE_CHECK_COMPLETE = WM_APP + 3;
 constexpr UINT WM_UPDATE_INSTALL_COMPLETE = WM_APP + 4;
 constexpr UINT WM_IMPORT_ZIP_COMPLETE = WM_APP + 5;
@@ -620,38 +619,60 @@ struct ExportZipTaskResult {
     int scriptFileCount = 0;
 };
 
-void SendScriptExecutionCompletion(
-    HWND windowHandle,
-    std::unique_ptr<ScriptExecutionTaskResult> result
+struct CompletionDispatchTarget {
+    HWND windowHandle = nullptr;
+    LONG_PTR applicationIdentity = 0;
+    std::shared_ptr<CompletionRegistry> registry;
+};
+
+template <typename TResult>
+void SendOwnedCompletion(
+    const CompletionDispatchTarget& target,
+    UINT message,
+    std::unique_ptr<TResult> result
 ) {
-    DWORD processId = 0;
-    GetWindowThreadProcessId(windowHandle, &processId);
-    if (processId != GetCurrentProcessId()) {
+    const bool hasPayload = result != nullptr;
+    const std::uintptr_t token = target.registry
+        ? target.registry->Store(std::move(result))
+        : 0;
+    if (hasPayload && !token) {
         return;
     }
 
-    ScriptExecutionTaskResult* payload = result.release();
-    if (SendMessageW(
-            windowHandle,
-            WM_SCRIPT_EXECUTION_COMPLETE,
-            reinterpret_cast<WPARAM>(payload),
-            0) != SCRIPT_EXECUTION_COMPLETE_HANDLED) {
-        delete payload;
+    if (!IsWindow(target.windowHandle)) {
+        if (target.registry) {
+            target.registry->Remove(token);
+        }
+        return;
+    }
+    DWORD processId = 0;
+    GetWindowThreadProcessId(target.windowHandle, &processId);
+    if (processId != GetCurrentProcessId()
+        || GetWindowLongPtrW(target.windowHandle, GWLP_USERDATA)
+            != target.applicationIdentity) {
+        if (target.registry) {
+            target.registry->Remove(token);
+        }
+        return;
+    }
+
+    DWORD_PTR handled = 0;
+    const LRESULT delivered = SendMessageTimeoutW(
+        target.windowHandle,
+        message,
+        static_cast<WPARAM>(token),
+        0,
+        SMTO_ABORTIFHUNG | SMTO_BLOCK,
+        2000,
+        &handled);
+    if (!CompletionOwnershipTransferred(delivered != 0, handled)
+        && target.registry) {
+        target.registry->Remove(token);
     }
 }
 
 const wchar_t* T(const wchar_t* key) {
     return Localization::GetTextByName(key);
-}
-
-template <typename TResult>
-void PostOwnedMessage(HWND windowHandle, UINT message, TResult* result) {
-    if (!result) {
-        return;
-    }
-    if (!PostMessageW(windowHandle, message, reinterpret_cast<WPARAM>(result), 0)) {
-        delete result;
-    }
 }
 
 std::map<UINT, std::wstring> g_languageMenuTextById;
@@ -2256,6 +2277,14 @@ int Application::Run() {
 }
 
 void Application::Shutdown() {
+    const HWND dispatchWindow = m_hWnd;
+    m_hWnd = nullptr;
+    if (dispatchWindow && IsWindow(dispatchWindow)) {
+        SetWindowLongPtrW(dispatchWindow, GWLP_USERDATA, 0);
+    }
+    if (m_completionRegistry) {
+        m_completionRegistry->DisableAndClear();
+    }
     CancelModifierGesture();
     SetHotkeyDispatchWindow(nullptr);
     g_applicationBlacklist = nullptr;
@@ -2266,8 +2295,8 @@ void Application::Shutdown() {
     ClearInputBuffer();
     UnregisterHotkeys();
     RemoveTrayIcon();
-    if (m_hWnd && IsWindow(m_hWnd)) {
-        DragAcceptFiles(m_hWnd, FALSE);
+    if (dispatchWindow && IsWindow(dispatchWindow)) {
+        DragAcceptFiles(dispatchWindow, FALSE);
     }
 
     if (m_hAboutWindow && IsWindow(m_hAboutWindow)) {
@@ -2414,7 +2443,10 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
 
     case WM_SCRIPT_EXECUTION_COMPLETE:
         [&]() {
-            std::unique_ptr<ScriptExecutionTaskResult> result(reinterpret_cast<ScriptExecutionTaskResult*>(wParam));
+            std::unique_ptr<ScriptExecutionTaskResult> result = m_completionRegistry
+                ? m_completionRegistry->Take<ScriptExecutionTaskResult>(
+                    static_cast<std::uintptr_t>(wParam))
+                : nullptr;
             if (!result) {
                 return;
             }
@@ -2504,26 +2536,29 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             AppendLog(std::wstring(T(L"app.log.script.prefix")) + status);
         }();
         m_scriptExecutionGate.Release(GetTickCount64());
-        return SCRIPT_EXECUTION_COMPLETE_HANDLED;
+        return kCompletionHandled;
 
     case WM_UPDATE_CHECK_COMPLETE:
         {
-            std::unique_ptr<UpdateCheckTaskResult> result(reinterpret_cast<UpdateCheckTaskResult*>(wParam));
-            m_updateInProgress = false;
+            std::unique_ptr<UpdateCheckTaskResult> result = m_completionRegistry
+                ? m_completionRegistry->Take<UpdateCheckTaskResult>(
+                    static_cast<std::uintptr_t>(wParam))
+                : nullptr;
             if (!result) {
                 return 0;
             }
+            m_updateInProgress = false;
 
             if (!result->check.success) {
                 AppendLog(std::wstring(T(L"app.log.update.error_prefix")) + result->check.errorMessage);
                 ShowStyledMessage(T(L"app.title.update"), std::wstring(T(L"app.status.update_check_error_prefix")) + result->check.errorMessage);
-                return 0;
+                return kCompletionHandled;
             }
 
             if (!result->check.updateAvailable) {
                 AppendLog(T(L"app.log.update.no_new"));
                 ShowStyledMessage(T(L"app.title.update"), std::wstring(T(L"app.status.latest_version_prefix")) + APP_VERSION);
-                return 0;
+                return kCompletionHandled;
             }
 
             const std::wstring prompt =
@@ -2532,7 +2567,7 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             const int decision = ShowStyledMessageDialog(T(L"app.title.update"), prompt, T(L"app.button.update"), T(L"app.button.later"));
             if (decision != IDYES) {
                 AppendLog(T(L"app.log.update.postponed"));
-                return 0;
+                return kCompletionHandled;
             }
 
             const std::wstring latestTag = result->check.latestTag;
@@ -2540,61 +2575,71 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             const std::wstring tmpPath = GetExecutableDirectory() + L"\\" + TM_APP_NAME_W + L".update.tmp.exe";
 
             m_updateInProgress = true;
-            const HWND windowHandle = m_hWnd;
+            const CompletionDispatchTarget dispatchTarget{
+                m_hWnd,
+                reinterpret_cast<LONG_PTR>(this),
+                m_completionRegistry,
+            };
             const UpdateService updateService = m_updateService;
-            std::thread([windowHandle, updateService, latestTag, targetPath, tmpPath]() {
-                auto* installResult = new UpdateInstallTaskResult();
+            std::thread([dispatchTarget, updateService, latestTag, targetPath, tmpPath]() {
+                auto installResult = std::make_unique<UpdateInstallTaskResult>();
                 std::wstring error;
                 std::wstring verifiedSha256;
                 if (!updateService.DownloadReleaseExecutable(
                         latestTag, tmpPath, verifiedSha256, error)) {
                     installResult->success = false;
                     installResult->error = error;
-                    PostOwnedMessage(windowHandle, WM_UPDATE_INSTALL_COMPLETE, installResult);
+                    SendOwnedCompletion(dispatchTarget, WM_UPDATE_INSTALL_COMPLETE, std::move(installResult));
                     return;
                 }
                 if (!updateService.LaunchUpdaterProcess(
                         GetCurrentProcessId(), tmpPath, targetPath, verifiedSha256, error)) {
                     installResult->success = false;
                     installResult->error = error;
-                    PostOwnedMessage(windowHandle, WM_UPDATE_INSTALL_COMPLETE, installResult);
+                    SendOwnedCompletion(dispatchTarget, WM_UPDATE_INSTALL_COMPLETE, std::move(installResult));
                     return;
                 }
                 installResult->success = true;
-                PostOwnedMessage(windowHandle, WM_UPDATE_INSTALL_COMPLETE, installResult);
+                SendOwnedCompletion(dispatchTarget, WM_UPDATE_INSTALL_COMPLETE, std::move(installResult));
             }).detach();
         }
-        return 0;
+        return kCompletionHandled;
 
     case WM_UPDATE_INSTALL_COMPLETE:
         {
-            std::unique_ptr<UpdateInstallTaskResult> result(reinterpret_cast<UpdateInstallTaskResult*>(wParam));
-            m_updateInProgress = false;
+            std::unique_ptr<UpdateInstallTaskResult> result = m_completionRegistry
+                ? m_completionRegistry->Take<UpdateInstallTaskResult>(
+                    static_cast<std::uintptr_t>(wParam))
+                : nullptr;
             if (!result) {
                 return 0;
             }
+            m_updateInProgress = false;
             if (!result->success) {
                 AppendLog(std::wstring(T(L"app.log.update.error_prefix")) + result->error);
                 ShowStyledMessage(T(L"app.title.update"), std::wstring(T(L"app.status.update_finish_failed_prefix")) + result->error);
-                return 0;
+                return kCompletionHandled;
             }
             AppendLog(T(L"app.log.update.started"));
             ShowStyledMessage(T(L"app.title.update"), T(L"app.status.update_downloaded_restart"));
             m_isExiting = true;
             PostMessageW(m_hWnd, WM_CLOSE, 0, 0);
         }
-        return 0;
+        return kCompletionHandled;
 
     case WM_IMPORT_ZIP_COMPLETE:
         {
-            std::unique_ptr<ImportZipTaskResult> result(reinterpret_cast<ImportZipTaskResult*>(wParam));
-            m_archiveTaskInProgress = false;
+            std::unique_ptr<ImportZipTaskResult> result = m_completionRegistry
+                ? m_completionRegistry->Take<ImportZipTaskResult>(
+                    static_cast<std::uintptr_t>(wParam))
+                : nullptr;
             if (!result) {
                 return 0;
             }
+            m_archiveTaskInProgress = false;
             if (!result->success) {
                 ShowStyledMessage(T(L"app.title.import_error"), result->errorMessage);
-                return 0;
+                return kCompletionHandled;
             }
             for (const auto& copiedPath : result->importedPaths) {
                 AppendLog(std::wstring(T(L"app.log.scripts.imported_prefix")) + copiedPath);
@@ -2612,25 +2657,28 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 AppendLog(std::wstring(T(L"app.log.scripts.prefix")) + status);
             }
         }
-        return 0;
+        return kCompletionHandled;
 
     case WM_EXPORT_ZIP_COMPLETE:
         {
-            std::unique_ptr<ExportZipTaskResult> result(reinterpret_cast<ExportZipTaskResult*>(wParam));
-            m_archiveTaskInProgress = false;
+            std::unique_ptr<ExportZipTaskResult> result = m_completionRegistry
+                ? m_completionRegistry->Take<ExportZipTaskResult>(
+                    static_cast<std::uintptr_t>(wParam))
+                : nullptr;
             if (!result) {
                 return 0;
             }
+            m_archiveTaskInProgress = false;
             if (!result->success) {
                 ShowStyledMessage(T(L"app.title.export_error"), std::wstring(T(L"app.status.zip_create_failed_prefix")) + result->errorMessage);
-                return 0;
+                return kCompletionHandled;
             }
             const std::wstring status = std::wstring(T(L"app.status.exported_prefix")) + std::to_wstring(result->scriptFileCount)
                 + T(L"app.status.exported_suffix") + result->archivePath;
             SetStatusText(status);
             AppendLog(std::wstring(T(L"app.log.scripts.prefix")) + status);
         }
-        return 0;
+        return kCompletionHandled;
 
     case WM_DROPFILES:
         {
@@ -4345,15 +4393,19 @@ void Application::ImportScriptsFromZip() {
     const std::wstring archivePathString = archivePath;
     const std::wstring scriptsDirectory = m_scriptsDirectory;
     const ScriptRunner scriptRunner = m_scriptRunner;
-    const HWND windowHandle = m_hWnd;
-    std::thread([archivePathString, scriptsDirectory, scriptRunner, windowHandle]() {
-        auto* result = new ImportZipTaskResult();
+    const CompletionDispatchTarget dispatchTarget{
+        m_hWnd,
+        reinterpret_cast<LONG_PTR>(this),
+        m_completionRegistry,
+    };
+    std::thread([archivePathString, scriptsDirectory, scriptRunner, dispatchTarget]() {
+        auto result = std::make_unique<ImportZipTaskResult>();
 
         wchar_t tempDirectory[MAX_PATH] = {};
         if (!GetTempPathW(MAX_PATH, tempDirectory)) {
             result->success = false;
             result->errorMessage = T(L"app.error.tmp_dir_path");
-            PostOwnedMessage(windowHandle, WM_IMPORT_ZIP_COMPLETE, result);
+            SendOwnedCompletion(dispatchTarget, WM_IMPORT_ZIP_COMPLETE, std::move(result));
             return;
         }
 
@@ -4361,7 +4413,7 @@ void Application::ImportScriptsFromZip() {
         if (!GetTempFileNameW(tempDirectory, L"tmz", 0, tempName)) {
             result->success = false;
             result->errorMessage = T(L"app.error.tmp_path_create");
-            PostOwnedMessage(windowHandle, WM_IMPORT_ZIP_COMPLETE, result);
+            SendOwnedCompletion(dispatchTarget, WM_IMPORT_ZIP_COMPLETE, std::move(result));
             return;
         }
         DeleteFileW(tempName);
@@ -4369,7 +4421,7 @@ void Application::ImportScriptsFromZip() {
         if (!CreateDirectoryW(tempName, nullptr)) {
             result->success = false;
             result->errorMessage = T(L"app.error.tmp_folder_create");
-            PostOwnedMessage(windowHandle, WM_IMPORT_ZIP_COMPLETE, result);
+            SendOwnedCompletion(dispatchTarget, WM_IMPORT_ZIP_COMPLETE, std::move(result));
             return;
         }
 
@@ -4388,7 +4440,7 @@ void Application::ImportScriptsFromZip() {
             fs::remove_all(fs::path(tempName), cleanupError);
             result->success = false;
             result->errorMessage = std::wstring(T(L"app.error.zip_extract_prefix")) + executeError;
-            PostOwnedMessage(windowHandle, WM_IMPORT_ZIP_COMPLETE, result);
+            SendOwnedCompletion(dispatchTarget, WM_IMPORT_ZIP_COMPLETE, std::move(result));
             return;
         }
 
@@ -4419,7 +4471,7 @@ void Application::ImportScriptsFromZip() {
         std::error_code cleanupError;
         fs::remove_all(fs::path(tempName), cleanupError);
         result->success = true;
-        PostOwnedMessage(windowHandle, WM_IMPORT_ZIP_COMPLETE, result);
+        SendOwnedCompletion(dispatchTarget, WM_IMPORT_ZIP_COMPLETE, std::move(result));
     }).detach();
 }
 
@@ -4472,9 +4524,13 @@ void Application::ExportScriptsToZip() {
     const std::wstring archivePathString = archivePath;
     const std::wstring scriptsDirectory = m_scriptsDirectory;
     const ScriptRunner scriptRunner = m_scriptRunner;
-    const HWND windowHandle = m_hWnd;
-    std::thread([archivePathString, scriptsDirectory, scriptFileCount, scriptRunner, windowHandle]() {
-        auto* result = new ExportZipTaskResult();
+    const CompletionDispatchTarget dispatchTarget{
+        m_hWnd,
+        reinterpret_cast<LONG_PTR>(this),
+        m_completionRegistry,
+    };
+    std::thread([archivePathString, scriptsDirectory, scriptFileCount, scriptRunner, dispatchTarget]() {
+        auto result = std::make_unique<ExportZipTaskResult>();
         result->archivePath = archivePathString;
         result->scriptFileCount = scriptFileCount;
 
@@ -4492,7 +4548,7 @@ void Application::ExportScriptsToZip() {
 
         std::wstring ignoredOutput;
         result->success = scriptRunner.ExecutePowerShellScript(exportScript, L"", &ignoredOutput, &result->errorMessage);
-        PostOwnedMessage(windowHandle, WM_EXPORT_ZIP_COMPLETE, result);
+        SendOwnedCompletion(dispatchTarget, WM_EXPORT_ZIP_COMPLETE, std::move(result));
     }).detach();
 }
 
@@ -4656,6 +4712,11 @@ void Application::ExecuteScript(
     const TextBridge textBridge = m_textBridge;
     const ScriptRunner scriptRunner = m_scriptRunner;
     const HWND windowHandle = m_hWnd;
+    const CompletionDispatchTarget dispatchTarget{
+        m_hWnd,
+        reinterpret_cast<LONG_PTR>(this),
+        m_completionRegistry,
+    };
     const std::wstring noTextAvailableMessage = T(L"app.status.no_text_available");
     const std::wstring workerExceptionPrefix =
         std::wstring(T(L"app.error.script_worker_exception_prefix")) + L" ";
@@ -4680,6 +4741,7 @@ void Application::ExecuteScript(
                             textBridge,
                             scriptRunner,
                             windowHandle,
+                            dispatchTarget,
                             noTextAvailableMessage,
                             workerExceptionPrefix,
                             unknownWorkerException,
@@ -4760,12 +4822,15 @@ void Application::ExecuteScript(
                     }
                 );
 
-                SendScriptExecutionCompletion(windowHandle, std::move(result));
+                SendOwnedCompletion(
+                    dispatchTarget,
+                    WM_SCRIPT_EXECUTION_COMPLETE,
+                    std::move(result));
             } catch (...) {
-                SendScriptExecutionCompletion(
-                    windowHandle,
-                    std::unique_ptr<ScriptExecutionTaskResult>()
-                );
+                SendOwnedCompletion(
+                    dispatchTarget,
+                    WM_SCRIPT_EXECUTION_COMPLETE,
+                    std::unique_ptr<ScriptExecutionTaskResult>());
             }
         });
         worker.detach();
@@ -5366,11 +5431,15 @@ void Application::CheckForUpdates() {
     AppendLog(T(L"app.log.update.checking"));
     m_updateInProgress = true;
     const UpdateService updateService = m_updateService;
-    const HWND windowHandle = m_hWnd;
-    std::thread([updateService, windowHandle]() {
-        auto* result = new UpdateCheckTaskResult();
+    const CompletionDispatchTarget dispatchTarget{
+        m_hWnd,
+        reinterpret_cast<LONG_PTR>(this),
+        m_completionRegistry,
+    };
+    std::thread([updateService, dispatchTarget]() {
+        auto result = std::make_unique<UpdateCheckTaskResult>();
         result->check = updateService.CheckForUpdates(APP_VERSION);
-        PostOwnedMessage(windowHandle, WM_UPDATE_CHECK_COMPLETE, result);
+        SendOwnedCompletion(dispatchTarget, WM_UPDATE_CHECK_COMPLETE, std::move(result));
     }).detach();
 }
 

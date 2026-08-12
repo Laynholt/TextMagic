@@ -1,3 +1,4 @@
+#include "CompletionDelivery.h"
 #include "OutputLayout.h"
 #include "MessageLoop.h"
 
@@ -11,9 +12,56 @@ void Check(bool condition, const char* message) {
         std::exit(1);
     }
 }
+
+struct TrackedCompletion {
+    explicit TrackedCompletion(int* destructionCount)
+        : destructionCount(destructionCount) {}
+    ~TrackedCompletion() { ++*destructionCount; }
+
+    int* destructionCount;
+};
 }
 
 int main() {
+    Check(CompletionOwnershipTransferred(true, kCompletionHandled),
+          "the handled sentinel transfers completion ownership");
+    Check(!CompletionOwnershipTransferred(false, kCompletionHandled),
+          "delivery failure retains completion ownership");
+    Check(!CompletionOwnershipTransferred(false, 0),
+          "delivery timeout retains completion ownership");
+    Check(!CompletionOwnershipTransferred(true, 0),
+          "an unhandled delivery retains completion ownership");
+
+    CompletionRegistry completions;
+    int destructionCount = 0;
+    const std::uintptr_t handledToken = completions.Store(
+        std::make_unique<TrackedCompletion>(&destructionCount));
+    Check(handledToken != 0, "an enabled registry issues a nonzero token");
+    auto handledPayload = completions.Take<TrackedCompletion>(handledToken);
+    Check(handledPayload != nullptr,
+          "the handler atomically takes a registered payload");
+    Check(!completions.Remove(handledToken),
+          "sender cleanup cannot reclaim a handler-owned payload");
+    handledPayload.reset();
+    Check(destructionCount == 1, "a handler-owned payload is destroyed once");
+
+    const std::uintptr_t timedOutToken = completions.Store(
+        std::make_unique<TrackedCompletion>(&destructionCount));
+    Check(completions.Remove(timedOutToken),
+          "sender cleanup reclaims an unhandled timed-out payload");
+    Check(!completions.Take<TrackedCompletion>(timedOutToken),
+          "a late handler cannot reclaim a sender-owned payload");
+    Check(destructionCount == 2, "a timed-out payload is destroyed once");
+
+    const std::uintptr_t pendingToken = completions.Store(
+        std::make_unique<TrackedCompletion>(&destructionCount));
+    Check(pendingToken != 0, "a pending payload is registered before shutdown");
+    completions.DisableAndClear();
+    Check(destructionCount == 3, "shutdown destroys pending payloads");
+    Check(completions.Store(std::make_unique<TrackedCompletion>(&destructionCount)) == 0,
+          "shutdown rejects new completion payloads");
+    Check(destructionCount == 4, "a rejected payload remains locally owned and is destroyed");
+
     Check(ClassifyMessageRead(1) == MessageReadResult::Dispatch,
           "positive GetMessageW result dispatches");
     Check(ClassifyMessageRead(0) == MessageReadResult::Quit,

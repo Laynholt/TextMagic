@@ -8,6 +8,7 @@
 
 #include "ApplicationBlacklist.h"
 #include "AppVersion.h"
+#include "CompletionDelivery.h"
 #include "ScriptExecutionGate.h"
 #include "ScriptManifest.h"
 #include "ScriptRunner.h"
@@ -217,6 +218,8 @@ private:
     std::vector<UiRenderer::PopupMenuItem> m_moreSubPopupItems;
 
     std::unique_ptr<ToolTip> m_toolTip;
+    std::shared_ptr<CompletionRegistry> m_completionRegistry =
+        std::make_shared<CompletionRegistry>();
     UpdateService m_updateService;
     TextBridge m_textBridge;
     ScriptRunner m_scriptRunner;

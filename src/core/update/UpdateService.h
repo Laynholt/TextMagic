@@ -24,9 +24,6 @@ public:
                               const std::wstring& targetExePath,
                               const std::wstring& expectedSha256,
                               std::wstring& errorMessage) const;
-    static bool WriteSha256SumsFile(const std::wstring& filePath,
-                                    const std::wstring& sumsPath,
-                                    std::wstring& errorMessage);
     static bool VerifySha256SumsFile(const std::wstring& filePath,
                                      const std::wstring& sumsPath,
                                      const std::wstring& entryName,

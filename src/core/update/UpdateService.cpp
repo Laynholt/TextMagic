@@ -341,40 +341,6 @@ UpdateCheckResult UpdateService::CheckForUpdates(const std::wstring& currentVers
     return result;
 }
 
-bool UpdateService::WriteSha256SumsFile(const std::wstring& filePath,
-                                       const std::wstring& sumsPath,
-                                       std::wstring& errorMessage) {
-    errorMessage.clear();
-    if (filePath.empty() || sumsPath.empty()) {
-        errorMessage = T(L"update.error.invalid_checksum_params");
-        return false;
-    }
-
-    std::string hashHex;
-    if (!ComputeSha256(filePath, hashHex, errorMessage)) {
-        return false;
-    }
-
-    const std::wstring temporaryPath = sumsPath + L".tmp";
-    std::ofstream output(std::filesystem::path(temporaryPath), std::ios::binary | std::ios::trunc);
-    if (!output) {
-        errorMessage = T(L"update.error.checksum_write");
-        return false;
-    }
-    output << hashHex << "  "
-           << EncodingUtils::WideToUtf8(kReleaseExeName)
-           << "\r\n";
-    output.close();
-    if (!output || !MoveFileExW(
-            temporaryPath.c_str(), sumsPath.c_str(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        DeleteFileW(temporaryPath.c_str());
-        errorMessage = T(L"update.error.checksum_write");
-        return false;
-    }
-    return true;
-}
-
 bool UpdateService::VerifySha256SumsFile(const std::wstring& filePath,
                                         const std::wstring& sumsPath,
                                         const std::wstring& entryName,

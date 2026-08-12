@@ -211,18 +211,6 @@ target_compile_features(TextMagicScriptExecutionGateTests PRIVATE cxx_std_17)
 
 add_test(NAME TextMagicScriptExecutionGateTests COMMAND TextMagicScriptExecutionGateTests)
 
-add_executable(TextMagicScriptInputSourceTests
-    tests/ScriptInputSourceTests.cpp
-)
-
-target_include_directories(TextMagicScriptInputSourceTests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/app
-)
-
-target_compile_features(TextMagicScriptInputSourceTests PRIVATE cxx_std_17)
-
-add_test(NAME TextMagicScriptInputSourceTests COMMAND TextMagicScriptInputSourceTests)
-
 add_executable(TextMagicTextBridgeInputUtilsTests
     tests/TextBridgeInputUtilsTests.cpp
 )

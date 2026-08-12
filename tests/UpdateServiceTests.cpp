@@ -1,10 +1,14 @@
 #include "UpdateService.h"
 
+#include <bcrypt.h>
+
+#include <array>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <thread>
+#include <vector>
 
 namespace {
 bool Check(bool condition, const char* message) {
@@ -12,6 +16,85 @@ bool Check(bool condition, const char* message) {
         std::cerr << "FAIL: " << message << '\n';
     }
     return condition;
+}
+
+bool ComputeSha256Fixture(const std::filesystem::path& filePath, std::string& hashHex) {
+    std::ifstream input(filePath, std::ios::binary);
+    if (!input) {
+        return false;
+    }
+
+    BCRYPT_ALG_HANDLE algorithm = nullptr;
+    BCRYPT_HASH_HANDLE hash = nullptr;
+    DWORD objectLength = 0;
+    DWORD bytesReturned = 0;
+    NTSTATUS status = BCryptOpenAlgorithmProvider(
+        &algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0
+    );
+    if (status >= 0) {
+        status = BCryptGetProperty(
+            algorithm, BCRYPT_OBJECT_LENGTH,
+            reinterpret_cast<PUCHAR>(&objectLength), sizeof(objectLength),
+            &bytesReturned, 0
+        );
+    }
+    std::vector<UCHAR> hashObject(objectLength);
+    if (status >= 0) {
+        status = BCryptCreateHash(
+            algorithm, &hash, hashObject.data(), objectLength,
+            nullptr, 0, 0
+        );
+    }
+
+    std::array<char, 64 * 1024> buffer = {};
+    while (status >= 0 && input) {
+        input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        const std::streamsize bytesRead = input.gcount();
+        if (bytesRead > 0) {
+            status = BCryptHashData(
+                hash, reinterpret_cast<PUCHAR>(buffer.data()),
+                static_cast<ULONG>(bytesRead), 0
+            );
+        }
+    }
+
+    std::array<UCHAR, 32> digest = {};
+    if (status >= 0) {
+        status = BCryptFinishHash(hash, digest.data(), static_cast<ULONG>(digest.size()), 0);
+    }
+    if (hash) {
+        BCryptDestroyHash(hash);
+    }
+    if (algorithm) {
+        BCryptCloseAlgorithmProvider(algorithm, 0);
+    }
+    if (status < 0) {
+        return false;
+    }
+
+    constexpr char digits[] = "0123456789abcdef";
+    hashHex.clear();
+    hashHex.reserve(digest.size() * 2);
+    for (UCHAR byte : digest) {
+        hashHex.push_back(digits[byte >> 4]);
+        hashHex.push_back(digits[byte & 0x0f]);
+    }
+    return true;
+}
+
+bool WriteChecksumFixture(const std::filesystem::path& filePath,
+                          const std::filesystem::path& sumsPath,
+                          const char* entryName) {
+    std::string hashHex;
+    if (!ComputeSha256Fixture(filePath, hashHex)) {
+        return false;
+    }
+    std::ofstream output(sumsPath, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        return false;
+    }
+    output << hashHex << "  " << entryName << "\r\n";
+    return static_cast<bool>(output);
 }
 }
 
@@ -29,19 +112,13 @@ int main() {
     }
 
     std::wstring error;
-    bool passed = Check(UpdateService::WriteSha256SumsFile(
-                            checksumTarget.wstring(), checksumFile.wstring(), error),
-                        "SHA256SUMS.txt is generated");
-    std::ifstream generatedChecksum(checksumFile, std::ios::binary);
-    const std::string checksumContents{
-        std::istreambuf_iterator<char>(generatedChecksum),
-        std::istreambuf_iterator<char>()
-    };
-    passed &= Check(
-        checksumContents ==
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  TextMagic.exe\r\n",
-        "generated checksum uses the conventional SHA256SUMS format"
-    );
+    bool passed = false;
+    {
+        std::ofstream output(checksumFile, std::ios::binary | std::ios::trunc);
+        output << "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  "
+                  "TextMagic.exe\r\n";
+        passed = Check(static_cast<bool>(output), "test fixture writes a checksum entry");
+    }
     error.clear();
     passed &= Check(UpdateService::VerifySha256SumsFile(
                         checksumTarget.wstring(), checksumFile.wstring(), L"TextMagic.exe", error),
@@ -93,9 +170,8 @@ int main() {
     UpdateService service;
     const std::filesystem::path downloadSums = updateDirectory / L"SHA256SUMS.txt";
     std::wstring expectedDownloadHash;
-    passed &= Check(UpdateService::WriteSha256SumsFile(
-                        downloadPath.wstring(), downloadSums.wstring(), error),
-                    "download checksum is generated for updater test");
+    passed &= Check(WriteChecksumFixture(downloadPath, downloadSums, "TextMagic.exe"),
+                    "download checksum fixture is generated for updater test");
     passed &= Check(UpdateService::VerifySha256SumsFile(
                         downloadPath.wstring(), downloadSums.wstring(), L"TextMagic.exe",
                         error, &expectedDownloadHash),
@@ -137,9 +213,8 @@ int main() {
         target << "original";
     }
     error.clear();
-    passed &= Check(UpdateService::WriteSha256SumsFile(
-                        downloadPath.wstring(), downloadSums.wstring(), error),
-                    "tamper test checksum is generated");
+    passed &= Check(WriteChecksumFixture(downloadPath, downloadSums, "TextMagic.exe"),
+                    "tamper test checksum fixture is generated");
     passed &= Check(UpdateService::VerifySha256SumsFile(
                         downloadPath.wstring(), downloadSums.wstring(), L"TextMagic.exe",
                         error, &expectedDownloadHash),

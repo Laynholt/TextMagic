@@ -7,7 +7,6 @@
 #include "Localization.h"
 #include "ModifierGestureResolver.h"
 #include "OutputLayout.h"
-#include "ScriptInputSource.h"
 #include "TextBridgeInputUtils.h"
 #include "ToolTip.h"
 #include "UiRenderer.h"
@@ -2227,11 +2226,6 @@ bool Application::Initialize(HINSTANCE hInstance) {
     fs::create_directories(fs::path(m_scriptsDirectory), createDirError);
 
     AppendLog(std::wstring(T(L"app.log.starting_prefix")) + WINDOW_TITLE + L" " + APP_VERSION + L".");
-    std::wstring checksumError;
-    if (!UpdateService::WriteSha256SumsFile(
-            GetExecutablePath(), executableDirectory + L"\\SHA256SUMS.txt", checksumError)) {
-        AppendLog(std::wstring(T(L"app.log.checksum_write_failed_prefix")) + L" " + checksumError);
-    }
     if (!blacklistLoaded) {
         AppendLog(std::wstring(T(L"app.log.blacklist_load_warning_prefix")) + L" " + blacklistLoadError);
     }
@@ -4766,23 +4760,13 @@ void Application::ExecuteScript(
                         hasSelection = !selectedText.empty();
                     }
 
-                    switch (ScriptInputSource::Choose(
-                        useClipboardOnly,
-                        hasSelection,
-                        hasInputCapture
-                    )) {
-                    case ScriptInputSource::Type::Clipboard:
+                    if (useClipboardOnly) {
                         ClipboardUtils::ReadText(windowHandle, &sourceText);
-                        break;
-                    case ScriptInputSource::Type::Selection:
-                        sourceText = selectedText;
-                        break;
-                    case ScriptInputSource::Type::TrackedInput:
+                    } else if (hasInputCapture) {
                         sourceText = inputCapture.word;
                         inputBufferMode = true;
-                        break;
-                    case ScriptInputSource::Type::None:
-                        break;
+                    } else if (hasSelection) {
+                        sourceText = selectedText;
                     }
 
                     result->sourceText = sourceText;

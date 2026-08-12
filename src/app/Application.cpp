@@ -694,23 +694,42 @@ FullscreenUtils::WindowStateToken GetWindowStateToken(HWND window) {
     }
 
     token.threadId = GetWindowThreadProcessId(window, &token.processId);
+    if (token.threadId == 0 || token.processId == 0) {
+        return token;
+    }
+
     token.classAtom = static_cast<ULONG_PTR>(GetClassLongPtrW(window, GCW_ATOM));
+    if (token.classAtom == 0) {
+        return token;
+    }
+
+    SetLastError(ERROR_SUCCESS);
     token.style = GetWindowLongPtrW(window, GWL_STYLE);
-    GetWindowRect(window, &token.windowBounds);
+    if (token.style == 0 && GetLastError() != ERROR_SUCCESS) {
+        return token;
+    }
+    if (!GetWindowRect(window, &token.windowBounds)) {
+        return token;
+    }
 
     RECT clientBounds = {};
-    if (GetClientRect(window, &clientBounds)) {
-        POINT topLeft = { clientBounds.left, clientBounds.top };
-        POINT bottomRight = { clientBounds.right, clientBounds.bottom };
-        if (ClientToScreen(window, &topLeft) && ClientToScreen(window, &bottomRight)) {
-            token.clientBounds = { topLeft.x, topLeft.y, bottomRight.x, bottomRight.y };
-        }
+    if (!GetClientRect(window, &clientBounds)) {
+        return token;
     }
+    POINT topLeft = { clientBounds.left, clientBounds.top };
+    POINT bottomRight = { clientBounds.right, clientBounds.bottom };
+    if (!ClientToScreen(window, &topLeft) || !ClientToScreen(window, &bottomRight)) {
+        return token;
+    }
+    token.clientBounds = { topLeft.x, topLeft.y, bottomRight.x, bottomRight.y };
+
     const HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
     MONITORINFO monitorInfo = { sizeof(monitorInfo) };
-    if (monitor && GetMonitorInfoW(monitor, &monitorInfo)) {
-        token.monitorBounds = monitorInfo.rcMonitor;
+    if (!monitor || !GetMonitorInfoW(monitor, &monitorInfo)) {
+        return token;
     }
+    token.monitorBounds = monitorInfo.rcMonitor;
+    token.valid = true;
     return token;
 }
 

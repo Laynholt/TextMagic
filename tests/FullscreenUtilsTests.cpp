@@ -44,6 +44,7 @@ int main() {
     constexpr std::uint64_t generation = 7;
     constexpr bool fullscreenSetting = true;
     FullscreenUtils::WindowStateToken windowState;
+    windowState.valid = true;
     windowState.processId = 100;
     windowState.threadId = 200;
     windowState.classAtom = 300;
@@ -80,6 +81,15 @@ int main() {
     reusedWindowState.processId = 101;
     Expect(!cache.Matches(window, generation, fullscreenSetting, reusedWindowState),
            "a reused window handle from another process must invalidate the cached decision");
+
+    FullscreenUtils::WindowStateToken partialWindowState;
+    partialWindowState.processId = windowState.processId;
+    partialWindowState.threadId = windowState.threadId;
+    cache.Store(window, generation, fullscreenSetting, partialWindowState, false);
+    Expect(!cache.Matches(window, generation, fullscreenSetting, partialWindowState),
+           "a partial window-state capture must never match the cache");
+    Expect(!cache.Matches(window, generation, fullscreenSetting, windowState),
+           "a failed window-state capture must discard the previous reusable decision");
 
     cache.Invalidate();
     Expect(!cache.Matches(window, generation, fullscreenSetting, windowState),

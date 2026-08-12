@@ -6,6 +6,7 @@
 
 namespace FullscreenUtils {
 struct WindowStateToken {
+    bool valid = false;
     DWORD processId = 0;
     DWORD threadId = 0;
     ULONG_PTR classAtom = 0;
@@ -16,7 +17,9 @@ struct WindowStateToken {
 };
 
 inline bool operator==(const WindowStateToken& left, const WindowStateToken& right) noexcept {
-    return left.processId == right.processId
+    return left.valid
+        && right.valid
+        && left.processId == right.processId
         && left.threadId == right.threadId
         && left.classAtom == right.classAtom
         && left.style == right.style
@@ -36,6 +39,7 @@ public:
                  bool fullscreenSetting,
                  const WindowStateToken& windowState) const noexcept {
         return m_valid
+            && windowState.valid
             && m_window == window
             && m_blacklistGeneration == blacklistGeneration
             && m_fullscreenSetting == fullscreenSetting
@@ -47,6 +51,10 @@ public:
                bool fullscreenSetting,
                const WindowStateToken& windowState,
                bool blocked) noexcept {
+        if (!windowState.valid) {
+            Invalidate();
+            return;
+        }
         m_window = window;
         m_blacklistGeneration = blacklistGeneration;
         m_fullscreenSetting = fullscreenSetting;

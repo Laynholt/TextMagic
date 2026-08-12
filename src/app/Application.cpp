@@ -17,6 +17,7 @@
 #include "InfoWindowLayout.h"
 #include "InfoWindowModel.h"
 #include "LogFile.h"
+#include "MessageLoop.h"
 #include "PowerShellUtils.h"
 #include "PopupMenuNavigation.h"
 #include "RunningApplication.h"
@@ -2176,7 +2177,19 @@ bool Application::Initialize(HINSTANCE hInstance) {
 
 int Application::Run() {
     MSG msg = {};
-    while (GetMessageW(&msg, nullptr, 0, 0)) {
+    for (;;) {
+        const BOOL messageResult = GetMessageW(&msg, nullptr, 0, 0);
+        switch (ClassifyMessageRead(messageResult)) {
+        case MessageReadResult::Error: {
+            const DWORD errorCode = GetLastError();
+            AppendLog(L"[App][Error] GetMessageW failed: " + std::to_wstring(errorCode));
+            return errorCode == ERROR_SUCCESS ? 1 : static_cast<int>(errorCode);
+        }
+        case MessageReadResult::Quit:
+            return static_cast<int>(msg.wParam);
+        case MessageReadResult::Dispatch:
+            break;
+        }
         if (m_hMorePopupWindow
             && (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN)
             && HandleMorePopupKey(static_cast<UINT>(msg.wParam))) {
@@ -2196,7 +2209,6 @@ int Application::Run() {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
-    return static_cast<int>(msg.wParam);
 }
 
 void Application::Shutdown() {

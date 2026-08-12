@@ -1,4 +1,5 @@
 #include "OutputLayout.h"
+#include "MessageLoop.h"
 
 #include <cstdlib>
 #include <iostream>
@@ -13,6 +14,13 @@ void Check(bool condition, const char* message) {
 }
 
 int main() {
+    Check(ClassifyMessageRead(1) == MessageReadResult::Dispatch,
+          "positive GetMessageW result dispatches");
+    Check(ClassifyMessageRead(0) == MessageReadResult::Quit,
+          "zero GetMessageW result quits");
+    Check(ClassifyMessageRead(-1) == MessageReadResult::Error,
+          "negative GetMessageW result reports an error");
+
     Check(DetectOutputLayout(L"hello") == OutputLayout::English,
           "Latin output selects English");
     Check(DetectOutputLayout(L"\u043F\u0440\u0438\u0432\u0435\u0442") == OutputLayout::Russian,

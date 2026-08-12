@@ -7,6 +7,8 @@
 #include <windowsx.h>
 #include <commdlg.h>
 
+#include <cstddef>
+
 namespace {
 const wchar_t* T(const wchar_t* key) {
     return Localization::GetTextByName(key);
@@ -56,6 +58,32 @@ void UpdateListBoxVerticalScrollbar(HWND listBox) {
     RedrawWindow(listBox, nullptr, nullptr, RDW_INVALIDATE | RDW_FRAME | RDW_UPDATENOW);
 }
 
+bool WriteAll(HANDLE fileHandle, const void* data, std::size_t size, DWORD* errorCode) {
+    const auto* cursor = static_cast<const unsigned char*>(data);
+    while (size != 0) {
+        const DWORD chunk = size > static_cast<std::size_t>(MAXDWORD)
+            ? MAXDWORD
+            : static_cast<DWORD>(size);
+        DWORD written = 0;
+        if (!WriteFile(fileHandle, cursor, chunk, &written, nullptr)) {
+            if (errorCode) {
+                *errorCode = GetLastError();
+            }
+            return false;
+        }
+        if (written == 0) {
+            SetLastError(ERROR_WRITE_FAULT);
+            if (errorCode) {
+                *errorCode = ERROR_WRITE_FAULT;
+            }
+            return false;
+        }
+        cursor += written;
+        size -= written;
+    }
+    return true;
+}
+
 bool SaveUtf8TextFile(const std::wstring& filePath, const std::wstring& text, std::wstring* error) {
     HANDLE fileHandle = CreateFileW(
         filePath.c_str(),
@@ -75,21 +103,20 @@ bool SaveUtf8TextFile(const std::wstring& filePath, const std::wstring& text, st
 
     const std::string utf8 = EncodingUtils::WideToUtf8(text);
     const unsigned char bom[3] = { 0xEF, 0xBB, 0xBF };
-    DWORD written = 0;
-    if (!WriteFile(fileHandle, bom, sizeof(bom), &written, nullptr)) {
+    DWORD writeError = ERROR_SUCCESS;
+    if (!WriteAll(fileHandle, bom, sizeof(bom), &writeError)) {
         CloseHandle(fileHandle);
         if (error) {
-            *error = std::wstring(T(L"ui.error.write_bom_prefix")) + std::to_wstring(GetLastError());
+            *error = std::wstring(T(L"ui.error.write_bom_prefix")) + std::to_wstring(writeError);
         }
         return false;
     }
 
     if (!utf8.empty()) {
-        written = 0;
-        if (!WriteFile(fileHandle, utf8.data(), static_cast<DWORD>(utf8.size()), &written, nullptr)) {
+        if (!WriteAll(fileHandle, utf8.data(), utf8.size(), &writeError)) {
             CloseHandle(fileHandle);
             if (error) {
-                *error = std::wstring(T(L"ui.error.file_write_prefix")) + std::to_wstring(GetLastError());
+                *error = std::wstring(T(L"ui.error.file_write_prefix")) + std::to_wstring(writeError);
             }
             return false;
         }

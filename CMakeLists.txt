@@ -55,6 +55,7 @@ set(SOURCES
     src/core/common/ClipboardUtils.cpp
     src/core/common/ApplicationBlacklist.cpp
     src/core/common/EncodingUtils.cpp
+    src/core/common/FileSystemUtils.cpp
     src/core/common/LogFile.cpp
     src/core/common/PowerShellUtils.cpp
     src/core/scripts/ScriptManifest.cpp
@@ -122,7 +123,6 @@ endif()
 
 set_target_properties(${PROJECT_NAME} PROPERTIES
     OUTPUT_NAME "${TM_APP_NAME}"
-    WIN32_EXECUTABLE TRUE
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
@@ -168,6 +168,15 @@ textmagic_add_test(TextMagicLogFileTests
     src/core/common/EncodingUtils.cpp
     src/core/common/LogFile.cpp
     tests/LogFileTests.cpp
+)
+
+textmagic_add_test(TextMagicFileSystemUtilsTests
+    src/core/common/FileSystemUtils.cpp
+    tests/FileSystemUtilsTests.cpp
+)
+
+target_include_directories(TextMagicFileSystemUtilsTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
 )
 
 target_include_directories(TextMagicLogFileTests PRIVATE
@@ -238,6 +247,7 @@ target_include_directories(TextMagicLocalizationTests PRIVATE
 textmagic_add_test(TextMagicScriptRunnerTests
     src/app/Localization.cpp
     src/core/common/EncodingUtils.cpp
+    src/core/common/FileSystemUtils.cpp
     src/core/scripts/ScriptManifest.cpp
     src/core/scripts/ScriptRunner.cpp
     tests/ScriptRunnerTests.cpp

@@ -29,6 +29,7 @@ constexpr wchar_t kReleaseDownloadPrefix[] = L"/" TM_GITHUB_OWNER_W L"/" TM_GITH
 constexpr wchar_t kReleaseExeName[] = TM_APP_NAME_W L".exe";
 constexpr wchar_t kSha256SumsName[] = L"SHA256SUMS.txt";
 constexpr wchar_t kUserAgent[] = TM_APP_NAME_W L"-Updater/" TM_APP_VERSION_W;
+constexpr int kWinHttpTimeoutMs = 15000;
 
 class WinHttpHandle {
 public:
@@ -74,6 +75,17 @@ public:
 private:
     HINTERNET m_handle;
 };
+
+bool SetWinHttpTimeouts(HINTERNET handle) {
+    return handle != nullptr
+        && WinHttpSetTimeouts(
+            handle,
+            kWinHttpTimeoutMs,
+            kWinHttpTimeoutMs,
+            kWinHttpTimeoutMs,
+            kWinHttpTimeoutMs
+        ) != FALSE;
+}
 
 std::wstring FormatWin32Error(DWORD errorCode) {
     wchar_t* buffer = nullptr;
@@ -464,6 +476,10 @@ bool UpdateService::DownloadReleaseAsset(const std::wstring& tag,
         errorMessage = std::wstring(T(L"update.error.winhttp_init_prefix")) + FormatWin32Error(GetLastError());
         return false;
     }
+    if (!SetWinHttpTimeouts(session.get())) {
+        errorMessage = std::wstring(T(L"update.error.winhttp_init_prefix")) + FormatWin32Error(GetLastError());
+        return false;
+    }
 
     WinHttpHandle connection(WinHttpConnect(session.get(), kGitHubHost, INTERNET_DEFAULT_HTTPS_PORT, 0));
     if (!connection) {
@@ -481,6 +497,10 @@ bool UpdateService::DownloadReleaseAsset(const std::wstring& tag,
         WINHTTP_FLAG_SECURE
     ));
     if (!request) {
+        errorMessage = std::wstring(T(L"update.error.http_request_create_prefix")) + FormatWin32Error(GetLastError());
+        return false;
+    }
+    if (!SetWinHttpTimeouts(request.get())) {
         errorMessage = std::wstring(T(L"update.error.http_request_create_prefix")) + FormatWin32Error(GetLastError());
         return false;
     }
@@ -666,6 +686,10 @@ bool UpdateService::ResolveLatestReleaseTag(std::wstring& latestTag, std::wstrin
         errorMessage = std::wstring(T(L"update.error.winhttp_init_prefix")) + FormatWin32Error(GetLastError());
         return false;
     }
+    if (!SetWinHttpTimeouts(session.get())) {
+        errorMessage = std::wstring(T(L"update.error.winhttp_init_prefix")) + FormatWin32Error(GetLastError());
+        return false;
+    }
 
     WinHttpHandle connection(WinHttpConnect(session.get(), kGitHubHost, INTERNET_DEFAULT_HTTPS_PORT, 0));
     if (!connection) {
@@ -683,6 +707,10 @@ bool UpdateService::ResolveLatestReleaseTag(std::wstring& latestTag, std::wstrin
         WINHTTP_FLAG_SECURE
     ));
     if (!request) {
+        errorMessage = std::wstring(T(L"update.error.http_request_create_prefix")) + FormatWin32Error(GetLastError());
+        return false;
+    }
+    if (!SetWinHttpTimeouts(request.get())) {
         errorMessage = std::wstring(T(L"update.error.http_request_create_prefix")) + FormatWin32Error(GetLastError());
         return false;
     }

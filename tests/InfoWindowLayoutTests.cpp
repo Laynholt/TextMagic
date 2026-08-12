@@ -225,6 +225,13 @@ int main() {
           "existing list fill remains unchanged");
     constexpr DWORD baseStyle = WS_CHILD | WS_VISIBLE | WS_TABSTOP
         | WS_VSCROLL | LVS_REPORT | LVS_SHOWSELALWAYS;
+    Check(content_surface_style::ResolveApplicationTableWindowStyle() == baseStyle,
+          "blacklist and running picker use the same ListView window style");
+    Check((content_surface_style::ResolveApplicationTableWindowStyle() & LVS_SINGLESEL) == 0,
+          "application tables allow multiple selected rows");
+    Check(content_surface_style::ResolveApplicationTableExtendedStyle()
+              == (LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_HEADERDRAGDROP),
+          "blacklist and running picker use the same ListView extended style");
     Check(content_surface_style::StripListViewFrameStyle(baseStyle | WS_BORDER)
               == baseStyle,
           "table style stripping removes only WS_BORDER");

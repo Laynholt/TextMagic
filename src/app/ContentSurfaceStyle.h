@@ -45,6 +45,15 @@ struct ApplicationTableColumn {
     int width;
 };
 
+constexpr DWORD ResolveApplicationTableWindowStyle() {
+    return WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL
+        | LVS_REPORT | LVS_SHOWSELALWAYS;
+}
+
+constexpr DWORD ResolveApplicationTableExtendedStyle() {
+    return LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_HEADERDRAGDROP;
+}
+
 constexpr TableFrameOwner ResolveTableFrameOwner() {
     return TableFrameOwner::ParentAfterChild;
 }

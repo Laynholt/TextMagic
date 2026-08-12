@@ -13,3 +13,4 @@ tests/*
 !tests/ScriptManifestTests.cpp
 !tests/PopupMenuNavigationTests.cpp
 !tests/OutputLayoutTests.cpp
+!tests/FileSystemUtilsTests.cpp

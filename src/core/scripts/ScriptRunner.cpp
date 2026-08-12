@@ -1,6 +1,7 @@
 #include "ScriptRunner.h"
 
 #include "EncodingUtils.h"
+#include "FileSystemUtils.h"
 #include "Localization.h"
 
 #include <windows.h>
@@ -204,24 +205,30 @@ bool ScriptRunner::Execute(
     HANDLE childStdIn = nullptr;
     HANDLE childStdOut = nullptr;
     HANDLE childStdErr = nullptr;
-    wchar_t stdinTempFilePath[MAX_PATH] = {};
-    wchar_t stdoutTempFilePath[MAX_PATH] = {};
-    wchar_t stderrTempFilePath[MAX_PATH] = {};
-
-    wchar_t tempDirectory[MAX_PATH] = {};
-    if (!GetTempPathW(MAX_PATH, tempDirectory)) {
+    HANDLE job = nullptr;
+    HANDLE completionPort = nullptr;
+    PROCESS_INFORMATION pi = {};
+    std::error_code tempDirectoryError;
+    const std::wstring tempDirectory = FileSystemUtils::GetTempDirectory(&tempDirectoryError);
+    if (tempDirectory.empty() || tempDirectoryError) {
         if (errorText) {
             *errorText = T(L"script_runner.error.temp_dir");
         }
         return false;
     }
 
-    auto createTempFile = [&](wchar_t* path) -> HANDLE {
-        if (!GetTempFileNameW(tempDirectory, L"tmg", 0, path)) {
+    std::wstring stdinTempFilePath;
+    std::wstring stdoutTempFilePath;
+    std::wstring stderrTempFilePath;
+
+    auto createTempFile = [&](std::wstring* path) -> HANDLE {
+        std::vector<wchar_t> pathBuffer(32768, L'\0');
+        if (!GetTempFileNameW(tempDirectory.c_str(), L"tmg", 0, pathBuffer.data())) {
             return nullptr;
         }
+        *path = pathBuffer.data();
         HANDLE handle = CreateFileW(
-            path,
+            path->c_str(),
             GENERIC_READ | GENERIC_WRITE,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             &sa,
@@ -230,28 +237,45 @@ bool ScriptRunner::Execute(
             nullptr
         );
         if (handle == INVALID_HANDLE_VALUE) {
-            DeleteFileW(path);
-            path[0] = L'\0';
+            DeleteFileW(path->c_str());
+            path->clear();
             return nullptr;
         }
         return handle;
     };
 
-    auto cleanupTempFile = [&](HANDLE& handle, wchar_t* path) {
-        closeHandle(handle);
-        if (path[0] != L'\0') {
-            DeleteFileW(path);
-            path[0] = L'\0';
+    auto cleanupTempFiles = [&]() {
+        if (!stdinTempFilePath.empty()) {
+            DeleteFileW(stdinTempFilePath.c_str());
+        }
+        if (!stdoutTempFilePath.empty()) {
+            DeleteFileW(stdoutTempFilePath.c_str());
+        }
+        if (!stderrTempFilePath.empty()) {
+            DeleteFileW(stderrTempFilePath.c_str());
         }
     };
 
-    childStdIn = createTempFile(stdinTempFilePath);
-    childStdOut = createTempFile(stdoutTempFilePath);
-    childStdErr = createTempFile(stderrTempFilePath);
+    auto cleanupProcess = [&]() {
+        closeHandle(childStdIn);
+        closeHandle(childStdOut);
+        closeHandle(childStdErr);
+        closeHandle(pi.hThread);
+        closeHandle(pi.hProcess);
+        closeHandle(job);
+        closeHandle(completionPort);
+    };
+
+    auto cleanupAll = [&]() {
+        cleanupProcess();
+        cleanupTempFiles();
+    };
+
+    childStdIn = createTempFile(&stdinTempFilePath);
+    childStdOut = createTempFile(&stdoutTempFilePath);
+    childStdErr = createTempFile(&stderrTempFilePath);
     if (!childStdIn || !childStdOut || !childStdErr) {
-        cleanupTempFile(childStdIn, stdinTempFilePath);
-        cleanupTempFile(childStdOut, stdoutTempFilePath);
-        cleanupTempFile(childStdErr, stderrTempFilePath);
+        cleanupAll();
         if (errorText) {
             *errorText = T(L"script_runner.error.stderr_temp_create");
         }
@@ -260,9 +284,7 @@ bool ScriptRunner::Execute(
 
     const std::string utf8Input = EncodingUtils::WideToUtf8(inputText);
     if (utf8Input.size() > MAXDWORD) {
-        cleanupTempFile(childStdIn, stdinTempFilePath);
-        cleanupTempFile(childStdOut, stdoutTempFilePath);
-        cleanupTempFile(childStdErr, stderrTempFilePath);
+        cleanupAll();
         if (errorText) {
             *errorText = std::wstring(T(L"script_runner.error.write_file_prefix"))
                 + std::to_wstring(ERROR_FILE_TOO_LARGE);
@@ -281,9 +303,7 @@ bool ScriptRunner::Execute(
     if (!wroteInput || writtenBytes != static_cast<DWORD>(utf8Input.size())
         || !SetFilePointerEx(childStdIn, fileStart, nullptr, FILE_BEGIN)) {
         const DWORD writeError = GetLastError();
-        cleanupTempFile(childStdIn, stdinTempFilePath);
-        cleanupTempFile(childStdOut, stdoutTempFilePath);
-        cleanupTempFile(childStdErr, stderrTempFilePath);
+        cleanupAll();
         if (errorText) {
             *errorText = std::wstring(T(L"script_runner.error.write_file_prefix")) + std::to_wstring(writeError);
         }
@@ -296,8 +316,6 @@ bool ScriptRunner::Execute(
     si.hStdInput = childStdIn;
     si.hStdOutput = childStdOut;
     si.hStdError = childStdErr;
-
-    PROCESS_INFORMATION pi = {};
 
     std::vector<wchar_t> mutableCommandLine(commandLine.begin(), commandLine.end());
     mutableCommandLine.push_back(L'\0');
@@ -317,51 +335,31 @@ bool ScriptRunner::Execute(
 
     if (!started) {
         const DWORD createError = GetLastError();
-        closeHandle(childStdIn);
-        closeHandle(childStdOut);
-        closeHandle(childStdErr);
-        DeleteFileW(stdinTempFilePath);
-        DeleteFileW(stdoutTempFilePath);
-        DeleteFileW(stderrTempFilePath);
+        cleanupAll();
         if (errorText) {
             *errorText = std::wstring(T(L"script_runner.error.create_process_prefix")) + std::to_wstring(createError);
         }
         return false;
     }
 
-    HANDLE job = CreateJobObjectW(nullptr, nullptr);
+    job = CreateJobObjectW(nullptr, nullptr);
     if (!job) {
         const DWORD jobError = GetLastError();
         TerminateProcess(pi.hProcess, 1);
         WaitForSingleObject(pi.hProcess, kTerminationWaitMs);
-        closeHandle(childStdIn);
-        closeHandle(childStdOut);
-        closeHandle(childStdErr);
-        closeHandle(pi.hThread);
-        closeHandle(pi.hProcess);
-        DeleteFileW(stdinTempFilePath);
-        DeleteFileW(stdoutTempFilePath);
-        DeleteFileW(stderrTempFilePath);
+        cleanupAll();
         if (errorText) {
             *errorText = std::wstring(T(L"script_runner.error.create_job_prefix")) + std::to_wstring(jobError);
         }
         return false;
     }
 
-    HANDLE completionPort = CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 1);
+    completionPort = CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 1);
     if (!completionPort) {
         const DWORD completionPortError = GetLastError();
         TerminateProcess(pi.hProcess, 1);
         WaitForSingleObject(pi.hProcess, kTerminationWaitMs);
-        closeHandle(childStdIn);
-        closeHandle(childStdOut);
-        closeHandle(childStdErr);
-        closeHandle(pi.hThread);
-        closeHandle(pi.hProcess);
-        closeHandle(job);
-        DeleteFileW(stdinTempFilePath);
-        DeleteFileW(stdoutTempFilePath);
-        DeleteFileW(stderrTempFilePath);
+        cleanupAll();
         if (errorText) {
             *errorText = std::wstring(T(L"script_runner.error.create_completion_port_prefix"))
                 + std::to_wstring(completionPortError);
@@ -375,16 +373,7 @@ bool ScriptRunner::Execute(
         const DWORD jobError = GetLastError();
         TerminateProcess(pi.hProcess, 1);
         WaitForSingleObject(pi.hProcess, kTerminationWaitMs);
-        closeHandle(childStdIn);
-        closeHandle(childStdOut);
-        closeHandle(childStdErr);
-        closeHandle(pi.hThread);
-        closeHandle(pi.hProcess);
-        closeHandle(job);
-        closeHandle(completionPort);
-        DeleteFileW(stdinTempFilePath);
-        DeleteFileW(stdoutTempFilePath);
-        DeleteFileW(stderrTempFilePath);
+        cleanupAll();
         if (errorText) {
             *errorText = std::wstring(T(L"script_runner.error.configure_job_prefix")) + std::to_wstring(jobError);
         }
@@ -402,16 +391,7 @@ bool ScriptRunner::Execute(
         const DWORD associationError = GetLastError();
         TerminateProcess(pi.hProcess, 1);
         WaitForSingleObject(pi.hProcess, kTerminationWaitMs);
-        closeHandle(childStdIn);
-        closeHandle(childStdOut);
-        closeHandle(childStdErr);
-        closeHandle(pi.hThread);
-        closeHandle(pi.hProcess);
-        closeHandle(job);
-        closeHandle(completionPort);
-        DeleteFileW(stdinTempFilePath);
-        DeleteFileW(stdoutTempFilePath);
-        DeleteFileW(stderrTempFilePath);
+        cleanupAll();
         if (errorText) {
             *errorText = std::wstring(T(L"script_runner.error.associate_completion_port_prefix"))
                 + std::to_wstring(associationError);
@@ -423,16 +403,7 @@ bool ScriptRunner::Execute(
         const DWORD jobError = GetLastError();
         TerminateProcess(pi.hProcess, 1);
         WaitForSingleObject(pi.hProcess, kTerminationWaitMs);
-        closeHandle(childStdIn);
-        closeHandle(childStdOut);
-        closeHandle(childStdErr);
-        closeHandle(pi.hThread);
-        closeHandle(pi.hProcess);
-        closeHandle(job);
-        closeHandle(completionPort);
-        DeleteFileW(stdinTempFilePath);
-        DeleteFileW(stdoutTempFilePath);
-        DeleteFileW(stderrTempFilePath);
+        cleanupAll();
         if (errorText) {
             *errorText = std::wstring(T(L"script_runner.error.assign_job_prefix")) + std::to_wstring(jobError);
         }
@@ -444,16 +415,7 @@ bool ScriptRunner::Execute(
         TerminateJobObject(job, 1);
         DWORD ignoredDrainError = ERROR_SUCCESS;
         WaitForJobEmpty(completionPort, kTerminationWaitMs, &ignoredDrainError);
-        closeHandle(childStdIn);
-        closeHandle(childStdOut);
-        closeHandle(childStdErr);
-        closeHandle(pi.hThread);
-        closeHandle(pi.hProcess);
-        closeHandle(job);
-        closeHandle(completionPort);
-        DeleteFileW(stdinTempFilePath);
-        DeleteFileW(stdoutTempFilePath);
-        DeleteFileW(stderrTempFilePath);
+        cleanupAll();
         if (errorText) {
             *errorText = std::wstring(T(L"script_runner.error.resume_thread_prefix")) + std::to_wstring(resumeError);
         }
@@ -474,13 +436,7 @@ bool ScriptRunner::Execute(
         if (terminationError == ERROR_SUCCESS) {
             WaitForJobEmpty(completionPort, kTerminationWaitMs, &drainError);
         }
-        closeHandle(pi.hThread);
-        closeHandle(pi.hProcess);
-        closeHandle(job);
-        closeHandle(completionPort);
-        DeleteFileW(stdinTempFilePath);
-        DeleteFileW(stdoutTempFilePath);
-        DeleteFileW(stderrTempFilePath);
+        cleanupAll();
         if (errorText) {
             if (terminationError != ERROR_SUCCESS) {
                 *errorText = std::wstring(T(L"script_runner.error.terminate_job_prefix"))
@@ -500,13 +456,7 @@ bool ScriptRunner::Execute(
         TerminateJobObject(job, 1);
         DWORD ignoredDrainError = ERROR_SUCCESS;
         WaitForJobEmpty(completionPort, kTerminationWaitMs, &ignoredDrainError);
-        closeHandle(pi.hThread);
-        closeHandle(pi.hProcess);
-        closeHandle(job);
-        closeHandle(completionPort);
-        DeleteFileW(stdinTempFilePath);
-        DeleteFileW(stdoutTempFilePath);
-        DeleteFileW(stderrTempFilePath);
+        cleanupAll();
         if (errorText) {
             *errorText = std::wstring(T(L"script_runner.error.wait_process_prefix")) + std::to_wstring(waitError);
         }
@@ -519,13 +469,7 @@ bool ScriptRunner::Execute(
         TerminateJobObject(job, 1);
         DWORD ignoredDrainError = ERROR_SUCCESS;
         WaitForJobEmpty(completionPort, kTerminationWaitMs, &ignoredDrainError);
-        closeHandle(pi.hThread);
-        closeHandle(pi.hProcess);
-        closeHandle(job);
-        closeHandle(completionPort);
-        DeleteFileW(stdinTempFilePath);
-        DeleteFileW(stdoutTempFilePath);
-        DeleteFileW(stderrTempFilePath);
+        cleanupAll();
         if (errorText) {
             *errorText = std::wstring(T(L"script_runner.error.get_exit_code_prefix"))
                 + std::to_wstring(exitCodeError);
@@ -542,13 +486,7 @@ bool ScriptRunner::Execute(
         WaitForJobEmpty(completionPort, kTerminationWaitMs, &drainError);
     }
     if (terminationError != ERROR_SUCCESS || drainError != ERROR_SUCCESS) {
-        closeHandle(pi.hThread);
-        closeHandle(pi.hProcess);
-        closeHandle(job);
-        closeHandle(completionPort);
-        DeleteFileW(stdinTempFilePath);
-        DeleteFileW(stdoutTempFilePath);
-        DeleteFileW(stderrTempFilePath);
+        cleanupAll();
         if (errorText) {
             if (terminationError != ERROR_SUCCESS) {
                 *errorText = std::wstring(T(L"script_runner.error.terminate_job_prefix"))
@@ -560,10 +498,7 @@ bool ScriptRunner::Execute(
         }
         return false;
     }
-    closeHandle(pi.hThread);
-    closeHandle(pi.hProcess);
-    closeHandle(job);
-    closeHandle(completionPort);
+    cleanupProcess();
 
     std::string utf8Output;
     std::string stderrBytes;
@@ -571,9 +506,7 @@ bool ScriptRunner::Execute(
     DWORD stderrError = ERROR_SUCCESS;
     const bool stdoutRead = ReadFileToString(stdoutTempFilePath, &utf8Output, &stdoutError);
     const bool stderrRead = ReadFileToString(stderrTempFilePath, &stderrBytes, &stderrError);
-    DeleteFileW(stdinTempFilePath);
-    DeleteFileW(stdoutTempFilePath);
-    DeleteFileW(stderrTempFilePath);
+    cleanupTempFiles();
 
     if (!stdoutRead || !stderrRead) {
         const DWORD readError = !stdoutRead ? stdoutError : stderrError;

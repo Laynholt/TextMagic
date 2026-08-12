@@ -8,17 +8,12 @@
 #include <commdlg.h>
 
 #include <cstddef>
-
-namespace {
-const wchar_t* T(const wchar_t* key) {
-    return Localization::GetTextByName(key);
-}
-} // namespace
+#include <vector>
 
 std::wstring BuildDialogFilter(std::initializer_list<DialogFilterEntry> entries) {
     std::wstring filter;
     for (const DialogFilterEntry& entry : entries) {
-        filter += T(entry.labelKey);
+        filter += Localization::GetTextByName(entry.labelKey);
         filter.push_back(L'\0');
         filter += entry.pattern ? entry.pattern : L"*.*";
         filter.push_back(L'\0');
@@ -96,7 +91,7 @@ bool SaveUtf8TextFile(const std::wstring& filePath, const std::wstring& text, st
     );
     if (fileHandle == INVALID_HANDLE_VALUE) {
         if (error) {
-            *error = std::wstring(T(L"ui.error.file_open_prefix")) + std::to_wstring(GetLastError());
+            *error = std::wstring(Localization::GetTextByName(L"ui.error.file_open_prefix")) + std::to_wstring(GetLastError());
         }
         return false;
     }
@@ -107,7 +102,7 @@ bool SaveUtf8TextFile(const std::wstring& filePath, const std::wstring& text, st
     if (!WriteAll(fileHandle, bom, sizeof(bom), &writeError)) {
         CloseHandle(fileHandle);
         if (error) {
-            *error = std::wstring(T(L"ui.error.write_bom_prefix")) + std::to_wstring(writeError);
+            *error = std::wstring(Localization::GetTextByName(L"ui.error.write_bom_prefix")) + std::to_wstring(writeError);
         }
         return false;
     }
@@ -116,7 +111,7 @@ bool SaveUtf8TextFile(const std::wstring& filePath, const std::wstring& text, st
         if (!WriteAll(fileHandle, utf8.data(), utf8.size(), &writeError)) {
             CloseHandle(fileHandle);
             if (error) {
-                *error = std::wstring(T(L"ui.error.file_write_prefix")) + std::to_wstring(writeError);
+                *error = std::wstring(Localization::GetTextByName(L"ui.error.file_write_prefix")) + std::to_wstring(writeError);
             }
             return false;
         }
@@ -161,8 +156,8 @@ bool SaveTextWithDialog(HWND ownerWindow, const std::wstring& text, std::wstring
     swprintf_s(defaultName, TM_APP_NAME_W L"-logs-%04u%02u%02u-%02u%02u%02u.txt",
         st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
 
-    wchar_t filePath[MAX_PATH] = {};
-    wcscpy_s(filePath, defaultName);
+    std::vector<wchar_t> filePath(32768, L'\0');
+    wcscpy_s(filePath.data(), filePath.size(), defaultName);
 
     OPENFILENAMEW ofn = {};
     ofn.lStructSize = sizeof(ofn);
@@ -173,24 +168,24 @@ bool SaveTextWithDialog(HWND ownerWindow, const std::wstring& text, std::wstring
     });
     ofn.lpstrFilter = filter.c_str();
     ofn.lpstrDefExt = L"txt";
-    ofn.lpstrFile = filePath;
-    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrFile = filePath.data();
+    ofn.nMaxFile = static_cast<DWORD>(filePath.size());
     ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_EXPLORER;
 
     if (!GetSaveFileNameW(&ofn)) {
         const DWORD dialogError = CommDlgExtendedError();
         if (dialogError != 0 && error) {
-            *error = std::wstring(T(L"ui.error.save_dialog_prefix")) + std::to_wstring(dialogError);
+            *error = std::wstring(Localization::GetTextByName(L"ui.error.save_dialog_prefix")) + std::to_wstring(dialogError);
         }
         return false;
     }
 
-    if (!SaveUtf8TextFile(filePath, text, error)) {
+    if (!SaveUtf8TextFile(filePath.data(), text, error)) {
         return false;
     }
 
     if (savedPath) {
-        *savedPath = filePath;
+        *savedPath = filePath.data();
     }
     return true;
 }
@@ -230,9 +225,6 @@ size_t FindWrapEnd(HDC hdc, const std::wstring& line, size_t start, int maxWidth
             best = mid;
             low = mid + 1;
         } else {
-            if (mid == 0) {
-                break;
-            }
             high = mid - 1;
         }
     }

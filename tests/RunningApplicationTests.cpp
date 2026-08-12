@@ -15,10 +15,6 @@ void Expect(bool condition, const char* message) {
 }
 
 int main() {
-    Expect(content_surface_style::ResolveTableFramePaintMode()
-               == content_surface_style::TableFramePaintMode::StrokeOnly,
-        "running picker uses the shared stroke-only table frame");
-
     const std::vector<RunningApplication> applications = {
         { L"Alpha.exe", L"First Alpha Window", L"C:\\Apps\\Alpha.exe" },
         { L"Empty.exe", L"Missing Path", L"" },

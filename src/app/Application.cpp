@@ -3,6 +3,7 @@
 #include "AppUiHelpers.h"
 #include "ClipboardUtils.h"
 #include "EncodingUtils.h"
+#include "FileSystemUtils.h"
 #include "FullscreenUtils.h"
 #include "Localization.h"
 #include "ModifierGestureResolver.h"
@@ -151,6 +152,8 @@ struct InfoWindowState {
     bool logPlaceholderVisible = false;
     std::vector<std::wstring> logRows;
     int hoveredLogIndex = -1;
+    int blacklistSortColumn = -1;
+    bool blacklistSortAscending = true;
 };
 
 struct MessageWindowState {
@@ -306,8 +309,11 @@ int CALLBACK CompareRunningApplicationRows(
     return state->runningSortAscending ? result : -result;
 }
 
-void SetRunningApplicationSortIndicator(HWND listView, int column, bool ascending) {
+void SetListViewSortIndicator(HWND listView, int column, bool ascending) {
     HWND header = ListView_GetHeader(listView);
+    if (!header) {
+        return;
+    }
     const int count = Header_GetItemCount(header);
     for (int index = 0; index < count; ++index) {
         HDITEMW item = {};
@@ -1581,22 +1587,40 @@ bool SaveDisableFullscreenHotkeysSetting(const std::wstring& settingsPath, bool 
 
 bool IsStyledMenuItem(UINT itemId);
 
+HFONT g_menuFont = nullptr;
+HFONT g_trayMenuFont = nullptr;
+
 HFONT GetStyledMenuFont() {
-    static HFONT menuFont = CreateFontW(
+    if (!g_menuFont) {
+        g_menuFont = CreateFontW(
         -16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
         DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI"
-    );
-    return menuFont ? menuFont : static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+        );
+    }
+    return g_menuFont ? g_menuFont : static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
 }
 
 HFONT GetTrayMenuFont() {
-    static HFONT trayMenuFont = CreateFontW(
+    if (!g_trayMenuFont) {
+        g_trayMenuFont = CreateFontW(
         -14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
         DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI"
-    );
-    return trayMenuFont ? trayMenuFont : GetStyledMenuFont();
+        );
+    }
+    return g_trayMenuFont ? g_trayMenuFont : GetStyledMenuFont();
+}
+
+void ReleaseMenuFonts() {
+    if (g_menuFont) {
+        DeleteObject(g_menuFont);
+        g_menuFont = nullptr;
+    }
+    if (g_trayMenuFont) {
+        DeleteObject(g_trayMenuFont);
+        g_trayMenuFont = nullptr;
+    }
 }
 
 HFONT GetMenuFontForItem(UINT itemId) {
@@ -2067,10 +2091,71 @@ void ApplyDarkListViewHeader(HWND listView) {
     InvalidateRect(header, nullptr, TRUE);
 }
 
+struct ListViewTextSortContext {
+    HWND listView = nullptr;
+    int column = 0;
+    bool ascending = true;
+};
+
+int FindListViewItemByData(HWND listView, LPARAM data) {
+    const int count = ListView_GetItemCount(listView);
+    for (int index = 0; index < count; ++index) {
+        LVITEMW item = {};
+        item.mask = LVIF_PARAM;
+        item.iItem = index;
+        if (ListView_GetItem(listView, &item) && item.lParam == data) {
+            return index;
+        }
+    }
+    return -1;
+}
+
+std::wstring GetListViewItemText(HWND listView, int row, int column) {
+    if (row < 0) {
+        return {};
+    }
+    std::wstring text(32768, L'\0');
+    LVITEMW item = {};
+    item.iSubItem = column;
+    item.pszText = text.data();
+    item.cchTextMax = static_cast<int>(text.size());
+    const int length = static_cast<int>(SendMessageW(
+        listView,
+        LVM_GETITEMTEXTW,
+        row,
+        reinterpret_cast<LPARAM>(&item)));
+    text.resize(static_cast<size_t>(std::max(0, length)));
+    return text;
+}
+
+int CALLBACK CompareListViewTextRows(
+    LPARAM leftData,
+    LPARAM rightData,
+    LPARAM context
+) {
+    const auto* sort = reinterpret_cast<const ListViewTextSortContext*>(context);
+    if (!sort || !sort->listView) {
+        return 0;
+    }
+    const int leftRow = FindListViewItemByData(sort->listView, leftData);
+    const int rightRow = FindListViewItemByData(sort->listView, rightData);
+    const std::wstring left = GetListViewItemText(sort->listView, leftRow, sort->column);
+    const std::wstring right = GetListViewItemText(sort->listView, rightRow, sort->column);
+    const int comparison = CompareStringOrdinal(
+        left.c_str(),
+        -1,
+        right.c_str(),
+        -1,
+        TRUE);
+    const int result = comparison == CSTR_LESS_THAN
+        ? -1
+        : (comparison == CSTR_GREATER_THAN ? 1 : 0);
+    return sort->ascending ? result : -result;
+}
+
 void ConfigureApplicationTable(
     HWND listView,
     HFONT font,
-    DWORD extendedStyle,
     const content_surface_style::ApplicationTableColumn* columns,
     int columnCount,
     content_surface_style::ScrollbarSurface scrollbarSurface
@@ -2079,7 +2164,9 @@ void ConfigureApplicationTable(
         return;
     }
 
-    ListView_SetExtendedListViewStyle(listView, extendedStyle);
+    ListView_SetExtendedListViewStyle(
+        listView,
+        content_surface_style::ResolveApplicationTableExtendedStyle());
     ListView_SetBkColor(listView, content_surface_style::kListFill);
     ListView_SetTextBkColor(listView, content_surface_style::kListFill);
     ListView_SetTextColor(listView, content_surface_style::kListText);
@@ -2344,6 +2431,7 @@ void Application::Shutdown() {
         DeleteObject(m_hMonoFont);
         m_hMonoFont = nullptr;
     }
+    ReleaseMenuFonts();
 
     if (m_hListBrush) {
         DeleteObject(m_hListBrush);
@@ -2695,10 +2783,12 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             std::vector<std::wstring> droppedPaths;
             droppedPaths.reserve(fileCount);
             for (UINT index = 0; index < fileCount; ++index) {
-                wchar_t filePath[MAX_PATH] = {};
-                const UINT length = DragQueryFileW(dropHandle, index, filePath, MAX_PATH);
+                const UINT length = DragQueryFileW(dropHandle, index, nullptr, 0);
                 if (length > 0) {
-                    droppedPaths.emplace_back(filePath);
+                    std::vector<wchar_t> filePath(static_cast<size_t>(length) + 1, L'\0');
+                    if (DragQueryFileW(dropHandle, index, filePath.data(), length + 1) != 0) {
+                        droppedPaths.emplace_back(filePath.data());
+                    }
                 }
             }
             DragFinish(dropHandle);
@@ -3893,7 +3983,9 @@ void Application::SetLanguage(const std::wstring& languageCode) {
     if (_wcsicmp(oldLanguageCode.c_str(), Localization::GetCurrentLanguageCode().c_str()) == 0) {
         return;
     }
-    SaveLanguageSetting(GetLanguageSettingsPath(GetExecutableDirectory()));
+    if (!SaveLanguageSetting(GetLanguageSettingsPath(GetExecutableDirectory()))) {
+        AppendLog(T(L"app.log.settings_save_failed"));
+    }
     ApplyLocalization();
     RefreshScriptList();
     SetStatusText(T(L"status.language_updated"));
@@ -3911,7 +4003,12 @@ void Application::SetScriptInputMode(bool allTextInputMode) {
         return;
     }
     m_scriptInputAllText = allTextInputMode;
-    SaveScriptInputModeSetting(GetLanguageSettingsPath(GetExecutableDirectory()), m_scriptInputAllText);
+    if (!SaveScriptInputModeSetting(
+            GetLanguageSettingsPath(GetExecutableDirectory()),
+            m_scriptInputAllText
+        )) {
+        AppendLog(T(L"app.log.settings_save_failed"));
+    }
     UpdateScriptInputModeMenuChecks();
     SetStatusText(allTextInputMode ? T(L"app.status.input_mode_all_text") : T(L"app.status.input_mode_previous_word"));
 }
@@ -4289,7 +4386,7 @@ void Application::SetSelectedScriptsEnabled(bool enabled) {
 }
 
 void Application::AddScriptViaDialog() {
-    wchar_t filePath[MAX_PATH] = {};
+    std::vector<wchar_t> filePath(32768, L'\0');
 
     OPENFILENAMEW ofn = {};
     ofn.lStructSize = sizeof(ofn);
@@ -4299,8 +4396,8 @@ void Application::AddScriptViaDialog() {
         { L"app.dialog.filter.all_files", L"*.*" }
     });
     ofn.lpstrFilter = filter.c_str();
-    ofn.lpstrFile = filePath;
-    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrFile = filePath.data();
+    ofn.nMaxFile = static_cast<DWORD>(filePath.size());
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
 
     if (!GetOpenFileNameW(&ofn)) {
@@ -4313,7 +4410,7 @@ void Application::AddScriptViaDialog() {
         return;
     }
 
-    ImportScriptFiles({ filePath });
+    ImportScriptFiles({ filePath.data() });
 }
 
 void Application::RemoveSelectedScripts() {
@@ -4381,7 +4478,7 @@ void Application::ImportScriptsFromZip() {
         return;
     }
 
-    wchar_t archivePath[MAX_PATH] = {};
+    std::vector<wchar_t> archivePath(32768, L'\0');
     OPENFILENAMEW ofn = {};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = m_hWnd;
@@ -4390,15 +4487,15 @@ void Application::ImportScriptsFromZip() {
         { L"app.dialog.filter.all_files", L"*.*" }
     });
     ofn.lpstrFilter = filter.c_str();
-    ofn.lpstrFile = archivePath;
-    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrFile = archivePath.data();
+    ofn.nMaxFile = static_cast<DWORD>(archivePath.size());
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
     if (!GetOpenFileNameW(&ofn)) {
         return;
     }
 
     m_archiveTaskInProgress = true;
-    const std::wstring archivePathString = archivePath;
+    const std::wstring archivePathString = archivePath.data();
     const std::wstring scriptsDirectory = m_scriptsDirectory;
     const ScriptRunner scriptRunner = m_scriptRunner;
     const CompletionDispatchTarget dispatchTarget{
@@ -4409,24 +4506,26 @@ void Application::ImportScriptsFromZip() {
     std::thread([archivePathString, scriptsDirectory, scriptRunner, dispatchTarget]() {
         auto result = std::make_unique<ImportZipTaskResult>();
 
-        wchar_t tempDirectory[MAX_PATH] = {};
-        if (!GetTempPathW(MAX_PATH, tempDirectory)) {
+        std::error_code tempDirectoryError;
+        const std::wstring tempDirectory = FileSystemUtils::GetTempDirectory(&tempDirectoryError);
+        if (tempDirectory.empty() || tempDirectoryError) {
             result->success = false;
             result->errorMessage = T(L"app.error.tmp_dir_path");
             SendOwnedCompletion(dispatchTarget, WM_IMPORT_ZIP_COMPLETE, std::move(result));
             return;
         }
 
-        wchar_t tempName[MAX_PATH] = {};
-        if (!GetTempFileNameW(tempDirectory, L"tmz", 0, tempName)) {
+        std::vector<wchar_t> tempNameBuffer(32768, L'\0');
+        if (!GetTempFileNameW(tempDirectory.c_str(), L"tmz", 0, tempNameBuffer.data())) {
             result->success = false;
             result->errorMessage = T(L"app.error.tmp_path_create");
             SendOwnedCompletion(dispatchTarget, WM_IMPORT_ZIP_COMPLETE, std::move(result));
             return;
         }
-        DeleteFileW(tempName);
+        const std::wstring tempName = tempNameBuffer.data();
+        DeleteFileW(tempName.c_str());
 
-        if (!CreateDirectoryW(tempName, nullptr)) {
+        if (!CreateDirectoryW(tempName.c_str(), nullptr)) {
             result->success = false;
             result->errorMessage = T(L"app.error.tmp_folder_create");
             SendOwnedCompletion(dispatchTarget, WM_IMPORT_ZIP_COMPLETE, std::move(result));
@@ -4452,23 +4551,24 @@ void Application::ImportScriptsFromZip() {
             return;
         }
 
-        std::vector<std::wstring> scriptFiles;
+        std::vector<fs::path> extractedFiles;
         std::error_code walkError;
-        for (const auto& entry : fs::recursive_directory_iterator(fs::path(tempName), walkError)) {
-            if (walkError) {
-                break;
-            }
-            if (!entry.is_regular_file()) {
-                continue;
-            }
-            if (IsTmscriptFilePath(entry.path())) {
-                scriptFiles.push_back(entry.path().wstring());
-            }
+        if (!FileSystemUtils::CollectRegularFiles(fs::path(tempName), true, &extractedFiles, &walkError)) {
+            std::error_code cleanupError;
+            fs::remove_all(fs::path(tempName), cleanupError);
+            result->success = false;
+            result->errorMessage = std::wstring(T(L"app.error.zip_extract_prefix"))
+                + std::to_wstring(walkError.value());
+            SendOwnedCompletion(dispatchTarget, WM_IMPORT_ZIP_COMPLETE, std::move(result));
+            return;
         }
 
-        for (const auto& filePath : scriptFiles) {
+        for (const auto& filePath : extractedFiles) {
+            if (!IsTmscriptFilePath(filePath)) {
+                continue;
+            }
             std::wstring copiedPath;
-            if (ImportScriptFileToDirectory(scriptsDirectory, filePath, &copiedPath)) {
+            if (ImportScriptFileToDirectory(scriptsDirectory, filePath.wstring(), &copiedPath)) {
                 ++result->importedCount;
                 result->importedPaths.push_back(copiedPath);
             } else {
@@ -4489,28 +4589,29 @@ void Application::ExportScriptsToZip() {
         return;
     }
 
+    std::vector<fs::path> scriptFiles;
     std::error_code walkError;
-    int scriptFileCount = 0;
-    for (const auto& entry : fs::directory_iterator(fs::path(m_scriptsDirectory), walkError)) {
-        if (walkError) {
-            break;
-        }
-        if (entry.is_regular_file() && IsTmscriptFilePath(entry.path())) {
-            ++scriptFileCount;
-        }
+    if (!FileSystemUtils::CollectRegularFiles(fs::path(m_scriptsDirectory), false, &scriptFiles, &walkError)) {
+        SetStatusText(std::wstring(T(L"app.status.zip_create_failed_prefix"))
+            + std::to_wstring(walkError.value()));
+        return;
     }
+    const int scriptFileCount = static_cast<int>(std::count_if(
+        scriptFiles.begin(), scriptFiles.end(),
+        [](const fs::path& path) { return IsTmscriptFilePath(path); }
+    ));
     if (scriptFileCount == 0) {
         SetStatusText(T(L"app.status.no_scripts_export"));
         return;
     }
 
-    wchar_t archivePath[MAX_PATH] = {};
+    std::vector<wchar_t> archivePath(32768, L'\0');
     SYSTEMTIME st = {};
     GetLocalTime(&st);
     wchar_t defaultName[128] = {};
     swprintf_s(defaultName, TM_APP_NAME_W L"-scripts-%04u%02u%02u-%02u%02u%02u.zip",
         st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
-    wcscpy_s(archivePath, defaultName);
+    wcscpy_s(archivePath.data(), archivePath.size(), defaultName);
 
     OPENFILENAMEW ofn = {};
     ofn.lStructSize = sizeof(ofn);
@@ -4521,15 +4622,15 @@ void Application::ExportScriptsToZip() {
     });
     ofn.lpstrFilter = filter.c_str();
     ofn.lpstrDefExt = L"zip";
-    ofn.lpstrFile = archivePath;
-    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrFile = archivePath.data();
+    ofn.nMaxFile = static_cast<DWORD>(archivePath.size());
     ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_EXPLORER;
     if (!GetSaveFileNameW(&ofn)) {
         return;
     }
 
     m_archiveTaskInProgress = true;
-    const std::wstring archivePathString = archivePath;
+    const std::wstring archivePathString = archivePath.data();
     const std::wstring scriptsDirectory = m_scriptsDirectory;
     const ScriptRunner scriptRunner = m_scriptRunner;
     const CompletionDispatchTarget dispatchTarget{
@@ -4858,8 +4959,9 @@ std::wstring Application::GetExecutableDirectory() const {
 }
 
 std::wstring Application::GetExecutablePath() const {
-    wchar_t path[MAX_PATH] = {};
-    if (GetModuleFileNameW(nullptr, path, MAX_PATH) == 0) {
+    std::error_code pathError;
+    const std::wstring path = FileSystemUtils::GetModulePath(nullptr, &pathError);
+    if (path.empty() || pathError) {
         return std::wstring(L".\\") + TM_APP_NAME_W + L".exe";
     }
     return path;
@@ -5134,8 +5236,9 @@ void Application::RefreshApplicationBlacklistList() {
     for (const std::wstring& path : m_applicationBlacklist.Paths()) {
         std::wstring executableName = fs::path(path).filename().wstring();
         LVITEMW item = {};
-        item.mask = LVIF_TEXT;
+        item.mask = LVIF_TEXT | LVIF_PARAM;
         item.iItem = index;
+        item.lParam = static_cast<LPARAM>(index);
         item.pszText = executableName.data();
         const int inserted = ListView_InsertItem(state->blacklistList, &item);
         if (inserted >= 0) {
@@ -5147,6 +5250,21 @@ void Application::RefreshApplicationBlacklistList() {
             );
             ++index;
         }
+    }
+    if (state->blacklistSortColumn >= 0) {
+        SetListViewSortIndicator(
+            state->blacklistList,
+            state->blacklistSortColumn,
+            state->blacklistSortAscending);
+        ListViewTextSortContext sort = {
+            state->blacklistList,
+            state->blacklistSortColumn,
+            state->blacklistSortAscending,
+        };
+        ListView_SortItemsEx(
+            state->blacklistList,
+            CompareListViewTextRows,
+            reinterpret_cast<LPARAM>(&sort));
     }
     EnableWindow(state->removeButton, FALSE);
 }
@@ -5190,25 +5308,25 @@ void Application::RemoveSelectedApplicationFromBlacklist() {
         return;
     }
 
-    const int selected = ListView_GetNextItem(state->blacklistList, -1, LVNI_SELECTED);
-    if (selected < 0) {
+    std::vector<std::wstring> selectedPaths;
+    for (int row = ListView_GetNextItem(state->blacklistList, -1, LVNI_SELECTED);
+         row != -1;
+         row = ListView_GetNextItem(state->blacklistList, row, LVNI_SELECTED)) {
+        const std::wstring path = GetListViewItemText(state->blacklistList, row, 1);
+        if (!path.empty()) {
+            selectedPaths.push_back(path);
+        }
+    }
+    if (selectedPaths.empty()) {
         return;
     }
-    std::wstring path(32768, L'\0');
-    LVITEMW item = {};
-    item.iSubItem = 1;
-    item.pszText = path.data();
-    item.cchTextMax = static_cast<int>(path.size());
-    const int length = static_cast<int>(SendMessageW(
-        state->blacklistList,
-        LVM_GETITEMTEXTW,
-        selected,
-        reinterpret_cast<LPARAM>(&item)
-    ));
-    path.resize(static_cast<size_t>(std::max(0, length)));
 
     ApplicationBlacklist updated = m_applicationBlacklist;
-    if (updated.Remove(path)) {
+    bool changed = false;
+    for (const std::wstring& path : selectedPaths) {
+        changed = updated.Remove(path) || changed;
+    }
+    if (changed) {
         PublishApplicationBlacklist(std::move(updated));
     }
 }
@@ -5724,8 +5842,8 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 }
 
                 state->blacklistList = CreateWindowExW(
-                    0, WC_LISTVIEWW, L"",
-                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+                    0, WC_LISTVIEWW, nullptr,
+                    content_surface_style::ResolveApplicationTableWindowStyle(),
                     0, 0, 100, 100,
                     hWnd,
                     reinterpret_cast<HMENU>(ID_INFO_BLACKLIST_LIST),
@@ -5739,10 +5857,9 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 ConfigureApplicationTable(
                     state->blacklistList,
                     state->owner->m_hFont,
-                    LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER,
                     columns,
                     static_cast<int>(sizeof(columns) / sizeof(columns[0])),
-                    content_surface_style::ScrollbarSurface::BlacklistTable);
+                    content_surface_style::ScrollbarSurface::RunningPickerTable);
 
                 state->runningPickerButton = CreateWindowExW(
                     0, L"BUTTON", T(L"application_blacklist.running"),
@@ -6015,6 +6132,11 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
             }
             if (state->kind == static_cast<int>(Application::InfoWindowKind::ApplicationBlacklist)) {
                 const BlacklistWindowLayout layout = CalculateBlacklistWindowLayout(w, h);
+                ListView_SetColumnWidth(state->blacklistList, 0, 190);
+                ListView_SetColumnWidth(
+                    state->blacklistList,
+                    1,
+                    std::max(240, layout.list.width - 194));
                 MoveWindow(state->titleLabel, layout.title.x, layout.title.y,
                     layout.title.width, layout.title.height, TRUE);
                 MoveWindow(state->fullscreenCheckbox,
@@ -6039,8 +6161,6 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 MoveWindow(state->closeButton, layout.closeButton.x,
                     layout.closeButton.y, layout.closeButton.width,
                     layout.closeButton.height, TRUE);
-                ListView_SetColumnWidth(state->blacklistList, 0, 190);
-                ListView_SetColumnWidth(state->blacklistList, 1, std::max(240, w - 2 * m - 194));
                 return 0;
             }
 
@@ -6284,6 +6404,29 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                     );
                     return 0;
                 }
+                if (header->code == LVN_COLUMNCLICK) {
+                    const auto* click = reinterpret_cast<const NMLISTVIEW*>(lParam);
+                    if (state->blacklistSortColumn == click->iSubItem) {
+                        state->blacklistSortAscending = !state->blacklistSortAscending;
+                    } else {
+                        state->blacklistSortColumn = click->iSubItem;
+                        state->blacklistSortAscending = true;
+                    }
+                    SetListViewSortIndicator(
+                        state->blacklistList,
+                        state->blacklistSortColumn,
+                        state->blacklistSortAscending);
+                    ListViewTextSortContext sort = {
+                        state->blacklistList,
+                        state->blacklistSortColumn,
+                        state->blacklistSortAscending,
+                    };
+                    ListView_SortItemsEx(
+                        state->blacklistList,
+                        CompareListViewTextRows,
+                        reinterpret_cast<LPARAM>(&sort));
+                    return 0;
+                }
                 if (header->code == LVN_KEYDOWN) {
                     const auto* key = reinterpret_cast<NMLVKEYDOWN*>(lParam);
                     if (key->wVKey == VK_DELETE && state->owner) {
@@ -6351,10 +6494,12 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                     SendMessageW(state->fullscreenCheckbox, BM_GETCHECK, 0, 0) == BST_CHECKED;
                 g_disableHotkeysInFullscreen = state->owner->m_disableHotkeysInFullscreen;
                 InvalidateForegroundBlockCache();
-                SaveDisableFullscreenHotkeysSetting(
-                    GetLanguageSettingsPath(state->owner->GetExecutableDirectory()),
-                    state->owner->m_disableHotkeysInFullscreen
-                );
+                if (!SaveDisableFullscreenHotkeysSetting(
+                        GetLanguageSettingsPath(state->owner->GetExecutableDirectory()),
+                        state->owner->m_disableHotkeysInFullscreen
+                    )) {
+                    state->owner->AppendLog(T(L"app.log.settings_save_failed"));
+                }
                 return 0;
             }
             if (id == ID_INFO_RUNNING_PICKER && state->owner) {
@@ -6440,8 +6585,7 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
             if (state->runningApplicationSelection) {
                 state->textControl = CreateWindowExW(
                     0, WC_LISTVIEWW, nullptr,
-                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL |
-                        LVS_REPORT | LVS_SHOWSELALWAYS,
+                    content_surface_style::ResolveApplicationTableWindowStyle(),
                     0, 0, 100, 100,
                     hWnd, reinterpret_cast<HMENU>(ID_MESSAGE_TEXT), GetModuleHandleW(nullptr), nullptr
                 );
@@ -6453,7 +6597,6 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
                 ConfigureApplicationTable(
                     state->textControl,
                     state->owner->m_hFont,
-                    LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_HEADERDRAGDROP,
                     columns,
                     static_cast<int>(sizeof(columns) / sizeof(columns[0])),
                     content_surface_style::ScrollbarSurface::RunningPickerTable);
@@ -6720,7 +6863,7 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
                     state->runningSortColumn = click->iSubItem;
                     state->runningSortAscending = true;
                 }
-                SetRunningApplicationSortIndicator(
+                SetListViewSortIndicator(
                     state->textControl,
                     state->runningSortColumn,
                     state->runningSortAscending

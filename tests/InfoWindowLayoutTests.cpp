@@ -190,6 +190,41 @@ int main() {
           "message surface uses the approved soft border");
     Check(content_surface_style::kListFill == RGB(37, 37, 37),
           "existing list fill remains unchanged");
+    constexpr DWORD baseStyle = WS_CHILD | WS_VISIBLE | WS_TABSTOP
+        | WS_VSCROLL | LVS_REPORT | LVS_SHOWSELALWAYS;
+    Check(content_surface_style::StripListViewFrameStyle(baseStyle | WS_BORDER)
+              == baseStyle,
+          "table style stripping removes only WS_BORDER");
+    Check(content_surface_style::StripListViewFrameStyle(baseStyle) == baseStyle,
+          "table style stripping is idempotent");
+
+    constexpr DWORD baseExStyle = WS_EX_NOPARENTNOTIFY | WS_EX_CONTROLPARENT;
+    Check(content_surface_style::StripListViewFrameExStyle(
+              baseExStyle | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE)
+              == baseExStyle,
+          "table ex-style stripping removes only native frame edges");
+    Check(content_surface_style::StripListViewFrameExStyle(baseExStyle)
+              == baseExStyle,
+          "table ex-style stripping is idempotent");
+
+    const auto normalRow = content_surface_style::ResolveListRowVisual(false);
+    Check(normalRow.fill == RGB(37, 37, 37)
+              && normalRow.text == RGB(245, 245, 245),
+          "normal table rows use the approved dark palette");
+    const auto selectedRow = content_surface_style::ResolveListRowVisual(true);
+    Check(selectedRow.fill == RGB(35, 105, 68)
+              && selectedRow.text == RGB(255, 255, 255),
+          "selected table rows use the approved green palette");
+
+    constexpr UINT selectedHotFocused = CDIS_SELECTED | CDIS_HOT | CDIS_FOCUS;
+    const auto selectedPaint = content_surface_style::ResolveListRowPaint(
+        selectedHotFocused, true);
+    Check((selectedPaint.itemState & (CDIS_SELECTED | CDIS_HOT)) == 0,
+          "custom draw suppresses native selected and hot overlays");
+    Check((selectedPaint.itemState & CDIS_FOCUS) != 0,
+          "custom draw preserves keyboard focus indication");
+    Check(content_surface_style::kTableRegionInset == 2,
+          "tables expose a two-pixel rounded frame");
     Check(content_surface_style::kDefaultRegionInset == 1,
           "shared rounded controls keep their existing inset");
     Check(content_surface_style::kLogsRegionInset == 2,

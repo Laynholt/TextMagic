@@ -366,6 +366,108 @@ struct CheckboxVisualState {
 
 void PaintDarkListViewHeader(HWND header, HDC hdc);
 
+void StripNativeListViewFrame(HWND listView) {
+    const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(listView, GWL_STYLE));
+    const DWORD exStyle = static_cast<DWORD>(GetWindowLongPtrW(listView, GWL_EXSTYLE));
+    SetWindowLongPtrW(
+        listView, GWL_STYLE,
+        static_cast<LONG_PTR>(content_surface_style::StripListViewFrameStyle(style)));
+    SetWindowLongPtrW(
+        listView, GWL_EXSTYLE,
+        static_cast<LONG_PTR>(content_surface_style::StripListViewFrameExStyle(exStyle)));
+    SetWindowPos(
+        listView, nullptr, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
+            | SWP_FRAMECHANGED);
+}
+
+void PaintDarkListViewSurfaceFrame(HWND listView) {
+    if (!listView) {
+        return;
+    }
+    const HDC hdc = GetWindowDC(listView);
+    if (!hdc) {
+        return;
+    }
+
+    const HGDIOBJ previousPen = SelectObject(hdc, GetStockObject(DC_PEN));
+    const HGDIOBJ previousBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+    SetDCPenColor(hdc, content_surface_style::kListBorder);
+
+    RECT windowRect = {};
+    GetWindowRect(listView, &windowRect);
+    const int width = windowRect.right - windowRect.left;
+    const int height = windowRect.bottom - windowRect.top;
+    const int inset = content_surface_style::kTableRegionInset;
+    RoundRect(
+        hdc,
+        inset,
+        inset,
+        width - inset,
+        height - inset,
+        2 * content_surface_style::kCornerRadius,
+        2 * content_surface_style::kCornerRadius);
+
+    SelectObject(hdc, previousBrush);
+    SelectObject(hdc, previousPen);
+    ReleaseDC(listView, hdc);
+}
+
+LRESULT CALLBACK DarkListViewSurfaceSubclassProc(
+    HWND hWnd,
+    UINT message,
+    WPARAM wParam,
+    LPARAM lParam,
+    UINT_PTR subclassId,
+    DWORD_PTR
+) {
+    if (message == WM_NCDESTROY) {
+        RemoveWindowSubclass(hWnd, DarkListViewSurfaceSubclassProc, subclassId);
+        return DefSubclassProc(hWnd, message, wParam, lParam);
+    }
+    const LRESULT result = DefSubclassProc(hWnd, message, wParam, lParam);
+    if (message == WM_NCPAINT || message == WM_PAINT) {
+        PaintDarkListViewSurfaceFrame(hWnd);
+    }
+    if (message == WM_THEMECHANGED || message == WM_SIZE) {
+        RedrawWindow(hWnd, nullptr, nullptr, RDW_INVALIDATE | RDW_FRAME);
+    }
+    return result;
+}
+
+bool HandleListViewCustomDraw(
+    HWND listView,
+    NMHDR* header,
+    LRESULT& result
+) {
+    if (!listView || !header
+        || header->hwndFrom != listView
+        || header->code != NM_CUSTOMDRAW) {
+        return false;
+    }
+
+    auto* draw = reinterpret_cast<NMLVCUSTOMDRAW*>(header);
+    if (draw->nmcd.dwDrawStage == CDDS_PREPAINT) {
+        result = CDRF_NOTIFYITEMDRAW;
+        return true;
+    }
+    if (draw->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
+        const int row = static_cast<int>(draw->nmcd.dwItemSpec);
+        const bool selected = (ListView_GetItemState(listView, row, LVIS_SELECTED)
+            & LVIS_SELECTED) != 0;
+        const content_surface_style::ListRowPaint paint =
+            content_surface_style::ResolveListRowPaint(
+                draw->nmcd.uItemState,
+                selected);
+        draw->clrText = paint.visual.text;
+        draw->clrTextBk = paint.visual.fill;
+        draw->nmcd.uItemState = paint.itemState;
+        result = CDRF_DODEFAULT;
+        return true;
+    }
+    return false;
+}
+
 void ApplyRoundedChildRegion(
     HWND control,
     int width,
@@ -5566,6 +5668,8 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 ListView_SetBkColor(state->blacklistList, RGB(37, 37, 37));
                 ListView_SetTextBkColor(state->blacklistList, RGB(37, 37, 37));
                 ListView_SetTextColor(state->blacklistList, RGB(245, 245, 245));
+                StripNativeListViewFrame(state->blacklistList);
+                SetWindowSubclass(state->blacklistList, DarkListViewSurfaceSubclassProc, 1, 0);
                 ApplyDarkScrollBar(
                     state->blacklistList,
                     content_surface_style::UsesExplorerScrollbarTheme(
@@ -5848,7 +5952,8 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                     state->blacklistList,
                     layout.list.width,
                     layout.list.height,
-                    content_surface_style::kCornerRadius);
+                    content_surface_style::kCornerRadius,
+                    content_surface_style::kTableRegionInset);
                 MoveWindow(state->runningPickerButton, layout.runningButton.x,
                     layout.runningButton.y, layout.runningButton.width,
                     layout.runningButton.height, TRUE);
@@ -6100,6 +6205,13 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
     case WM_NOTIFY:
         if (state) {
             auto* header = reinterpret_cast<NMHDR*>(lParam);
+            LRESULT customDrawResult = 0;
+            if (HandleListViewCustomDraw(
+                    state->blacklistList,
+                    header,
+                    customDrawResult)) {
+                return customDrawResult;
+            }
             if (header && header->hwndFrom == state->blacklistList) {
                 if (header->code == LVN_ITEMCHANGED) {
                     EnableWindow(
@@ -6114,18 +6226,6 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                         state->owner->RemoveSelectedApplicationFromBlacklist();
                     }
                     return 0;
-                }
-                if (header->code == NM_CUSTOMDRAW) {
-                    auto* draw = reinterpret_cast<NMLVCUSTOMDRAW*>(lParam);
-                    if (draw->nmcd.dwDrawStage == CDDS_PREPAINT) {
-                        return CDRF_NOTIFYITEMDRAW;
-                    }
-                    if (draw->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
-                        const bool selected = (draw->nmcd.uItemState & CDIS_SELECTED) != 0;
-                        draw->clrText = RGB(245, 245, 245);
-                        draw->clrTextBk = selected ? RGB(58, 58, 58) : RGB(37, 37, 37);
-                        return CDRF_DODEFAULT;
-                    }
                 }
             }
         }
@@ -6286,6 +6386,8 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
                 ListView_SetBkColor(state->textControl, RGB(37, 37, 37));
                 ListView_SetTextBkColor(state->textControl, RGB(37, 37, 37));
                 ListView_SetTextColor(state->textControl, RGB(245, 245, 245));
+                StripNativeListViewFrame(state->textControl);
+                SetWindowSubclass(state->textControl, DarkListViewSurfaceSubclassProc, 1, 0);
 
                 LVCOLUMNW column = {};
                 column.mask = LVCF_TEXT | LVCF_WIDTH;
@@ -6389,7 +6491,8 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
                     state->textControl,
                     layout.list.width,
                     layout.list.height,
-                    content_surface_style::kCornerRadius);
+                    content_surface_style::kCornerRadius,
+                    content_surface_style::kTableRegionInset);
                 if (state->secondaryButton) {
                     MoveWindow(state->secondaryButton,
                         layout.secondaryButton.x, layout.secondaryButton.y,
@@ -6548,6 +6651,13 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
 
     case WM_NOTIFY:
         {
+            LRESULT customDrawResult = 0;
+            if (state && HandleListViewCustomDraw(
+                    state->runningApplicationSelection ? state->textControl : nullptr,
+                    reinterpret_cast<NMHDR*>(lParam),
+                    customDrawResult)) {
+                return customDrawResult;
+            }
             auto* click = reinterpret_cast<NMLISTVIEW*>(lParam);
             if (state && state->runningApplicationSelection && click
                 && click->hdr.hwndFrom == state->textControl

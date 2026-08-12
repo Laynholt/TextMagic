@@ -5027,7 +5027,7 @@ std::vector<std::wstring> Application::SelectRunningApplications() {
     std::vector<std::wstring> selectedPaths;
     MessageWindowState* state = new MessageWindowState();
     state->owner = this;
-    state->title = T(L"application_blacklist.running");
+    state->title = T(L"application_blacklist.running_title");
     state->primaryButtonText = T(L"application_blacklist.add_selected");
     state->secondaryButtonText = T(L"app.button.cancel");
     state->hasSecondaryButton = true;
@@ -5566,8 +5566,10 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 ListView_SetBkColor(state->blacklistList, RGB(37, 37, 37));
                 ListView_SetTextBkColor(state->blacklistList, RGB(37, 37, 37));
                 ListView_SetTextColor(state->blacklistList, RGB(245, 245, 245));
-                SetWindowTheme(state->blacklistList, L"", L"");
-                ApplyDarkScrollBar(state->blacklistList, false);
+                ApplyDarkScrollBar(
+                    state->blacklistList,
+                    content_surface_style::UsesExplorerScrollbarTheme(
+                        content_surface_style::ScrollbarSurface::BlacklistTable));
 
                 LVCOLUMNW column = {};
                 column.mask = LVCF_TEXT | LVCF_WIDTH;
@@ -6320,8 +6322,10 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
                         );
                     }
                 }
-                SetWindowTheme(state->textControl, L"", L"");
-                ApplyDarkScrollBar(state->textControl, false);
+                ApplyDarkScrollBar(
+                    state->textControl,
+                    content_surface_style::UsesExplorerScrollbarTheme(
+                        content_surface_style::ScrollbarSurface::RunningPickerTable));
             } else {
                 const DWORD listStyle = LBS_NOINTEGRALHEIGHT | LBS_NOSEL;
                 state->textControl = CreateWindowExW(

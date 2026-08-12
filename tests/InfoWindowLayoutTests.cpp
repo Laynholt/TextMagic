@@ -198,6 +198,20 @@ int main() {
               > content_surface_style::kDefaultRegionInset,
           "logs use a stronger clip without changing shared surfaces");
 
+    using content_surface_style::ScrollbarSurface;
+    Check(content_surface_style::UsesExplorerScrollbarTheme(
+              ScrollbarSurface::BlacklistTable),
+          "blacklist table uses the existing themed dark scrollbar");
+    Check(content_surface_style::UsesExplorerScrollbarTheme(
+              ScrollbarSurface::RunningPickerTable),
+          "running picker table uses the existing themed dark scrollbar");
+    Check(content_surface_style::UsesExplorerScrollbarTheme(
+              ScrollbarSurface::LogsList),
+          "logs keep the existing themed dark scrollbar");
+    Check(content_surface_style::UsesExplorerScrollbarTheme(
+              ScrollbarSurface::GenericMessageList),
+          "generic message lists keep the existing scrollbar policy");
+
     const RunningPickerWindowLayout runningPicker =
         CalculateRunningPickerWindowLayout(760, 520);
     Check(runningPicker.title.height == 40,

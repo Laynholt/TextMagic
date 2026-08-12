@@ -10,4 +10,15 @@ constexpr COLORREF kListFill = RGB(37, 37, 37);
 constexpr COLORREF kListBorder = RGB(62, 62, 62);
 constexpr COLORREF kMessageFill = RGB(42, 42, 44);
 constexpr COLORREF kMessageBorder = RGB(55, 55, 58);
+
+enum class ScrollbarSurface {
+    BlacklistTable,
+    RunningPickerTable,
+    LogsList,
+    GenericMessageList,
+};
+
+constexpr bool UsesExplorerScrollbarTheme(ScrollbarSurface) {
+    return true;
+}
 }

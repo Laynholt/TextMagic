@@ -362,13 +362,52 @@ struct CheckboxVisualState {
 void PaintDarkListViewHeader(HWND header, HDC hdc);
 
 void DrawDarkListViewFrame(HWND parent, HWND listView) {
-    UiRenderer::DrawRoundedControlFrame(
-        parent,
-        listView,
-        0,
-        content_surface_style::kListFill,
-        content_surface_style::kListBorder,
-        content_surface_style::kCornerRadius);
+    if (!parent || !listView) {
+        return;
+    }
+
+    RECT windowRect = {};
+    if (!GetWindowRect(listView, &windowRect)) {
+        return;
+    }
+    POINT points[2] = {
+        {windowRect.left, windowRect.top},
+        {windowRect.right, windowRect.bottom},
+    };
+    MapWindowPoints(nullptr, parent, points, 2);
+
+    const int width = points[1].x - points[0].x;
+    const int height = points[1].y - points[0].y;
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+
+    HDC hdc = GetDC(parent);
+    if (!hdc) {
+        return;
+    }
+    HPEN pen = CreatePen(PS_SOLID, 1, content_surface_style::kListBorder);
+    if (!pen) {
+        ReleaseDC(parent, hdc);
+        return;
+    }
+    HGDIOBJ previousPen = SelectObject(hdc, pen);
+    HGDIOBJ previousBrush = SelectObject(hdc, GetStockObject(HOLLOW_BRUSH));
+    const int radius = (std::min)(
+        content_surface_style::kCornerRadius,
+        (std::min)(width, height) / 2);
+    RoundRect(
+        hdc,
+        points[0].x,
+        points[0].y,
+        points[1].x,
+        points[1].y,
+        radius * 2,
+        radius * 2);
+    SelectObject(hdc, previousBrush);
+    SelectObject(hdc, previousPen);
+    DeleteObject(pen);
+    ReleaseDC(parent, hdc);
 }
 
 void StripNativeListViewFrame(HWND listView) {
@@ -2026,6 +2065,41 @@ void ApplyDarkListViewHeader(HWND listView) {
     }
     SetWindowSubclass(header, DarkHeaderSubclassProc, DARK_HEADER_SUBCLASS_ID, 0);
     InvalidateRect(header, nullptr, TRUE);
+}
+
+void ConfigureApplicationTable(
+    HWND listView,
+    HFONT font,
+    DWORD extendedStyle,
+    const content_surface_style::ApplicationTableColumn* columns,
+    int columnCount,
+    content_surface_style::ScrollbarSurface scrollbarSurface
+) {
+    if (!listView) {
+        return;
+    }
+
+    ListView_SetExtendedListViewStyle(listView, extendedStyle);
+    ListView_SetBkColor(listView, content_surface_style::kListFill);
+    ListView_SetTextBkColor(listView, content_surface_style::kListFill);
+    ListView_SetTextColor(listView, content_surface_style::kListText);
+    StripNativeListViewFrame(listView);
+
+    if (columns && columnCount > 0) {
+        for (int index = 0; index < columnCount; ++index) {
+            LVCOLUMNW column = {};
+            column.mask = LVCF_TEXT | LVCF_WIDTH;
+            column.cx = columns[index].width;
+            column.pszText = const_cast<wchar_t*>(columns[index].title);
+            ListView_InsertColumn(listView, index, &column);
+        }
+    }
+
+    SendMessageW(listView, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    ApplyDarkScrollBar(
+        listView,
+        content_surface_style::UsesExplorerScrollbarTheme(scrollbarSurface));
+    ApplyDarkListViewHeader(listView);
 }
 }
 
@@ -5658,33 +5732,17 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                     GetModuleHandleW(nullptr),
                     nullptr
                 );
-                ListView_SetExtendedListViewStyle(
+                const content_surface_style::ApplicationTableColumn columns[] = {
+                    {T(L"application_blacklist.column.application"), 190},
+                    {T(L"application_blacklist.column.path"), 500},
+                };
+                ConfigureApplicationTable(
                     state->blacklistList,
-                    LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER
-                );
-                ListView_SetBkColor(state->blacklistList, RGB(37, 37, 37));
-                ListView_SetTextBkColor(state->blacklistList, RGB(37, 37, 37));
-                ListView_SetTextColor(state->blacklistList, RGB(245, 245, 245));
-                StripNativeListViewFrame(state->blacklistList);
-                ApplyDarkScrollBar(
-                    state->blacklistList,
-                    content_surface_style::UsesExplorerScrollbarTheme(
-                        content_surface_style::ScrollbarSurface::BlacklistTable));
-
-                LVCOLUMNW column = {};
-                column.mask = LVCF_TEXT | LVCF_WIDTH;
-                column.cx = 190;
-                column.pszText = const_cast<wchar_t*>(T(L"application_blacklist.column.application"));
-                ListView_InsertColumn(state->blacklistList, 0, &column);
-                column.cx = 500;
-                column.pszText = const_cast<wchar_t*>(T(L"application_blacklist.column.path"));
-                ListView_InsertColumn(state->blacklistList, 1, &column);
-                SendMessageW(
-                    state->blacklistList,
-                    WM_SETFONT,
-                    reinterpret_cast<WPARAM>(state->owner->m_hFont),
-                    TRUE);
-                ApplyDarkListViewHeader(state->blacklistList);
+                    state->owner->m_hFont,
+                    LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER,
+                    columns,
+                    static_cast<int>(sizeof(columns) / sizeof(columns[0])),
+                    content_surface_style::ScrollbarSurface::BlacklistTable);
 
                 state->runningPickerButton = CreateWindowExW(
                     0, L"BUTTON", T(L"application_blacklist.running"),
@@ -6387,26 +6445,18 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
                     0, 0, 100, 100,
                     hWnd, reinterpret_cast<HMENU>(ID_MESSAGE_TEXT), GetModuleHandleW(nullptr), nullptr
                 );
-                ListView_SetExtendedListViewStyle(
+                const content_surface_style::ApplicationTableColumn columns[] = {
+                    {T(L"application_blacklist.column.application"), 170},
+                    {T(L"application_blacklist.column.window_title"), 280},
+                    {T(L"application_blacklist.column.path"), 520},
+                };
+                ConfigureApplicationTable(
                     state->textControl,
-                    LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_HEADERDRAGDROP
-                );
-                ListView_SetBkColor(state->textControl, RGB(37, 37, 37));
-                ListView_SetTextBkColor(state->textControl, RGB(37, 37, 37));
-                ListView_SetTextColor(state->textControl, RGB(245, 245, 245));
-                StripNativeListViewFrame(state->textControl);
-
-                LVCOLUMNW column = {};
-                column.mask = LVCF_TEXT | LVCF_WIDTH;
-                column.cx = 170;
-                column.pszText = const_cast<wchar_t*>(T(L"application_blacklist.column.application"));
-                ListView_InsertColumn(state->textControl, 0, &column);
-                column.cx = 280;
-                column.pszText = const_cast<wchar_t*>(T(L"application_blacklist.column.window_title"));
-                ListView_InsertColumn(state->textControl, 1, &column);
-                column.cx = 520;
-                column.pszText = const_cast<wchar_t*>(T(L"application_blacklist.column.path"));
-                ListView_InsertColumn(state->textControl, 2, &column);
+                    state->owner->m_hFont,
+                    LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_HEADERDRAGDROP,
+                    columns,
+                    static_cast<int>(sizeof(columns) / sizeof(columns[0])),
+                    content_surface_style::ScrollbarSurface::RunningPickerTable);
 
                 for (size_t index = 0; index < state->runningApplications.size(); ++index) {
                     const RunningApplication& application = state->runningApplications[index];
@@ -6431,10 +6481,6 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
                         );
                     }
                 }
-                ApplyDarkScrollBar(
-                    state->textControl,
-                    content_surface_style::UsesExplorerScrollbarTheme(
-                        content_surface_style::ScrollbarSurface::RunningPickerTable));
             } else {
                 const DWORD listStyle = LBS_NOINTEGRALHEIGHT | LBS_NOSEL;
                 state->textControl = CreateWindowExW(
@@ -6472,9 +6518,8 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
                 TRUE
             );
             HFONT textFont = state->useMonoFont ? state->owner->m_hMonoFont : state->owner->m_hFont;
-            SendMessageW(state->textControl, WM_SETFONT, reinterpret_cast<WPARAM>(textFont), TRUE);
-            if (state->runningApplicationSelection) {
-                ApplyDarkListViewHeader(state->textControl);
+            if (!state->runningApplicationSelection) {
+                SendMessageW(state->textControl, WM_SETFONT, reinterpret_cast<WPARAM>(textFont), TRUE);
             }
             SendMessageW(state->primaryButton, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
             if (state->secondaryButton) {

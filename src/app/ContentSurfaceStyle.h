@@ -32,6 +32,19 @@ enum class TableFrameOwner {
     Child,
 };
 
+enum class TableFramePaintMode {
+    StrokeOnly,
+};
+
+constexpr TableFramePaintMode ResolveTableFramePaintMode() {
+    return TableFramePaintMode::StrokeOnly;
+}
+
+struct ApplicationTableColumn {
+    const wchar_t* title;
+    int width;
+};
+
 constexpr TableFrameOwner ResolveTableFrameOwner() {
     return TableFrameOwner::ParentAfterChild;
 }

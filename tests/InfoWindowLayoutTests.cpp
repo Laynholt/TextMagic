@@ -4,6 +4,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <string>
 
 namespace {
 void Check(bool condition, const char* message) {
@@ -260,6 +261,9 @@ int main() {
     Check(content_surface_style::ResolveTableFrameOwner()
               == content_surface_style::TableFrameOwner::ParentAfterChild,
           "table frames remain parent-owned after child paint");
+    Check(content_surface_style::ResolveTableFramePaintMode()
+              == content_surface_style::TableFramePaintMode::StrokeOnly,
+          "table frames draw an outline without covering child content");
     Check(!content_surface_style::UsesNativeTableHeaderTheme(),
           "table headers use custom non-themed painting");
     Check(content_surface_style::kDefaultRegionInset == 1,
@@ -290,6 +294,37 @@ int main() {
     Check(content_surface_style::UsesExplorerScrollbarTheme(
               ScrollbarSurface::GenericMessageList),
           "generic message lists keep the existing scrollbar policy");
+
+    constexpr content_surface_style::ApplicationTableColumn blacklistColumns[] = {
+        {L"application_blacklist.column.application", 190},
+        {L"application_blacklist.column.path", 500},
+    };
+    Check(std::wstring(blacklistColumns[0].title)
+              == L"application_blacklist.column.application"
+              && blacklistColumns[0].width == 190,
+          "blacklist table keeps application column first");
+    Check(std::wstring(blacklistColumns[1].title)
+              == L"application_blacklist.column.path"
+              && blacklistColumns[1].width == 500,
+          "blacklist table keeps path column second");
+
+    constexpr content_surface_style::ApplicationTableColumn runningColumns[] = {
+        {L"application_blacklist.column.application", 170},
+        {L"application_blacklist.column.window_title", 280},
+        {L"application_blacklist.column.path", 520},
+    };
+    Check(std::wstring(runningColumns[0].title)
+              == L"application_blacklist.column.application"
+              && runningColumns[0].width == 170,
+          "running picker keeps application column first");
+    Check(std::wstring(runningColumns[1].title)
+              == L"application_blacklist.column.window_title"
+              && runningColumns[1].width == 280,
+          "running picker keeps window title column second");
+    Check(std::wstring(runningColumns[2].title)
+              == L"application_blacklist.column.path"
+              && runningColumns[2].width == 520,
+          "running picker keeps path column third");
 
     const RunningPickerWindowLayout runningPicker =
         CalculateRunningPickerWindowLayout(760, 520);

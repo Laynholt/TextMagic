@@ -26,6 +26,25 @@ struct ListRowPaint {
     UINT itemState;
 };
 
+struct SurfaceRect {
+    int x;
+    int y;
+    int width;
+    int height;
+};
+
+constexpr SurfaceRect InsetSurfaceRect(int width, int height, int inset) {
+    const int safeWidth = width > 0 ? width : 0;
+    const int safeHeight = height > 0 ? height : 0;
+    const int safeInset = inset > 0 ? inset : 0;
+    return {
+        safeInset,
+        safeInset,
+        safeWidth > 2 * safeInset ? safeWidth - 2 * safeInset : 0,
+        safeHeight > 2 * safeInset ? safeHeight - 2 * safeInset : 0,
+    };
+}
+
 constexpr DWORD StripListViewFrameStyle(DWORD style) {
     return style & ~static_cast<DWORD>(WS_BORDER);
 }

@@ -5877,20 +5877,32 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 MoveWindow(state->titleLabel, layout.title.x, layout.title.y, layout.title.width, layout.title.height, TRUE);
                 MoveWindow(state->subtitleLabel, layout.subtitle.x, layout.subtitle.y,
                     layout.subtitle.width, layout.subtitle.height, TRUE);
-                MoveWindow(state->logList, layout.content.x, layout.content.y,
-                    layout.content.width, layout.content.height, TRUE);
-                MoveWindow(state->emptyLabel, layout.content.x, layout.content.y,
-                    layout.content.width, layout.content.height, TRUE);
-                ApplyRoundedChildRegion(
-                    state->logList,
+                const auto child = content_surface_style::InsetSurfaceRect(
                     layout.content.width,
                     layout.content.height,
+                    content_surface_style::kLogsRegionInset);
+                MoveWindow(state->logList,
+                    layout.content.x + child.x,
+                    layout.content.y + child.y,
+                    child.width,
+                    child.height,
+                    TRUE);
+                MoveWindow(state->emptyLabel,
+                    layout.content.x + child.x,
+                    layout.content.y + child.y,
+                    child.width,
+                    child.height,
+                    TRUE);
+                ApplyRoundedChildRegion(
+                    state->logList,
+                    child.width,
+                    child.height,
                     LOGS_PANEL_CORNER_RADIUS,
                     content_surface_style::kLogsRegionInset);
                 ApplyRoundedChildRegion(
                     state->emptyLabel,
-                    layout.content.width,
-                    layout.content.height,
+                    child.width,
+                    child.height,
                     LOGS_PANEL_CORNER_RADIUS,
                     content_surface_style::kLogsRegionInset);
                 MoveWindow(state->copyAllButton, layout.copyAllButton.x, layout.copyAllButton.y,
@@ -6082,7 +6094,8 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                     layout.content.x + layout.content.width,
                     layout.content.y + layout.content.height,
                 };
-                UiRenderer::DrawRoundedPanel(hdc, content, INFO_LIST_SURFACE, INFO_PANEL_BORDER);
+                UiRenderer::DrawRoundedPanel(
+                    hdc, content, INFO_LIST_SURFACE, content_surface_style::kListBorder);
             } else if (state && state->kind == static_cast<int>(Application::InfoWindowKind::About)) {
                 const AboutWindowLayout layout = CalculateAboutWindowLayout(r.right - r.left, r.bottom - r.top);
                 const RECT versionChip = {

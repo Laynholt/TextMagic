@@ -233,6 +233,14 @@ int main() {
               > content_surface_style::kDefaultRegionInset,
           "logs use a stronger clip without changing shared surfaces");
 
+    const auto insetSurface = content_surface_style::InsetSurfaceRect(100, 80, 2);
+    Check(insetSurface.x == 2 && insetSurface.y == 2
+              && insetSurface.width == 96 && insetSurface.height == 76,
+          "logs child inset exposes the rounded parent frame");
+    const auto tinySurface = content_surface_style::InsetSurfaceRect(3, 2, 2);
+    Check(tinySurface.width == 0 && tinySurface.height == 0,
+          "tiny inset surfaces clamp dimensions to zero");
+
     using content_surface_style::ScrollbarSurface;
     Check(content_surface_style::UsesExplorerScrollbarTheme(
               ScrollbarSurface::BlacklistTable),

@@ -15,6 +15,7 @@
 namespace {
 constexpr std::uint64_t kMaxCapturedStreamBytes = 16ull * 1024ull * 1024ull;
 constexpr DWORD kTerminationWaitMs = 5000;
+constexpr ULONG_PTR kJobCompletionKey = 1;
 
 const wchar_t* T(const wchar_t* key) {
     return Localization::GetTextByName(key);
@@ -109,6 +110,38 @@ bool ReadFileToString(const std::wstring& filePath, std::string* text, DWORD* er
     }
     CloseHandle(file);
     return true;
+}
+
+bool WaitForJobEmpty(HANDLE completionPort, DWORD timeoutMs, DWORD* error) {
+    if (!completionPort || !error) {
+        return false;
+    }
+    *error = ERROR_SUCCESS;
+    const ULONGLONG deadline = GetTickCount64() + timeoutMs;
+    for (;;) {
+        const ULONGLONG now = GetTickCount64();
+        const DWORD remaining = now >= deadline
+            ? 0
+            : static_cast<DWORD>(deadline - now);
+        DWORD message = 0;
+        ULONG_PTR completionKey = 0;
+        LPOVERLAPPED messageValue = nullptr;
+        const BOOL dequeued = GetQueuedCompletionStatus(
+            completionPort,
+            &message,
+            &completionKey,
+            &messageValue,
+            remaining
+        );
+        if (!dequeued) {
+            *error = GetLastError();
+            return false;
+        }
+        if (completionKey == kJobCompletionKey
+            && message == JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO) {
+            return true;
+        }
+    }
 }
 
 std::wstring Base64Encode(const unsigned char* data, size_t size) {
@@ -315,10 +348,9 @@ bool ScriptRunner::Execute(
         return false;
     }
 
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {};
-    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
-        const DWORD jobError = GetLastError();
+    HANDLE completionPort = CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 1);
+    if (!completionPort) {
+        const DWORD completionPortError = GetLastError();
         TerminateProcess(pi.hProcess, 1);
         WaitForSingleObject(pi.hProcess, kTerminationWaitMs);
         closeHandle(childStdIn);
@@ -331,7 +363,58 @@ bool ScriptRunner::Execute(
         DeleteFileW(stdoutTempFilePath);
         DeleteFileW(stderrTempFilePath);
         if (errorText) {
+            *errorText = std::wstring(T(L"script_runner.error.create_completion_port_prefix"))
+                + std::to_wstring(completionPortError);
+        }
+        return false;
+    }
+
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+        const DWORD jobError = GetLastError();
+        TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, kTerminationWaitMs);
+        closeHandle(childStdIn);
+        closeHandle(childStdOut);
+        closeHandle(childStdErr);
+        closeHandle(pi.hThread);
+        closeHandle(pi.hProcess);
+        closeHandle(job);
+        closeHandle(completionPort);
+        DeleteFileW(stdinTempFilePath);
+        DeleteFileW(stdoutTempFilePath);
+        DeleteFileW(stderrTempFilePath);
+        if (errorText) {
             *errorText = std::wstring(T(L"script_runner.error.configure_job_prefix")) + std::to_wstring(jobError);
+        }
+        return false;
+    }
+
+    JOBOBJECT_ASSOCIATE_COMPLETION_PORT completionPortAssociation = {};
+    completionPortAssociation.CompletionKey = reinterpret_cast<PVOID>(kJobCompletionKey);
+    completionPortAssociation.CompletionPort = completionPort;
+    if (!SetInformationJobObject(
+            job,
+            JobObjectAssociateCompletionPortInformation,
+            &completionPortAssociation,
+            sizeof(completionPortAssociation))) {
+        const DWORD associationError = GetLastError();
+        TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, kTerminationWaitMs);
+        closeHandle(childStdIn);
+        closeHandle(childStdOut);
+        closeHandle(childStdErr);
+        closeHandle(pi.hThread);
+        closeHandle(pi.hProcess);
+        closeHandle(job);
+        closeHandle(completionPort);
+        DeleteFileW(stdinTempFilePath);
+        DeleteFileW(stdoutTempFilePath);
+        DeleteFileW(stderrTempFilePath);
+        if (errorText) {
+            *errorText = std::wstring(T(L"script_runner.error.associate_completion_port_prefix"))
+                + std::to_wstring(associationError);
         }
         return false;
     }
@@ -346,6 +429,7 @@ bool ScriptRunner::Execute(
         closeHandle(pi.hThread);
         closeHandle(pi.hProcess);
         closeHandle(job);
+        closeHandle(completionPort);
         DeleteFileW(stdinTempFilePath);
         DeleteFileW(stdoutTempFilePath);
         DeleteFileW(stderrTempFilePath);
@@ -358,13 +442,15 @@ bool ScriptRunner::Execute(
     if (ResumeThread(pi.hThread) == DWORD(-1)) {
         const DWORD resumeError = GetLastError();
         TerminateJobObject(job, 1);
-        WaitForSingleObject(pi.hProcess, kTerminationWaitMs);
+        DWORD ignoredDrainError = ERROR_SUCCESS;
+        WaitForJobEmpty(completionPort, kTerminationWaitMs, &ignoredDrainError);
         closeHandle(childStdIn);
         closeHandle(childStdOut);
         closeHandle(childStdErr);
         closeHandle(pi.hThread);
         closeHandle(pi.hProcess);
         closeHandle(job);
+        closeHandle(completionPort);
         DeleteFileW(stdinTempFilePath);
         DeleteFileW(stdoutTempFilePath);
         DeleteFileW(stderrTempFilePath);
@@ -384,22 +470,26 @@ bool ScriptRunner::Execute(
         if (!TerminateJobObject(job, 1)) {
             terminationError = GetLastError();
         }
-        const DWORD terminationWait = WaitForSingleObject(pi.hProcess, kTerminationWaitMs);
-        if (terminationError == ERROR_SUCCESS && terminationWait != WAIT_OBJECT_0) {
-            terminationError = terminationWait == WAIT_FAILED ? GetLastError() : ERROR_TIMEOUT;
+        DWORD drainError = ERROR_SUCCESS;
+        if (terminationError == ERROR_SUCCESS) {
+            WaitForJobEmpty(completionPort, kTerminationWaitMs, &drainError);
         }
         closeHandle(pi.hThread);
         closeHandle(pi.hProcess);
         closeHandle(job);
+        closeHandle(completionPort);
         DeleteFileW(stdinTempFilePath);
         DeleteFileW(stdoutTempFilePath);
         DeleteFileW(stderrTempFilePath);
         if (errorText) {
-            if (terminationError == ERROR_SUCCESS) {
-                *errorText = T(L"script_runner.error.timeout");
-            } else {
+            if (terminationError != ERROR_SUCCESS) {
                 *errorText = std::wstring(T(L"script_runner.error.terminate_job_prefix"))
                     + std::to_wstring(terminationError);
+            } else if (drainError != ERROR_SUCCESS) {
+                *errorText = std::wstring(T(L"script_runner.error.drain_job_prefix"))
+                    + std::to_wstring(drainError);
+            } else {
+                *errorText = T(L"script_runner.error.timeout");
             }
         }
         return false;
@@ -408,10 +498,12 @@ bool ScriptRunner::Execute(
     if (waitResult != WAIT_OBJECT_0) {
         const DWORD waitError = waitResult == WAIT_FAILED ? GetLastError() : ERROR_INVALID_DATA;
         TerminateJobObject(job, 1);
-        WaitForSingleObject(pi.hProcess, kTerminationWaitMs);
+        DWORD ignoredDrainError = ERROR_SUCCESS;
+        WaitForJobEmpty(completionPort, kTerminationWaitMs, &ignoredDrainError);
         closeHandle(pi.hThread);
         closeHandle(pi.hProcess);
         closeHandle(job);
+        closeHandle(completionPort);
         DeleteFileW(stdinTempFilePath);
         DeleteFileW(stdoutTempFilePath);
         DeleteFileW(stderrTempFilePath);
@@ -424,9 +516,13 @@ bool ScriptRunner::Execute(
     DWORD exitCode = 0;
     if (!GetExitCodeProcess(pi.hProcess, &exitCode)) {
         const DWORD exitCodeError = GetLastError();
+        TerminateJobObject(job, 1);
+        DWORD ignoredDrainError = ERROR_SUCCESS;
+        WaitForJobEmpty(completionPort, kTerminationWaitMs, &ignoredDrainError);
         closeHandle(pi.hThread);
         closeHandle(pi.hProcess);
         closeHandle(job);
+        closeHandle(completionPort);
         DeleteFileW(stdinTempFilePath);
         DeleteFileW(stdoutTempFilePath);
         DeleteFileW(stderrTempFilePath);
@@ -436,9 +532,38 @@ bool ScriptRunner::Execute(
         }
         return false;
     }
+
+    DWORD terminationError = ERROR_SUCCESS;
+    if (!TerminateJobObject(job, exitCode)) {
+        terminationError = GetLastError();
+    }
+    DWORD drainError = ERROR_SUCCESS;
+    if (terminationError == ERROR_SUCCESS) {
+        WaitForJobEmpty(completionPort, kTerminationWaitMs, &drainError);
+    }
+    if (terminationError != ERROR_SUCCESS || drainError != ERROR_SUCCESS) {
+        closeHandle(pi.hThread);
+        closeHandle(pi.hProcess);
+        closeHandle(job);
+        closeHandle(completionPort);
+        DeleteFileW(stdinTempFilePath);
+        DeleteFileW(stdoutTempFilePath);
+        DeleteFileW(stderrTempFilePath);
+        if (errorText) {
+            if (terminationError != ERROR_SUCCESS) {
+                *errorText = std::wstring(T(L"script_runner.error.terminate_job_prefix"))
+                    + std::to_wstring(terminationError);
+            } else {
+                *errorText = std::wstring(T(L"script_runner.error.drain_job_prefix"))
+                    + std::to_wstring(drainError);
+            }
+        }
+        return false;
+    }
     closeHandle(pi.hThread);
     closeHandle(pi.hProcess);
     closeHandle(job);
+    closeHandle(completionPort);
 
     std::string utf8Output;
     std::string stderrBytes;

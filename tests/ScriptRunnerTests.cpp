@@ -88,21 +88,75 @@ bool CheckStreamBoundary(
     return passed;
 }
 
-bool CheckTimeoutKillsChild(const ScriptRunner& runner) {
+class ObservedChild {
+public:
+    ~ObservedChild() {
+        if (m_handle) {
+            if (WaitForSingleObject(m_handle, 0) != WAIT_OBJECT_0) {
+                TerminateProcess(m_handle, 1);
+                WaitForSingleObject(m_handle, 5000);
+            }
+            CloseHandle(m_handle);
+        }
+    }
+
+    bool OpenFromFile(const wchar_t* pidPath) {
+        constexpr DWORD kPidObservationMs = 2000;
+        const auto deadline = GetTickCount64() + kPidObservationMs;
+        do {
+            std::wifstream pidFile{std::filesystem::path(pidPath)};
+            pidFile >> m_pid;
+            if (m_pid != 0) {
+                m_handle = OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE, FALSE, m_pid);
+                if (m_handle || GetLastError() == ERROR_INVALID_PARAMETER) {
+                    return true;
+                }
+            }
+            Sleep(10);
+        } while (GetTickCount64() < deadline);
+        return false;
+    }
+
+    DWORD Pid() const noexcept {
+        return m_pid;
+    }
+
+    bool HasExited() const {
+        return !m_handle || WaitForSingleObject(m_handle, 0) == WAIT_OBJECT_0;
+    }
+
+private:
+    DWORD m_pid = 0;
+    HANDLE m_handle = nullptr;
+};
+
+bool CreatePidPath(wchar_t* pidPath) {
     wchar_t tempDirectory[MAX_PATH] = {};
-    wchar_t pidPath[MAX_PATH] = {};
     if (!GetTempPathW(MAX_PATH, tempDirectory)
         || !GetTempFileNameW(tempDirectory, L"tmg", 0, pidPath)) {
         return Check(false, "child PID temp file is created");
     }
     DeleteFileW(pidPath);
+    return true;
+}
 
-    std::wstring escapedPidPath(pidPath);
+std::wstring EscapePowerShellLiteral(const wchar_t* value) {
+    std::wstring escaped(value);
     size_t quote = 0;
-    while ((quote = escapedPidPath.find(L'\'', quote)) != std::wstring::npos) {
-        escapedPidPath.insert(quote, 1, L'\'');
+    while ((quote = escaped.find(L'\'', quote)) != std::wstring::npos) {
+        escaped.insert(quote, 1, L'\'');
         quote += 2;
     }
+    return escaped;
+}
+
+bool CheckTimeoutKillsChild(const ScriptRunner& runner) {
+    wchar_t pidPath[MAX_PATH] = {};
+    if (!CreatePidPath(pidPath)) {
+        return false;
+    }
+
+    const std::wstring escapedPidPath = EscapePowerShellLiteral(pidPath);
     const std::wstring script =
         L"$child=Start-Process -FilePath 'cmd.exe' "
         L"-ArgumentList '/d','/c','ping -n 31 127.0.0.1 > nul' -PassThru\n"
@@ -112,34 +166,41 @@ bool CheckTimeoutKillsChild(const ScriptRunner& runner) {
     std::wstring error;
     const bool runOk = runner.ExecutePowerShellScript(script, L"", nullptr, &error, 2000);
 
-    DWORD childPid = 0;
-    std::wifstream pidFile{std::filesystem::path(pidPath)};
-    pidFile >> childPid;
-    pidFile.close();
+    ObservedChild child;
+    const bool childObserved = child.OpenFromFile(pidPath);
     DeleteFileW(pidPath);
 
-    bool childExited = false;
-    HANDLE child = nullptr;
-    if (childPid != 0) {
-        child = OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE, FALSE, childPid);
-        if (!child) {
-            childExited = GetLastError() == ERROR_INVALID_PARAMETER;
-        } else {
-            childExited = WaitForSingleObject(child, 0) == WAIT_OBJECT_0;
-        }
+    const bool passed = Check(!runOk, "parent script times out")
+        & Check(childObserved && child.Pid() != 0, "timed-out script records its child PID")
+        & Check(child.HasExited(), "timed-out script leaves no live child process");
+    return passed;
+}
+
+bool CheckSuccessfulParentKillsChild(const ScriptRunner& runner) {
+    wchar_t pidPath[MAX_PATH] = {};
+    if (!CreatePidPath(pidPath)) {
+        return false;
     }
 
-    const bool passed = Check(!runOk, "parent script times out")
-        & Check(childPid != 0, "timed-out script records its child PID")
-        & Check(childExited, "timed-out script leaves no live child process");
-    if (child && !childExited) {
-        TerminateProcess(child, 1);
-        WaitForSingleObject(child, 5000);
-    }
-    if (child) {
-        CloseHandle(child);
-    }
-    return passed;
+    const std::wstring script =
+        L"$child=Start-Process -FilePath 'cmd.exe' "
+        L"-ArgumentList '/d','/c','ping -n 31 127.0.0.1 > nul & echo child' -PassThru\n"
+        L"[IO.File]::WriteAllText('" + EscapePowerShellLiteral(pidPath) + L"',$child.Id.ToString())\n"
+        L"[Console]::Out.Write('parent')\n";
+
+    std::wstring output;
+    std::wstring error;
+    const bool runOk = runner.ExecutePowerShellScript(script, L"", &output, &error, 10000);
+
+    ObservedChild child;
+    const bool childObserved = child.OpenFromFile(pidPath);
+    DeleteFileW(pidPath);
+
+    return Check(runOk, "successful parent script succeeds")
+        & Check(error.empty(), "successful parent reports no error")
+        & Check(output == L"parent", "successful parent output is captured completely")
+        & Check(childObserved && child.Pid() != 0, "successful parent records its child PID")
+        & Check(child.HasExited(), "successful parent leaves no live child process");
 }
 }
 
@@ -204,6 +265,7 @@ int main() {
         "stderr above 16 MiB is rejected"
     );
     passed &= CheckTimeoutKillsChild(runner);
+    passed &= CheckSuccessfulParentKillsChild(runner);
 
     const ScriptManifest::LoadResult manifests = ScriptManifest::LoadFromDirectory(
         (std::filesystem::path(TEXTMAGIC_SOURCE_DIR) / L"scripts").wstring());

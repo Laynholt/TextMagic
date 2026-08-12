@@ -184,11 +184,107 @@ int main() {
 
     Check(content_surface_style::kCornerRadius == 10,
           "large content surfaces use the Logs radius");
+    Check(content_surface_style::kLogsCornerRadius == 14,
+          "logs use the stronger rounded panel radius");
     Check(content_surface_style::kMessageFill == RGB(42, 42, 44),
           "message surface uses the approved soft fill");
     Check(content_surface_style::kMessageBorder == RGB(55, 55, 58),
           "message surface uses the approved soft border");
     Check(content_surface_style::kListFill == RGB(37, 37, 37),
           "existing list fill remains unchanged");
+    constexpr DWORD baseStyle = WS_CHILD | WS_VISIBLE | WS_TABSTOP
+        | WS_VSCROLL | LVS_REPORT | LVS_SHOWSELALWAYS;
+    Check(content_surface_style::StripListViewFrameStyle(baseStyle | WS_BORDER)
+              == baseStyle,
+          "table style stripping removes only WS_BORDER");
+    Check(content_surface_style::StripListViewFrameStyle(baseStyle) == baseStyle,
+          "table style stripping is idempotent");
+
+    constexpr DWORD baseExStyle = WS_EX_NOPARENTNOTIFY | WS_EX_CONTROLPARENT;
+    Check(content_surface_style::StripListViewFrameExStyle(
+              baseExStyle | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE)
+              == baseExStyle,
+          "table ex-style stripping removes only native frame edges");
+    Check(content_surface_style::StripListViewFrameExStyle(baseExStyle)
+              == baseExStyle,
+          "table ex-style stripping is idempotent");
+
+    const auto normalRow = content_surface_style::ResolveListRowVisual(false);
+    Check(normalRow.fill == RGB(37, 37, 37)
+              && normalRow.text == RGB(245, 245, 245),
+          "normal table rows use the approved dark palette");
+    const auto selectedRow = content_surface_style::ResolveListRowVisual(true);
+    Check(selectedRow.fill == RGB(35, 105, 68)
+              && selectedRow.text == RGB(255, 255, 255),
+          "selected table rows use the approved green palette");
+
+    constexpr UINT selectedHotFocused = CDIS_SELECTED | CDIS_HOT | CDIS_FOCUS;
+    const auto selectedPaint = content_surface_style::ResolveListRowPaint(
+        selectedHotFocused, true);
+    Check((selectedPaint.itemState & (CDIS_SELECTED | CDIS_HOT)) == 0,
+          "custom draw suppresses native selected and hot overlays");
+    Check((selectedPaint.itemState & CDIS_FOCUS) != 0,
+          "custom draw preserves keyboard focus indication");
+    Check(content_surface_style::kTableRegionInset == 2,
+          "tables expose a two-pixel rounded frame");
+    Check(content_surface_style::ResolveTableFrameOwner()
+              == content_surface_style::TableFrameOwner::Parent,
+          "table frames remain parent-owned");
+    Check(!content_surface_style::UsesNativeTableHeaderTheme(),
+          "table headers use custom non-themed painting");
+    Check(content_surface_style::kDefaultRegionInset == 1,
+          "shared rounded controls keep their existing inset");
+    Check(content_surface_style::kLogsRegionInset == 2,
+          "logs expose enough parent border to show rounded corners");
+    Check(content_surface_style::kLogsRegionInset
+              > content_surface_style::kDefaultRegionInset,
+          "logs use a stronger clip without changing shared surfaces");
+
+    const auto insetSurface = content_surface_style::InsetSurfaceRect(100, 80, 2);
+    Check(insetSurface.x == 2 && insetSurface.y == 2
+              && insetSurface.width == 96 && insetSurface.height == 76,
+          "logs child inset exposes the rounded parent frame");
+    const auto tinySurface = content_surface_style::InsetSurfaceRect(3, 2, 2);
+    Check(tinySurface.width == 0 && tinySurface.height == 0,
+          "tiny inset surfaces clamp dimensions to zero");
+
+    using content_surface_style::ScrollbarSurface;
+    Check(content_surface_style::UsesExplorerScrollbarTheme(
+              ScrollbarSurface::BlacklistTable),
+          "blacklist table uses the existing themed dark scrollbar");
+    Check(content_surface_style::UsesExplorerScrollbarTheme(
+              ScrollbarSurface::RunningPickerTable),
+          "running picker table uses the existing themed dark scrollbar");
+    Check(content_surface_style::UsesExplorerScrollbarTheme(
+              ScrollbarSurface::LogsList),
+          "logs keep the existing themed dark scrollbar");
+    Check(content_surface_style::UsesExplorerScrollbarTheme(
+              ScrollbarSurface::GenericMessageList),
+          "generic message lists keep the existing scrollbar policy");
+
+    const RunningPickerWindowLayout runningPicker =
+        CalculateRunningPickerWindowLayout(760, 520);
+    Check(runningPicker.title.height == 40,
+          "running picker title leaves room for the large heading");
+    Check(runningPicker.list.y
+              >= runningPicker.title.y + runningPicker.title.height + 8,
+          "running picker list follows the approved title gap");
+    Check(runningPicker.list.y + runningPicker.list.height + 10
+              <= runningPicker.primaryButton.y,
+          "running picker list stays above the footer");
+    Check(runningPicker.primaryButton.y == runningPicker.secondaryButton.y,
+          "running picker buttons share a baseline");
+    Check(IsInside(runningPicker.title, 760, 520),
+          "running picker title stays inside the client");
+    Check(IsInside(runningPicker.list, 760, 520),
+          "running picker list stays inside the client");
+    Check(IsInside(runningPicker.primaryButton, 760, 520),
+          "running picker primary button stays inside the client");
+    Check(IsInside(runningPicker.secondaryButton, 760, 520),
+          "running picker secondary button stays inside the client");
+    Check(info_window_layout_detail::kMessageCompactTitleHeight == 24,
+          "generic message title height remains compact");
+    Check(info_window_layout_detail::kMessageCompactTitleGap == 6,
+          "generic message title gap remains unchanged");
     return 0;
 }

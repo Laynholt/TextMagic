@@ -77,6 +77,18 @@ void TestExternalLanguageIsAvailable(const fs::path& root) {
 void TestEmbeddedLanguagesContainApplicationBlacklistKeys() {
     CHECK(std::wstring(Localization::GetTextByName(L"menu.application_blacklist", L"en"))
         == L"Application blacklist...");
+    CHECK(std::wstring(Localization::GetTextByName(
+        L"application_blacklist.running_title", L"en"))
+        == L"Running applications");
+    CHECK(std::wstring(Localization::GetTextByName(
+        L"application_blacklist.running_title", L"ru"))
+        == L"\u0417\u0430\u043f\u0443\u0449\u0435\u043d\u043d\u044b\u0435 \u043f\u0440\u0438\u043b\u043e\u0436\u0435\u043d\u0438\u044f");
+    CHECK(std::wstring(Localization::GetTextByName(
+        L"application_blacklist.running", L"en"))
+        == L"Running applications...");
+    CHECK(std::wstring(Localization::GetTextByName(
+        L"application_blacklist.running", L"ru"))
+        == L"\u0418\u0437 \u0437\u0430\u043f\u0443\u0449\u0435\u043d\u043d\u044b\u0445...");
     CHECK(std::wstring(Localization::GetTextByName(L"application_blacklist.disable_fullscreen", L"en"))
         == L"Disable hotkeys in fullscreen applications");
     CHECK(std::wstring(Localization::GetTextByName(L"application_blacklist.add_selected", L"en"))

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(TextMagic
-    VERSION 1.0.0
+    VERSION 1.1.0
     DESCRIPTION "Global text transformer host for Windows hotkey scripts"
     LANGUAGES CXX RC
 )
@@ -131,6 +131,17 @@ install(TARGETS ${PROJECT_NAME}
 )
 
 enable_testing()
+
+add_executable(TextMagicAppVersionTests
+    tests/AppVersionTests.cpp
+)
+
+target_include_directories(TextMagicAppVersionTests PRIVATE
+    ${CMAKE_BINARY_DIR}/generated
+)
+
+target_compile_features(TextMagicAppVersionTests PRIVATE cxx_std_17)
+add_test(NAME TextMagicAppVersionTests COMMAND TextMagicAppVersionTests)
 
 add_executable(TextMagicInputBufferTests
     src/core/text/InputBuffer.cpp

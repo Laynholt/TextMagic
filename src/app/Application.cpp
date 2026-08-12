@@ -333,7 +333,6 @@ constexpr UINT MORE_POPUP_TRACK_TIMER_ID = 0x4D31;
 constexpr UINT TRAY_ICON_ID = 1;
 constexpr int LOGS_MIN_WIDTH = 400;
 constexpr int LOGS_MIN_HEIGHT = 260;
-constexpr int LOGS_PANEL_CORNER_RADIUS = 10;
 constexpr int INFO_MIN_WIDTH = 500;
 constexpr int INFO_MIN_HEIGHT = 300;
 constexpr int ABOUT_MIN_WIDTH = 620;
@@ -366,21 +365,75 @@ struct CheckboxVisualState {
 
 void PaintDarkListViewHeader(HWND header, HDC hdc);
 
-void ApplyRoundedChildRegion(HWND control, int width, int height, int radius) {
+void StripNativeListViewFrame(HWND listView) {
+    const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(listView, GWL_STYLE));
+    const DWORD exStyle = static_cast<DWORD>(GetWindowLongPtrW(listView, GWL_EXSTYLE));
+    SetWindowLongPtrW(
+        listView, GWL_STYLE,
+        static_cast<LONG_PTR>(content_surface_style::StripListViewFrameStyle(style)));
+    SetWindowLongPtrW(
+        listView, GWL_EXSTYLE,
+        static_cast<LONG_PTR>(content_surface_style::StripListViewFrameExStyle(exStyle)));
+    SetWindowPos(
+        listView, nullptr, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
+            | SWP_FRAMECHANGED);
+}
+
+bool HandleListViewCustomDraw(
+    HWND listView,
+    NMHDR* header,
+    LRESULT& result
+) {
+    if (!listView || !header
+        || header->hwndFrom != listView
+        || header->code != NM_CUSTOMDRAW) {
+        return false;
+    }
+
+    auto* draw = reinterpret_cast<NMLVCUSTOMDRAW*>(header);
+    if (draw->nmcd.dwDrawStage == CDDS_PREPAINT) {
+        result = CDRF_NOTIFYITEMDRAW;
+        return true;
+    }
+    if (draw->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
+        const int row = static_cast<int>(draw->nmcd.dwItemSpec);
+        const bool selected = (ListView_GetItemState(listView, row, LVIS_SELECTED)
+            & LVIS_SELECTED) != 0;
+        const content_surface_style::ListRowPaint paint =
+            content_surface_style::ResolveListRowPaint(
+                draw->nmcd.uItemState,
+                selected);
+        draw->clrText = paint.visual.text;
+        draw->clrTextBk = paint.visual.fill;
+        draw->nmcd.uItemState = paint.itemState;
+        result = CDRF_DODEFAULT;
+        return true;
+    }
+    return false;
+}
+
+void ApplyRoundedChildRegion(
+    HWND control,
+    int width,
+    int height,
+    int radius,
+    int borderInset = content_surface_style::kDefaultRegionInset
+) {
     if (!control || width <= 0 || height <= 0) {
         return;
     }
 
-    constexpr int borderInset = 1;
-    if (width <= 2 * borderInset || height <= 2 * borderInset) {
+    const int inset = (std::max)(0, borderInset);
+    if (width <= 2 * inset || height <= 2 * inset) {
         SetWindowRgn(control, nullptr, TRUE);
         return;
     }
     HRGN region = CreateRoundRectRgn(
-        borderInset,
-        borderInset,
-        width - borderInset,
-        height - borderInset,
+        inset,
+        inset,
+        width - inset,
+        height - inset,
         radius * 2,
         radius * 2);
     if (region && SetWindowRgn(control, region, TRUE) == 0) {
@@ -1925,6 +1978,9 @@ LRESULT CALLBACK DarkHeaderSubclassProc(
     if (message == WM_ERASEBKGND) {
         return 1;
     }
+    if (message == WM_NCPAINT) {
+        return 0;
+    }
     if (message == WM_NCDESTROY) {
         RemoveWindowSubclass(hWnd, DarkHeaderSubclassProc, subclassId);
         return DefSubclassProc(hWnd, message, wParam, lParam);
@@ -1951,6 +2007,9 @@ void ApplyDarkListViewHeader(HWND listView) {
         return;
     }
     SendMessageW(header, WM_SETFONT, SendMessageW(listView, WM_GETFONT, 0, 0), TRUE);
+    if (!content_surface_style::UsesNativeTableHeaderTheme()) {
+        SetWindowTheme(header, L"", L"");
+    }
     SetWindowSubclass(header, DarkHeaderSubclassProc, DARK_HEADER_SUBCLASS_ID, 0);
     InvalidateRect(header, nullptr, TRUE);
 }
@@ -5021,7 +5080,7 @@ std::vector<std::wstring> Application::SelectRunningApplications() {
     std::vector<std::wstring> selectedPaths;
     MessageWindowState* state = new MessageWindowState();
     state->owner = this;
-    state->title = T(L"application_blacklist.running");
+    state->title = T(L"application_blacklist.running_title");
     state->primaryButtonText = T(L"application_blacklist.add_selected");
     state->secondaryButtonText = T(L"app.button.cancel");
     state->hasSecondaryButton = true;
@@ -5055,6 +5114,7 @@ std::vector<std::wstring> Application::SelectRunningApplications() {
         return selectedPaths;
     }
 
+    ApplyDarkTitleBar(messageWindow);
     EnableWindow(dialogOwner, FALSE);
     ShowWindow(messageWindow, SW_SHOWNORMAL);
     UpdateWindow(messageWindow);
@@ -5559,7 +5619,11 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 ListView_SetBkColor(state->blacklistList, RGB(37, 37, 37));
                 ListView_SetTextBkColor(state->blacklistList, RGB(37, 37, 37));
                 ListView_SetTextColor(state->blacklistList, RGB(245, 245, 245));
-                ApplyDarkScrollBar(state->blacklistList);
+                StripNativeListViewFrame(state->blacklistList);
+                ApplyDarkScrollBar(
+                    state->blacklistList,
+                    content_surface_style::UsesExplorerScrollbarTheme(
+                        content_surface_style::ScrollbarSurface::BlacklistTable));
 
                 LVCOLUMNW column = {};
                 column.mask = LVCF_TEXT | LVCF_WIDTH;
@@ -5763,14 +5827,34 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 MoveWindow(state->titleLabel, layout.title.x, layout.title.y, layout.title.width, layout.title.height, TRUE);
                 MoveWindow(state->subtitleLabel, layout.subtitle.x, layout.subtitle.y,
                     layout.subtitle.width, layout.subtitle.height, TRUE);
-                MoveWindow(state->logList, layout.content.x, layout.content.y,
-                    layout.content.width, layout.content.height, TRUE);
-                MoveWindow(state->emptyLabel, layout.content.x, layout.content.y,
-                    layout.content.width, layout.content.height, TRUE);
-                ApplyRoundedChildRegion(state->logList, layout.content.width, layout.content.height,
-                    LOGS_PANEL_CORNER_RADIUS);
-                ApplyRoundedChildRegion(state->emptyLabel, layout.content.width, layout.content.height,
-                    LOGS_PANEL_CORNER_RADIUS);
+                const auto child = content_surface_style::InsetSurfaceRect(
+                    layout.content.width,
+                    layout.content.height,
+                    content_surface_style::kLogsRegionInset);
+                MoveWindow(state->logList,
+                    layout.content.x + child.x,
+                    layout.content.y + child.y,
+                    child.width,
+                    child.height,
+                    TRUE);
+                MoveWindow(state->emptyLabel,
+                    layout.content.x + child.x,
+                    layout.content.y + child.y,
+                    child.width,
+                    child.height,
+                    TRUE);
+                ApplyRoundedChildRegion(
+                    state->logList,
+                    child.width,
+                    child.height,
+                    content_surface_style::kLogsCornerRadius,
+                    content_surface_style::kLogsRegionInset);
+                ApplyRoundedChildRegion(
+                    state->emptyLabel,
+                    child.width,
+                    child.height,
+                    content_surface_style::kLogsCornerRadius,
+                    content_surface_style::kLogsRegionInset);
                 MoveWindow(state->copyAllButton, layout.copyAllButton.x, layout.copyAllButton.y,
                     layout.copyAllButton.width, layout.copyAllButton.height, TRUE);
                 MoveWindow(state->closeButton, layout.closeButton.x, layout.closeButton.y,
@@ -5830,7 +5914,8 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                     state->blacklistList,
                     layout.list.width,
                     layout.list.height,
-                    content_surface_style::kCornerRadius);
+                    content_surface_style::kCornerRadius,
+                    content_surface_style::kTableRegionInset);
                 MoveWindow(state->runningPickerButton, layout.runningButton.x,
                     layout.runningButton.y, layout.runningButton.width,
                     layout.runningButton.height, TRUE);
@@ -5959,7 +6044,12 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                     layout.content.x + layout.content.width,
                     layout.content.y + layout.content.height,
                 };
-                UiRenderer::DrawRoundedPanel(hdc, content, INFO_LIST_SURFACE, INFO_PANEL_BORDER);
+                UiRenderer::DrawRoundedPanel(
+                    hdc,
+                    content,
+                    INFO_LIST_SURFACE,
+                    content_surface_style::kListBorder,
+                    content_surface_style::kLogsCornerRadius);
             } else if (state && state->kind == static_cast<int>(Application::InfoWindowKind::About)) {
                 const AboutWindowLayout layout = CalculateAboutWindowLayout(r.right - r.left, r.bottom - r.top);
                 const RECT versionChip = {
@@ -6082,6 +6172,13 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
     case WM_NOTIFY:
         if (state) {
             auto* header = reinterpret_cast<NMHDR*>(lParam);
+            LRESULT customDrawResult = 0;
+            if (HandleListViewCustomDraw(
+                    state->blacklistList,
+                    header,
+                    customDrawResult)) {
+                return customDrawResult;
+            }
             if (header && header->hwndFrom == state->blacklistList) {
                 if (header->code == LVN_ITEMCHANGED) {
                     EnableWindow(
@@ -6096,18 +6193,6 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                         state->owner->RemoveSelectedApplicationFromBlacklist();
                     }
                     return 0;
-                }
-                if (header->code == NM_CUSTOMDRAW) {
-                    auto* draw = reinterpret_cast<NMLVCUSTOMDRAW*>(lParam);
-                    if (draw->nmcd.dwDrawStage == CDDS_PREPAINT) {
-                        return CDRF_NOTIFYITEMDRAW;
-                    }
-                    if (draw->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
-                        const bool selected = (draw->nmcd.uItemState & CDIS_SELECTED) != 0;
-                        draw->clrText = RGB(245, 245, 245);
-                        draw->clrTextBk = selected ? RGB(58, 58, 58) : RGB(37, 37, 37);
-                        return CDRF_DODEFAULT;
-                    }
                 }
             }
         }
@@ -6268,6 +6353,7 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
                 ListView_SetBkColor(state->textControl, RGB(37, 37, 37));
                 ListView_SetTextBkColor(state->textControl, RGB(37, 37, 37));
                 ListView_SetTextColor(state->textControl, RGB(245, 245, 245));
+                StripNativeListViewFrame(state->textControl);
 
                 LVCOLUMNW column = {};
                 column.mask = LVCF_TEXT | LVCF_WIDTH;
@@ -6304,7 +6390,10 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
                         );
                     }
                 }
-                ApplyDarkScrollBar(state->textControl);
+                ApplyDarkScrollBar(
+                    state->textControl,
+                    content_surface_style::UsesExplorerScrollbarTheme(
+                        content_surface_style::ScrollbarSurface::RunningPickerTable));
             } else {
                 const DWORD listStyle = LBS_NOINTEGRALHEIGHT | LBS_NOSEL;
                 state->textControl = CreateWindowExW(
@@ -6333,7 +6422,14 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
                     hWnd, reinterpret_cast<HMENU>(ID_MESSAGE_SECONDARY), GetModuleHandleW(nullptr), nullptr
                 );
             }
-            SendMessageW(state->titleLabel, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
+            SendMessageW(
+                state->titleLabel,
+                WM_SETFONT,
+                reinterpret_cast<WPARAM>(state->runningApplicationSelection
+                    ? state->owner->m_hTitleFont
+                    : state->owner->m_hFont),
+                TRUE
+            );
             HFONT textFont = state->useMonoFont ? state->owner->m_hMonoFont : state->owner->m_hFont;
             SendMessageW(state->textControl, WM_SETFONT, reinterpret_cast<WPARAM>(textFont), TRUE);
             if (state->runningApplicationSelection) {
@@ -6350,10 +6446,33 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
         if (state) {
             const int w = LOWORD(lParam);
             const int h = HIWORD(lParam);
+            if (state->runningApplicationSelection) {
+                const RunningPickerWindowLayout layout =
+                    CalculateRunningPickerWindowLayout(w, h);
+                MoveWindow(state->titleLabel, layout.title.x, layout.title.y,
+                    layout.title.width, layout.title.height, TRUE);
+                MoveWindow(state->textControl, layout.list.x, layout.list.y,
+                    layout.list.width, layout.list.height, TRUE);
+                ApplyRoundedChildRegion(
+                    state->textControl,
+                    layout.list.width,
+                    layout.list.height,
+                    content_surface_style::kCornerRadius,
+                    content_surface_style::kTableRegionInset);
+                if (state->secondaryButton) {
+                    MoveWindow(state->secondaryButton,
+                        layout.secondaryButton.x, layout.secondaryButton.y,
+                        layout.secondaryButton.width, layout.secondaryButton.height, TRUE);
+                }
+                MoveWindow(state->primaryButton, layout.primaryButton.x,
+                    layout.primaryButton.y, layout.primaryButton.width,
+                    layout.primaryButton.height, TRUE);
+                return 0;
+            }
             const int m = 14;
             const int titleH = 24;
             const int bh = 34;
-            const int bw = state->runningApplicationSelection ? 180 : 126;
+            const int bw = 126;
             const int gap = 10;
             const int footerGap = 10;
 
@@ -6498,6 +6617,13 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
 
     case WM_NOTIFY:
         {
+            LRESULT customDrawResult = 0;
+            if (state && HandleListViewCustomDraw(
+                    state->runningApplicationSelection ? state->textControl : nullptr,
+                    reinterpret_cast<NMHDR*>(lParam),
+                    customDrawResult)) {
+                return customDrawResult;
+            }
             auto* click = reinterpret_cast<NMLISTVIEW*>(lParam);
             if (state && state->runningApplicationSelection && click
                 && click->hdr.hwndFrom == state->textControl

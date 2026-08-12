@@ -5,6 +5,7 @@
 
 namespace content_surface_style {
 constexpr int kCornerRadius = 10;
+constexpr int kLogsCornerRadius = 14;
 constexpr int kDefaultRegionInset = 1;
 constexpr int kLogsRegionInset = 2;
 constexpr int kTableRegionInset = 2;

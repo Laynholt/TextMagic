@@ -333,7 +333,6 @@ constexpr UINT MORE_POPUP_TRACK_TIMER_ID = 0x4D31;
 constexpr UINT TRAY_ICON_ID = 1;
 constexpr int LOGS_MIN_WIDTH = 400;
 constexpr int LOGS_MIN_HEIGHT = 260;
-constexpr int LOGS_PANEL_CORNER_RADIUS = 10;
 constexpr int INFO_MIN_WIDTH = 500;
 constexpr int INFO_MIN_HEIGHT = 300;
 constexpr int ABOUT_MIN_WIDTH = 620;
@@ -5897,13 +5896,13 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                     state->logList,
                     child.width,
                     child.height,
-                    LOGS_PANEL_CORNER_RADIUS,
+                    content_surface_style::kLogsCornerRadius,
                     content_surface_style::kLogsRegionInset);
                 ApplyRoundedChildRegion(
                     state->emptyLabel,
                     child.width,
                     child.height,
-                    LOGS_PANEL_CORNER_RADIUS,
+                    content_surface_style::kLogsCornerRadius,
                     content_surface_style::kLogsRegionInset);
                 MoveWindow(state->copyAllButton, layout.copyAllButton.x, layout.copyAllButton.y,
                     layout.copyAllButton.width, layout.copyAllButton.height, TRUE);
@@ -6095,7 +6094,11 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                     layout.content.y + layout.content.height,
                 };
                 UiRenderer::DrawRoundedPanel(
-                    hdc, content, INFO_LIST_SURFACE, content_surface_style::kListBorder);
+                    hdc,
+                    content,
+                    INFO_LIST_SURFACE,
+                    content_surface_style::kListBorder,
+                    content_surface_style::kLogsCornerRadius);
             } else if (state && state->kind == static_cast<int>(Application::InfoWindowKind::About)) {
                 const AboutWindowLayout layout = CalculateAboutWindowLayout(r.right - r.left, r.bottom - r.top);
                 const RECT versionChip = {

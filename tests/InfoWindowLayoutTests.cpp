@@ -184,6 +184,8 @@ int main() {
 
     Check(content_surface_style::kCornerRadius == 10,
           "large content surfaces use the Logs radius");
+    Check(content_surface_style::kLogsCornerRadius == 14,
+          "logs use the stronger rounded panel radius");
     Check(content_surface_style::kMessageFill == RGB(42, 42, 44),
           "message surface uses the approved soft fill");
     Check(content_surface_style::kMessageBorder == RGB(55, 55, 58),

@@ -365,6 +365,16 @@ struct CheckboxVisualState {
 
 void PaintDarkListViewHeader(HWND header, HDC hdc);
 
+void DrawDarkListViewFrame(HWND parent, HWND listView) {
+    UiRenderer::DrawRoundedControlFrame(
+        parent,
+        listView,
+        0,
+        content_surface_style::kListFill,
+        content_surface_style::kListBorder,
+        content_surface_style::kCornerRadius);
+}
+
 void StripNativeListViewFrame(HWND listView) {
     const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(listView, GWL_STYLE));
     const DWORD exStyle = static_cast<DWORD>(GetWindowLongPtrW(listView, GWL_EXSTYLE));
@@ -5633,6 +5643,11 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 column.cx = 500;
                 column.pszText = const_cast<wchar_t*>(T(L"application_blacklist.column.path"));
                 ListView_InsertColumn(state->blacklistList, 1, &column);
+                SendMessageW(
+                    state->blacklistList,
+                    WM_SETFONT,
+                    reinterpret_cast<WPARAM>(state->owner->m_hFont),
+                    TRUE);
                 ApplyDarkListViewHeader(state->blacklistList);
 
                 state->runningPickerButton = CreateWindowExW(
@@ -5790,7 +5805,6 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                 );
             }
             if (state->blacklistList) {
-                SendMessageW(state->blacklistList, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
                 SendMessageW(state->runningPickerButton, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
                 SendMessageW(state->exePickerButton, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
                 SendMessageW(state->removeButton, WM_SETFONT, reinterpret_cast<WPARAM>(state->owner->m_hFont), TRUE);
@@ -6078,24 +6092,12 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                     ABOUT_CARD_SURFACE, ABOUT_CARD_BORDER);
                 SetDCBrushColor(hdc, ABOUT_CARD_BORDER);
                 FillRect(hdc, &divider, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
-            } else if (state && state->kind == static_cast<int>(Application::InfoWindowKind::ApplicationBlacklist)) {
-                const BlacklistWindowLayout layout = CalculateBlacklistWindowLayout(
-                    r.right - r.left,
-                    r.bottom - r.top);
-                const RECT list = {
-                    layout.list.x,
-                    layout.list.y,
-                    layout.list.x + layout.list.width,
-                    layout.list.y + layout.list.height,
-                };
-                UiRenderer::DrawRoundedPanel(
-                    hdc,
-                    list,
-                    content_surface_style::kListFill,
-                    content_surface_style::kListBorder,
-                    content_surface_style::kCornerRadius);
             }
             EndPaint(hWnd, &ps);
+            if (state
+                && state->kind == static_cast<int>(Application::InfoWindowKind::ApplicationBlacklist)) {
+                DrawDarkListViewFrame(hWnd, state->blacklistList);
+            }
         }
         return 0;
 
@@ -6569,15 +6571,15 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
             RECT card = { 8, 8, r.right - 8, r.bottom - 8 };
             UiRenderer::DrawCard(hdc, card);
             EndPaint(hWnd, &ps);
-            if (state && state->textControl) {
-                const COLORREF fill = state->runningApplicationSelection
-                    ? content_surface_style::kListFill
-                    : content_surface_style::kMessageFill;
-                const COLORREF border = state->runningApplicationSelection
-                    ? content_surface_style::kListBorder
-                    : content_surface_style::kMessageBorder;
+            if (state && state->runningApplicationSelection) {
+                DrawDarkListViewFrame(hWnd, state->textControl);
+            } else if (state && state->textControl) {
                 UiRenderer::DrawRoundedControlFrame(
-                    hWnd, state->textControl, 0, fill, border,
+                    hWnd,
+                    state->textControl,
+                    0,
+                    content_surface_style::kMessageFill,
+                    content_surface_style::kMessageBorder,
                     content_surface_style::kCornerRadius);
             }
         }

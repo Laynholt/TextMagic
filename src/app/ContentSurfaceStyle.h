@@ -28,12 +28,12 @@ struct ListRowPaint {
 };
 
 enum class TableFrameOwner {
-    Parent,
+    ParentAfterChild,
     Child,
 };
 
 constexpr TableFrameOwner ResolveTableFrameOwner() {
-    return TableFrameOwner::Parent;
+    return TableFrameOwner::ParentAfterChild;
 }
 
 constexpr bool UsesNativeTableHeaderTheme() {

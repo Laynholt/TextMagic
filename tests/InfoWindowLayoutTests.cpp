@@ -228,8 +228,8 @@ int main() {
     Check(content_surface_style::kTableRegionInset == 2,
           "tables expose a two-pixel rounded frame");
     Check(content_surface_style::ResolveTableFrameOwner()
-              == content_surface_style::TableFrameOwner::Parent,
-          "table frames remain parent-owned");
+              == content_surface_style::TableFrameOwner::ParentAfterChild,
+          "table frames remain parent-owned after child paint");
     Check(!content_surface_style::UsesNativeTableHeaderTheme(),
           "table headers use custom non-themed painting");
     Check(content_surface_style::kDefaultRegionInset == 1,

@@ -43,21 +43,52 @@ int main() {
     const HWND otherWindow = reinterpret_cast<HWND>(static_cast<std::uintptr_t>(2));
     constexpr std::uint64_t generation = 7;
     constexpr bool fullscreenSetting = true;
+    FullscreenUtils::WindowStateToken windowState;
+    windowState.processId = 100;
+    windowState.threadId = 200;
+    windowState.classAtom = 300;
+    windowState.style = WS_VISIBLE;
+    windowState.windowBounds = { 0, 0, 1920, 1040 };
+    windowState.clientBounds = { 0, 0, 1920, 1040 };
+    windowState.monitorBounds = { 0, 0, 1920, 1080 };
 
-    Expect(!cache.Matches(window, generation, fullscreenSetting),
+    Expect(!cache.Matches(window, generation, fullscreenSetting, windowState),
            "an empty foreground block cache must miss");
-    cache.Store(window, generation, fullscreenSetting, true);
-    Expect(cache.Matches(window, generation, fullscreenSetting),
+    cache.Store(window, generation, fullscreenSetting, windowState, true);
+    Expect(cache.Matches(window, generation, fullscreenSetting, windowState),
            "an unchanged foreground block decision must be reusable");
     Expect(cache.Blocked(), "the cache must retain the final blocked result");
-    Expect(!cache.Matches(otherWindow, generation, fullscreenSetting),
+    Expect(!cache.Matches(otherWindow, generation, fullscreenSetting, windowState),
            "a foreground window change must invalidate the cached decision");
-    Expect(!cache.Matches(window, generation + 1, fullscreenSetting),
+    Expect(!cache.Matches(window, generation + 1, fullscreenSetting, windowState),
            "a blacklist change must invalidate the cached decision");
-    Expect(!cache.Matches(window, generation, !fullscreenSetting),
+    Expect(!cache.Matches(window, generation, !fullscreenSetting, windowState),
            "a fullscreen setting change must invalidate the cached decision");
+
+    FullscreenUtils::WindowStateToken fullscreenState = windowState;
+    fullscreenState.windowBounds = { 0, 0, 1920, 1080 };
+    fullscreenState.clientBounds = { 0, 0, 1920, 1080 };
+    Expect(!cache.Matches(window, generation, fullscreenSetting, fullscreenState),
+           "a same-window fullscreen transition must invalidate the cached decision");
+
+    FullscreenUtils::WindowStateToken changedMonitorState = windowState;
+    changedMonitorState.monitorBounds = { 0, 0, 1920, 1040 };
+    Expect(!cache.Matches(window, generation, fullscreenSetting, changedMonitorState),
+           "a monitor geometry change must invalidate the cached decision");
+
+    FullscreenUtils::WindowStateToken reusedWindowState = windowState;
+    reusedWindowState.processId = 101;
+    Expect(!cache.Matches(window, generation, fullscreenSetting, reusedWindowState),
+           "a reused window handle from another process must invalidate the cached decision");
+
     cache.Invalidate();
-    Expect(!cache.Matches(window, generation, fullscreenSetting),
+    Expect(!cache.Matches(window, generation, fullscreenSetting, windowState),
            "an explicitly invalidated foreground block cache must miss");
+
+    const HHOOK keyboardHook = reinterpret_cast<HHOOK>(static_cast<std::uintptr_t>(3));
+    Expect(FullscreenUtils::KeyboardHookAfterRollback(keyboardHook, false) == keyboardHook,
+           "a failed keyboard unhook must preserve the handle for shutdown retry");
+    Expect(FullscreenUtils::KeyboardHookAfterRollback(keyboardHook, true) == nullptr,
+           "a successful keyboard unhook must clear the installed handle");
     return 0;
 }

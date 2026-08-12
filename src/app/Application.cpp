@@ -687,6 +687,33 @@ FullscreenUtils::ForegroundBlockCache& GetForegroundBlockCache() {
     return cache;
 }
 
+FullscreenUtils::WindowStateToken GetWindowStateToken(HWND window) {
+    FullscreenUtils::WindowStateToken token;
+    if (!window) {
+        return token;
+    }
+
+    token.threadId = GetWindowThreadProcessId(window, &token.processId);
+    token.classAtom = static_cast<ULONG_PTR>(GetClassLongPtrW(window, GCW_ATOM));
+    token.style = GetWindowLongPtrW(window, GWL_STYLE);
+    GetWindowRect(window, &token.windowBounds);
+
+    RECT clientBounds = {};
+    if (GetClientRect(window, &clientBounds)) {
+        POINT topLeft = { clientBounds.left, clientBounds.top };
+        POINT bottomRight = { clientBounds.right, clientBounds.bottom };
+        if (ClientToScreen(window, &topLeft) && ClientToScreen(window, &bottomRight)) {
+            token.clientBounds = { topLeft.x, topLeft.y, bottomRight.x, bottomRight.y };
+        }
+    }
+    const HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO monitorInfo = { sizeof(monitorInfo) };
+    if (monitor && GetMonitorInfoW(monitor, &monitorInfo)) {
+        token.monitorBounds = monitorInfo.rcMonitor;
+    }
+    return token;
+}
+
 InputBuffer::ContextId CurrentInputContext() {
     return reinterpret_cast<InputBuffer::ContextId>(GetForegroundWindow());
 }
@@ -806,8 +833,10 @@ bool IsForegroundHandlingBlocked() {
     const std::uint64_t generation = g_applicationBlacklist
         ? g_applicationBlacklist->Generation()
         : 0;
+    const FullscreenUtils::WindowStateToken windowState = GetWindowStateToken(foregroundWindow);
     FullscreenUtils::ForegroundBlockCache& cache = GetForegroundBlockCache();
-    if (cache.Matches(foregroundWindow, generation, g_disableHotkeysInFullscreen)) {
+    if (cache.Matches(
+            foregroundWindow, generation, g_disableHotkeysInFullscreen, windowState)) {
         return cache.Blocked();
     }
 
@@ -819,7 +848,8 @@ bool IsForegroundHandlingBlocked() {
             && g_applicationBlacklist->Contains(executablePath);
     }
 
-    cache.Store(foregroundWindow, generation, g_disableHotkeysInFullscreen, blocked);
+    cache.Store(
+        foregroundWindow, generation, g_disableHotkeysInFullscreen, windowState, blocked);
     return blocked;
 }
 
@@ -1151,9 +1181,12 @@ bool InstallInputHooks(HINSTANCE hInstance) {
         g_mouseHook = SetWindowsHookExW(WH_MOUSE_LL, InputMouseHookProc, hInstance, 0);
     }
     if (!g_mouseHook) {
-        UnhookWindowsHookEx(g_keyboardHook);
-        g_keyboardHook = nullptr;
-        g_hookKeyState.Clear();
+        const bool keyboardUnhooked = UnhookWindowsHookEx(g_keyboardHook) != FALSE;
+        g_keyboardHook = FullscreenUtils::KeyboardHookAfterRollback(
+            g_keyboardHook, keyboardUnhooked);
+        if (!g_keyboardHook) {
+            g_hookKeyState.Clear();
+        }
         return false;
     }
     return true;
@@ -1162,9 +1195,12 @@ bool InstallInputHooks(HINSTANCE hInstance) {
 void UninstallInputHooks() {
     CancelModifierGesture();
     if (g_keyboardHook) {
-        UnhookWindowsHookEx(g_keyboardHook);
-        g_keyboardHook = nullptr;
-        g_hookKeyState.Clear();
+        const bool keyboardUnhooked = UnhookWindowsHookEx(g_keyboardHook) != FALSE;
+        g_keyboardHook = FullscreenUtils::KeyboardHookAfterRollback(
+            g_keyboardHook, keyboardUnhooked);
+        if (!g_keyboardHook) {
+            g_hookKeyState.Clear();
+        }
     }
     if (g_mouseHook) {
         UnhookWindowsHookEx(g_mouseHook);

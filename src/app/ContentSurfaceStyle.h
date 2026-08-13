@@ -27,36 +27,16 @@ struct ListRowPaint {
     UINT itemState;
 };
 
-enum class TableFrameOwner {
-    ParentAfterChild,
-    Child,
-};
-
-enum class TableFramePaintMode {
-    StrokeOnly,
-};
-
-constexpr TableFramePaintMode ResolveTableFramePaintMode() {
-    return TableFramePaintMode::StrokeOnly;
-}
-
 struct ApplicationTableColumn {
     const wchar_t* title;
     int width;
 };
 
-constexpr DWORD ResolveApplicationTableWindowStyle() {
-    return WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL
-        | LVS_REPORT | LVS_SHOWSELALWAYS;
-}
-
-constexpr DWORD ResolveApplicationTableExtendedStyle() {
-    return LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_HEADERDRAGDROP;
-}
-
-constexpr TableFrameOwner ResolveTableFrameOwner() {
-    return TableFrameOwner::ParentAfterChild;
-}
+constexpr DWORD kApplicationTableWindowStyle =
+    WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL
+    | LVS_REPORT | LVS_SHOWSELALWAYS;
+constexpr DWORD kApplicationTableExtendedStyle =
+    LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_HEADERDRAGDROP;
 
 constexpr bool UsesNativeTableHeaderTheme() {
     return false;
@@ -106,14 +86,4 @@ constexpr ListRowPaint ResolveListRowPaint(UINT itemState, bool selected) {
     };
 }
 
-enum class ScrollbarSurface {
-    BlacklistTable,
-    RunningPickerTable,
-    LogsList,
-    GenericMessageList,
-};
-
-constexpr bool UsesExplorerScrollbarTheme(ScrollbarSurface) {
-    return true;
-}
 }

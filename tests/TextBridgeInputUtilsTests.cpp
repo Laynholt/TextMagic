@@ -53,22 +53,57 @@ int main() {
     int replacementBatches = 0;
     size_t deletedCharacters = 0;
     std::wstring insertedText;
-    const TextBridgeInputUtils::AtomicReplacementOperations replacementOperations{
+    const TextBridgeInputUtils::ReplacementOperations replacementOperations{
         []() { return true; },
         [&](size_t deleteCount, const std::wstring& replacement) {
             ++replacementBatches;
             deletedCharacters = deleteCount;
             insertedText = replacement;
-            return true;
-        }
+            return TextBridgeInputUtils::InputBatchResult::Complete;
+        },
+        []() { return true; }
     };
-    Expect(TextBridgeInputUtils::RunAtomicReplacement(
+    Expect(TextBridgeInputUtils::RunRecoverableReplacement(
                101, L"replacement", replacementOperations),
-           "atomic replacement must succeed");
+           "recoverable replacement must succeed");
     Expect(replacementBatches == 1,
            "delete and insert must use one input batch");
     Expect(deletedCharacters == 101 && insertedText == L"replacement",
-           "the atomic batch must contain the complete replacement");
+           "the input batch must contain the complete replacement");
+
+    int rollbackAttempts = 0;
+    const TextBridgeInputUtils::ReplacementOperations partialOperations{
+        []() { return true; },
+        [](size_t, const std::wstring&) {
+            return TextBridgeInputUtils::InputBatchResult::Partial;
+        },
+        [&]() {
+            ++rollbackAttempts;
+            return true;
+        }
+    };
+    Expect(!TextBridgeInputUtils::RunRecoverableReplacement(
+               3, L"replacement", partialOperations),
+           "a partially delivered replacement must fail");
+    Expect(rollbackAttempts == 1,
+           "a partially delivered replacement must attempt exactly one rollback");
+
+    int unsentRollbackAttempts = 0;
+    const TextBridgeInputUtils::ReplacementOperations unsentOperations{
+        []() { return true; },
+        [](size_t, const std::wstring&) {
+            return TextBridgeInputUtils::InputBatchResult::NotSent;
+        },
+        [&]() {
+            ++unsentRollbackAttempts;
+            return true;
+        }
+    };
+    Expect(!TextBridgeInputUtils::RunRecoverableReplacement(
+               3, L"replacement", unsentOperations),
+           "an undelivered replacement must fail");
+    Expect(unsentRollbackAttempts == 0,
+           "an undelivered replacement must not alter the target with rollback");
 
     Expect(TextBridgeInputUtils::SelectionDeleteCount(L"text") == 0,
            "typing text must replace the current selection");

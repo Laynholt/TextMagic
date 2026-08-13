@@ -38,19 +38,34 @@ inline bool WaitForInputReady(
     return !inputBufferMode || waitForModifiersRelease();
 }
 
-struct AtomicReplacementOperations {
-    std::function<bool()> isTargetCurrent;
-    std::function<bool(size_t, const std::wstring&)> sendBatch;
+enum class InputBatchResult {
+    Complete,
+    NotSent,
+    Partial,
 };
 
-inline bool RunAtomicReplacement(
+struct ReplacementOperations {
+    std::function<bool()> isTargetCurrent;
+    std::function<InputBatchResult(size_t, const std::wstring&)> sendBatch;
+    std::function<bool()> rollback;
+};
+
+inline bool RunRecoverableReplacement(
     size_t deleteCount,
     const std::wstring& replacement,
-    const AtomicReplacementOperations& operations
+    const ReplacementOperations& operations
 ) {
-    return operations.isTargetCurrent()
-        && operations.sendBatch(deleteCount, replacement)
-        && operations.isTargetCurrent();
+    if (!operations.isTargetCurrent()) {
+        return false;
+    }
+    const InputBatchResult result = operations.sendBatch(deleteCount, replacement);
+    if (result == InputBatchResult::Partial) {
+        if (operations.isTargetCurrent()) {
+            operations.rollback();
+        }
+        return false;
+    }
+    return result == InputBatchResult::Complete && operations.isTargetCurrent();
 }
 
 inline size_t SelectionDeleteCount(const std::wstring& replacement) {

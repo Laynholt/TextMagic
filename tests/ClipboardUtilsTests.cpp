@@ -2,6 +2,7 @@
 
 #include <cstring>
 #include <iostream>
+#include <limits>
 
 namespace {
 bool Check(bool condition, const char* message) {
@@ -63,6 +64,25 @@ bool HasCustomValue(UINT customFormat) {
     }
     CloseClipboard();
     return matches;
+}
+
+bool SetOversizedClipboard(UINT customFormat) {
+    HGLOBAL oversized = GlobalAlloc(
+        GMEM_MOVEABLE,
+        ClipboardUtils::Detail::kMaxSnapshotBytes + 1);
+    if (!oversized || !OpenClipboard(nullptr)) {
+        if (oversized) {
+            GlobalFree(oversized);
+        }
+        return false;
+    }
+    EmptyClipboard();
+    const bool set = SetClipboardData(customFormat, oversized) != nullptr;
+    if (!set) {
+        GlobalFree(oversized);
+    }
+    CloseClipboard();
+    return set;
 }
 }
 
@@ -185,6 +205,49 @@ int main() {
             == ClipboardUtils::Detail::ClipboardProbeResult::NonEmpty,
         "successful non-empty clipboard probe is non-empty"
     );
+
+    SIZE_T snapshotBytes = 0;
+    passed &= Check(
+        ClipboardUtils::Detail::TryAccumulateSnapshotBytes(
+            0,
+            ClipboardUtils::Detail::kMaxSnapshotBytes,
+            ClipboardUtils::Detail::kMaxSnapshotBytes,
+            &snapshotBytes)
+            && snapshotBytes == ClipboardUtils::Detail::kMaxSnapshotBytes,
+        "clipboard snapshot accepts exactly the configured byte limit"
+    );
+    snapshotBytes = 17;
+    passed &= Check(
+        !ClipboardUtils::Detail::TryAccumulateSnapshotBytes(
+            ClipboardUtils::Detail::kMaxSnapshotBytes,
+            1,
+            ClipboardUtils::Detail::kMaxSnapshotBytes,
+            &snapshotBytes)
+            && snapshotBytes == 17,
+        "clipboard snapshot rejects the first byte beyond the limit"
+    );
+    snapshotBytes = 23;
+    passed &= Check(
+        !ClipboardUtils::Detail::TryAccumulateSnapshotBytes(
+            (std::numeric_limits<SIZE_T>::max)() - 1,
+            2,
+            (std::numeric_limits<SIZE_T>::max)(),
+            &snapshotBytes)
+            && snapshotBytes == 23,
+        "clipboard snapshot byte accounting rejects integer overflow"
+    );
+
+    passed &= Check(
+        SetOversizedClipboard(customFormat),
+        "oversized clipboard fixture is prepared"
+    );
+    {
+        ClipboardUtils::Snapshot oversizedSnapshot;
+        passed &= Check(
+            !oversizedSnapshot.IsComplete(),
+            "a memory-backed clipboard format beyond 64 MiB is not duplicated"
+        );
+    }
 
     return passed ? 0 : 1;
 }

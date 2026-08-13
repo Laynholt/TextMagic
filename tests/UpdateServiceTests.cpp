@@ -99,6 +99,18 @@ bool WriteChecksumFixture(const std::filesystem::path& filePath,
 }
 
 int main() {
+    bool passed = true;
+    passed &= Check(UpdateService::CompareVersions(
+                        L"2147483648.0", L"2147483647.999") > 0,
+                    "version comparison handles components above signed int range");
+    passed &= Check(UpdateService::CompareVersions(
+                        L"999999999999999999999999999999.1",
+                        L"999999999999999999999999999998.999") > 0,
+                    "version comparison handles arbitrarily large numeric components");
+    passed &= Check(UpdateService::CompareVersions(
+                        L"000000000000000000000000000001.02", L"1.2") == 0,
+                    "leading zeroes do not affect large component comparison");
+
     const std::filesystem::path checksumDirectory =
         std::filesystem::temp_directory_path() / L"TextMagic-checksum-test";
     const std::filesystem::path checksumTarget = checksumDirectory / L"textmagic.exe";
@@ -112,12 +124,11 @@ int main() {
     }
 
     std::wstring error;
-    bool passed = false;
     {
         std::ofstream output(checksumFile, std::ios::binary | std::ios::trunc);
         output << "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  "
                   "TextMagic.exe\r\n";
-        passed = Check(static_cast<bool>(output), "test fixture writes a checksum entry");
+        passed &= Check(static_cast<bool>(output), "test fixture writes a checksum entry");
     }
     error.clear();
     passed &= Check(UpdateService::VerifySha256SumsFile(

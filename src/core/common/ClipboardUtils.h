@@ -37,12 +37,19 @@ bool WriteText(HWND ownerWindow, const std::wstring& text);
 bool ReadText(HWND ownerWindow, std::wstring* text);
 
 namespace Detail {
+constexpr SIZE_T kMaxSnapshotBytes = 64ull * 1024ull * 1024ull;
+
 enum class ClipboardProbeResult {
     Empty,
     NonEmpty,
     Unavailable,
 };
 
+bool TryAccumulateSnapshotBytes(
+    SIZE_T current,
+    SIZE_T next,
+    SIZE_T limit,
+    SIZE_T* total) noexcept;
 bool DecodeTextBlock(UINT format, const void* raw, SIZE_T bytes, std::wstring* text);
 bool IsClipboardEnumerationComplete(DWORD terminalError) noexcept;
 ClipboardProbeResult ClassifyClipboardProbe(bool opened, bool empty) noexcept;

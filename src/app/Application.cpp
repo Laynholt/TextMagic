@@ -1,6 +1,9 @@
 #include "Application.h"
 
+#include "ArchiveFileTransaction.h"
+#include "ArchiveImportPolicy.h"
 #include "AppUiHelpers.h"
+#include "BackgroundTask.h"
 #include "ClipboardUtils.h"
 #include "EncodingUtils.h"
 #include "FileSystemUtils.h"
@@ -18,6 +21,7 @@
 #include "InfoWindowModel.h"
 #include "LogFile.h"
 #include "MessageLoop.h"
+#include "ModalMessageLoop.h"
 #include "PowerShellUtils.h"
 #include "PopupMenuNavigation.h"
 #include "RunningApplication.h"
@@ -41,8 +45,6 @@
 #include <filesystem>
 #include <mutex>
 #include <sstream>
-#include <system_error>
-#include <thread>
 
 namespace fs = std::filesystem;
 
@@ -591,7 +593,9 @@ struct UpdateInstallTaskResult {
 struct ImportZipTaskResult {
     bool success = false;
     std::wstring errorMessage;
+    std::wstring warningMessage;
     std::vector<std::wstring> importedPaths;
+    std::vector<std::wstring> rollbackFailedPaths;
     int importedCount = 0;
     int skippedCount = 0;
 };
@@ -2097,6 +2101,18 @@ struct ListViewTextSortContext {
     bool ascending = true;
 };
 
+std::wstring DescribeBackgroundException(std::exception_ptr error) {
+    try {
+        if (error) {
+            std::rethrow_exception(error);
+        }
+    } catch (const std::exception& exception) {
+        return EncodingUtils::Utf8ToWide(exception.what());
+    } catch (...) {
+    }
+    return T(L"app.error.background_worker_unknown_exception");
+}
+
 int FindListViewItemByData(HWND listView, LPARAM data) {
     const int count = ListView_GetItemCount(listView);
     for (int index = 0; index < count; ++index) {
@@ -2157,8 +2173,7 @@ void ConfigureApplicationTable(
     HWND listView,
     HFONT font,
     const content_surface_style::ApplicationTableColumn* columns,
-    int columnCount,
-    content_surface_style::ScrollbarSurface scrollbarSurface
+    int columnCount
 ) {
     if (!listView) {
         return;
@@ -2166,7 +2181,7 @@ void ConfigureApplicationTable(
 
     ListView_SetExtendedListViewStyle(
         listView,
-        content_surface_style::ResolveApplicationTableExtendedStyle());
+        content_surface_style::kApplicationTableExtendedStyle);
     ListView_SetBkColor(listView, content_surface_style::kListFill);
     ListView_SetTextBkColor(listView, content_surface_style::kListFill);
     ListView_SetTextColor(listView, content_surface_style::kListText);
@@ -2183,9 +2198,7 @@ void ConfigureApplicationTable(
     }
 
     SendMessageW(listView, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-    ApplyDarkScrollBar(
-        listView,
-        content_surface_style::UsesExplorerScrollbarTheme(scrollbarSurface));
+    ApplyDarkScrollBar(listView);
     ApplyDarkListViewHeader(listView);
 }
 }
@@ -2596,7 +2609,8 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                     ClearInputBuffer();
                 }
             } else {
-                replaceOk = m_textBridge.SetSelectedText(result->outputText);
+                replaceOk = m_textBridge.SetSelectedText(
+                    result->inputTargetWindow, result->outputText);
             }
             if (!replaceOk) {
                 const std::wstring msg = result->clipboardMode
@@ -2677,7 +2691,8 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 m_completionRegistry,
             };
             const UpdateService updateService = m_updateService;
-            std::thread([dispatchTarget, updateService, latestTag, targetPath, tmpPath]() {
+            const bool started = BackgroundTask::StartDetached(
+                [dispatchTarget, updateService, latestTag, targetPath, tmpPath]() {
                 auto installResult = std::make_unique<UpdateInstallTaskResult>();
                 std::wstring error;
                 std::wstring verifiedSha256;
@@ -2697,7 +2712,20 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 }
                 installResult->success = true;
                 SendOwnedCompletion(dispatchTarget, WM_UPDATE_INSTALL_COMPLETE, std::move(installResult));
-            }).detach();
+                },
+                [dispatchTarget](std::exception_ptr error) {
+                    auto result = std::make_unique<UpdateInstallTaskResult>();
+                    result->error = DescribeBackgroundException(error);
+                    SendOwnedCompletion(
+                        dispatchTarget, WM_UPDATE_INSTALL_COMPLETE, std::move(result));
+                }
+            );
+            if (!started) {
+                m_updateInProgress = false;
+                const std::wstring startError = T(L"app.status.background_thread_start_failed");
+                AppendLog(std::wstring(T(L"app.log.update.error_prefix")) + startError);
+                ShowStyledMessage(T(L"app.title.update"), startError);
+            }
         }
         return kCompletionHandled;
 
@@ -2734,6 +2762,12 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             }
             m_archiveTaskInProgress = false;
             if (!result->success) {
+                if (!result->rollbackFailedPaths.empty()) {
+                    for (const std::wstring& path : result->rollbackFailedPaths) {
+                        AppendLog(std::wstring(T(L"app.log.scripts.warning_prefix")) + path);
+                    }
+                    ReloadScripts(false);
+                }
                 ShowStyledMessage(T(L"app.title.import_error"), result->errorMessage);
                 return kCompletionHandled;
             }
@@ -2751,6 +2785,11 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 const std::wstring status = T(L"app.status.no_suitable_import");
                 SetStatusText(status);
                 AppendLog(std::wstring(T(L"app.log.scripts.prefix")) + status);
+            }
+            if (!result->warningMessage.empty()) {
+                AppendLog(std::wstring(T(L"app.log.scripts.warning_prefix"))
+                    + result->warningMessage);
+                OutputDebugStringW(result->warningMessage.c_str());
             }
         }
         return kCompletionHandled;
@@ -4503,7 +4542,8 @@ void Application::ImportScriptsFromZip() {
         reinterpret_cast<LONG_PTR>(this),
         m_completionRegistry,
     };
-    std::thread([archivePathString, scriptsDirectory, scriptRunner, dispatchTarget]() {
+    const bool started = BackgroundTask::StartDetached(
+        [archivePathString, scriptsDirectory, scriptRunner, dispatchTarget]() {
         auto result = std::make_unique<ImportZipTaskResult>();
 
         std::error_code tempDirectoryError;
@@ -4515,36 +4555,30 @@ void Application::ImportScriptsFromZip() {
             return;
         }
 
-        std::vector<wchar_t> tempNameBuffer(32768, L'\0');
-        if (!GetTempFileNameW(tempDirectory.c_str(), L"tmz", 0, tempNameBuffer.data())) {
-            result->success = false;
-            result->errorMessage = T(L"app.error.tmp_path_create");
-            SendOwnedCompletion(dispatchTarget, WM_IMPORT_ZIP_COMPLETE, std::move(result));
-            return;
-        }
-        const std::wstring tempName = tempNameBuffer.data();
-        DeleteFileW(tempName.c_str());
-
-        if (!CreateDirectoryW(tempName.c_str(), nullptr)) {
+        const fs::path extractionDirectory = CreateUniqueTemporaryDirectory(
+            fs::path(tempDirectory), L"TextMagic-extract", tempDirectoryError);
+        if (extractionDirectory.empty() || tempDirectoryError) {
             result->success = false;
             result->errorMessage = T(L"app.error.tmp_folder_create");
             SendOwnedCompletion(dispatchTarget, WM_IMPORT_ZIP_COMPLETE, std::move(result));
             return;
         }
+        ScopedPathCleanup tempDirectoryCleanup(extractionDirectory);
 
-        const std::wstring escapedArchive = PowerShellUtils::EscapeSingleQuoted(archivePathString);
-        const std::wstring escapedTempDir = PowerShellUtils::EscapeSingleQuoted(tempName);
-        const std::wstring extractScript =
-            L"$ErrorActionPreference='Stop'\n"
-            L"$archivePath='" + escapedArchive + L"'\n"
-            L"$destinationPath='" + escapedTempDir + L"'\n"
-            L"Expand-Archive -LiteralPath $archivePath -DestinationPath $destinationPath -Force\n";
+        const ArchiveImportMessages importMessages{
+            T(L"app.error.zip_entry_limit"),
+            T(L"app.error.zip_file_limit"),
+            T(L"app.error.zip_total_limit"),
+        };
+        const std::wstring extractScript = BuildArchivePreflightAndExtractScript(
+            archivePathString,
+            extractionDirectory.wstring(),
+            DefaultArchiveImportLimits(),
+            importMessages);
 
         std::wstring ignoredOutput;
         std::wstring executeError;
         if (!scriptRunner.ExecutePowerShellScript(extractScript, L"", &ignoredOutput, &executeError)) {
-            std::error_code cleanupError;
-            fs::remove_all(fs::path(tempName), cleanupError);
             result->success = false;
             result->errorMessage = std::wstring(T(L"app.error.zip_extract_prefix")) + executeError;
             SendOwnedCompletion(dispatchTarget, WM_IMPORT_ZIP_COMPLETE, std::move(result));
@@ -4553,34 +4587,62 @@ void Application::ImportScriptsFromZip() {
 
         std::vector<fs::path> extractedFiles;
         std::error_code walkError;
-        if (!FileSystemUtils::CollectRegularFiles(fs::path(tempName), true, &extractedFiles, &walkError)) {
-            std::error_code cleanupError;
-            fs::remove_all(fs::path(tempName), cleanupError);
+        if (!FileSystemUtils::CollectRegularFiles(
+                extractionDirectory, true, &extractedFiles, &walkError)) {
             result->success = false;
             result->errorMessage = std::wstring(T(L"app.error.zip_extract_prefix"))
                 + std::to_wstring(walkError.value());
             SendOwnedCompletion(dispatchTarget, WM_IMPORT_ZIP_COMPLETE, std::move(result));
             return;
         }
+        std::vector<fs::path> scriptFiles;
+        std::copy_if(
+            extractedFiles.begin(),
+            extractedFiles.end(),
+            std::back_inserter(scriptFiles),
+            [](const fs::path& path) { return IsTmscriptFilePath(path); });
 
-        for (const auto& filePath : extractedFiles) {
-            if (!IsTmscriptFilePath(filePath)) {
-                continue;
+        const ArchiveImportResult importResult =
+            ImportArchiveFilesTransactionally(fs::path(scriptsDirectory), scriptFiles);
+        if (!importResult.success) {
+            const wchar_t* prefixKey = importResult.rollbackFailedPaths.empty()
+                ? L"app.error.zip_import_commit_prefix"
+                : L"app.error.zip_rollback_incomplete_prefix";
+            result->errorMessage = std::wstring(T(prefixKey))
+                + EncodingUtils::Utf8ToWide(importResult.error.message());
+            result->rollbackFailedPaths.reserve(importResult.rollbackFailedPaths.size());
+            for (const fs::path& path : importResult.rollbackFailedPaths) {
+                result->rollbackFailedPaths.push_back(path.wstring());
+                result->errorMessage += L"\r\n" + path.wstring();
             }
-            std::wstring copiedPath;
-            if (ImportScriptFileToDirectory(scriptsDirectory, filePath.wstring(), &copiedPath)) {
-                ++result->importedCount;
-                result->importedPaths.push_back(copiedPath);
-            } else {
-                ++result->skippedCount;
-            }
+            SendOwnedCompletion(dispatchTarget, WM_IMPORT_ZIP_COMPLETE, std::move(result));
+            return;
         }
 
+        result->importedCount = static_cast<int>(importResult.importedPaths.size());
+        result->importedPaths.reserve(importResult.importedPaths.size());
+        for (const fs::path& importedPath : importResult.importedPaths) {
+            result->importedPaths.push_back(importedPath.wstring());
+        }
         std::error_code cleanupError;
-        fs::remove_all(fs::path(tempName), cleanupError);
+        if (!tempDirectoryCleanup.Cleanup(cleanupError)) {
+            result->warningMessage = std::wstring(T(L"app.error.zip_cleanup_prefix"))
+                + EncodingUtils::Utf8ToWide(cleanupError.message());
+        }
         result->success = true;
         SendOwnedCompletion(dispatchTarget, WM_IMPORT_ZIP_COMPLETE, std::move(result));
-    }).detach();
+        },
+        [dispatchTarget](std::exception_ptr error) {
+            auto result = std::make_unique<ImportZipTaskResult>();
+            result->errorMessage = DescribeBackgroundException(error);
+            SendOwnedCompletion(dispatchTarget, WM_IMPORT_ZIP_COMPLETE, std::move(result));
+        }
+    );
+    if (!started) {
+        m_archiveTaskInProgress = false;
+        ShowStyledMessage(
+            T(L"app.title.import_error"), T(L"app.status.background_thread_start_failed"));
+    }
 }
 
 void Application::ExportScriptsToZip() {
@@ -4638,27 +4700,66 @@ void Application::ExportScriptsToZip() {
         reinterpret_cast<LONG_PTR>(this),
         m_completionRegistry,
     };
-    std::thread([archivePathString, scriptsDirectory, scriptFileCount, scriptRunner, dispatchTarget]() {
+    const bool started = BackgroundTask::StartDetached(
+        [archivePathString, scriptsDirectory, scriptFileCount, scriptRunner, dispatchTarget]() {
         auto result = std::make_unique<ExportZipTaskResult>();
         result->archivePath = archivePathString;
         result->scriptFileCount = scriptFileCount;
 
-        const std::wstring escapedScriptsDir = PowerShellUtils::EscapeSingleQuoted(scriptsDirectory);
-        const std::wstring escapedArchive = PowerShellUtils::EscapeSingleQuoted(archivePathString);
-        const std::wstring exportScript =
-            L"$ErrorActionPreference='Stop'\n"
-            L"$scriptsDir='" + escapedScriptsDir + L"'\n"
-            L"$destinationPath='" + escapedArchive + L"'\n"
-            L"$files=Get-ChildItem -LiteralPath $scriptsDir -Filter '*.tmscript' -File\n"
-            + std::wstring(L"if(-not $files){ throw '")
-            + T(L"app.error.no_scripts_to_export_ps")
-            + L"' }\n"
-            L"Compress-Archive -LiteralPath $files.FullName -DestinationPath $destinationPath -Force\n";
-
-        std::wstring ignoredOutput;
-        result->success = scriptRunner.ExecutePowerShellScript(exportScript, L"", &ignoredOutput, &result->errorMessage);
+        std::wstring producerError;
+        std::error_code exportError;
+        ArchiveExportFailure exportFailure = ArchiveExportFailure::None;
+        const bool exported = ExportArchiveTransactionally(
+            fs::path(archivePathString),
+            [&](const fs::path& stagingArchive) {
+                const std::wstring escapedScriptsDir =
+                    PowerShellUtils::EscapeSingleQuoted(scriptsDirectory);
+                const std::wstring escapedArchive =
+                    PowerShellUtils::EscapeSingleQuoted(stagingArchive.wstring());
+                const std::wstring exportScript =
+                    L"$ErrorActionPreference='Stop'\n"
+                    L"$scriptsDir='" + escapedScriptsDir + L"'\n"
+                    L"$destinationPath='" + escapedArchive + L"'\n"
+                    L"$files=Get-ChildItem -LiteralPath $scriptsDir -Filter '*.tmscript' -File\n"
+                    + std::wstring(L"if(-not $files){ throw '")
+                    + T(L"app.error.no_scripts_to_export_ps")
+                    + L"' }\n"
+                    L"Compress-Archive -LiteralPath $files.FullName -DestinationPath $destinationPath -Force\n";
+                std::wstring ignoredOutput;
+                return scriptRunner.ExecutePowerShellScript(
+                    exportScript, L"", &ignoredOutput, &producerError);
+            },
+            exportError,
+            &exportFailure);
+        if (!exported) {
+            if (exportFailure == ArchiveExportFailure::Produce && !producerError.empty()) {
+                result->errorMessage = producerError;
+            } else {
+                const wchar_t* prefixKey = exportFailure == ArchiveExportFailure::PrepareStaging
+                    ? L"app.error.zip_stage_prefix"
+                    : L"app.error.zip_commit_prefix";
+                result->errorMessage = std::wstring(T(prefixKey))
+                    + EncodingUtils::Utf8ToWide(exportError.message());
+            }
+            SendOwnedCompletion(dispatchTarget, WM_EXPORT_ZIP_COMPLETE, std::move(result));
+            return;
+        }
+        result->success = true;
         SendOwnedCompletion(dispatchTarget, WM_EXPORT_ZIP_COMPLETE, std::move(result));
-    }).detach();
+        },
+        [dispatchTarget, archivePathString, scriptFileCount](std::exception_ptr error) {
+            auto result = std::make_unique<ExportZipTaskResult>();
+            result->archivePath = archivePathString;
+            result->scriptFileCount = scriptFileCount;
+            result->errorMessage = DescribeBackgroundException(error);
+            SendOwnedCompletion(dispatchTarget, WM_EXPORT_ZIP_COMPLETE, std::move(result));
+        }
+    );
+    if (!started) {
+        m_archiveTaskInProgress = false;
+        ShowStyledMessage(
+            T(L"app.title.export_error"), T(L"app.status.background_thread_start_failed"));
+    }
 }
 
 void Application::ImportScriptFiles(const std::vector<std::wstring>& filePaths) {
@@ -4830,7 +4931,7 @@ void Application::ExecuteScript(
     const std::wstring workerExceptionPrefix =
         std::wstring(T(L"app.error.script_worker_exception_prefix")) + L" ";
     const std::wstring unknownWorkerException = T(L"app.error.script_worker_unknown_exception");
-    const HWND inputTargetWindow = useClipboardOnly ? nullptr : GetForegroundWindow();
+    const HWND inputTargetWindow = useClipboardOnly ? nullptr : contextWindow;
     const InputBuffer::ContextId inputContext =
         reinterpret_cast<InputBuffer::ContextId>(inputTargetWindow);
     InputBuffer::PreviousWordCapture inputCapture;
@@ -4841,8 +4942,8 @@ void Application::ExecuteScript(
             : PeekPreviousWordFromInputBuffer(inputContext, &inputCapture))
         && !inputCapture.word.empty();
 
-    try {
-        std::thread worker([scriptName,
+    const bool started = BackgroundTask::StartDetached(
+        [scriptName,
                             scriptBody,
                             allTextInputMode,
                             useClipboardOnly,
@@ -4857,7 +4958,6 @@ void Application::ExecuteScript(
                             inputTargetWindow,
                             hasInputCapture,
                             inputCapture]() {
-            try {
                 auto result = std::make_unique<ScriptExecutionTaskResult>();
                 result->scriptName = scriptName;
                 result->clipboardMode = useClipboardOnly;
@@ -4871,7 +4971,7 @@ void Application::ExecuteScript(
                     std::wstring sourceText;
 
                     if (!useClipboardOnly && !hasInputCapture) {
-                        selectedText = textBridge.GetSelectedText();
+                        selectedText = textBridge.GetSelectedText(inputTargetWindow);
                         hasSelection = !selectedText.empty();
                     }
 
@@ -4925,15 +5025,20 @@ void Application::ExecuteScript(
                     dispatchTarget,
                     WM_SCRIPT_EXECUTION_COMPLETE,
                     std::move(result));
-            } catch (...) {
-                SendOwnedCompletion(
-                    dispatchTarget,
-                    WM_SCRIPT_EXECUTION_COMPLETE,
-                    std::unique_ptr<ScriptExecutionTaskResult>());
-            }
-        });
-        worker.detach();
-    } catch (const std::system_error&) {
+        },
+        [dispatchTarget, scriptName, useClipboardOnly, autoOutputLayout,
+         inputTargetWindow](std::exception_ptr error) {
+            auto result = std::make_unique<ScriptExecutionTaskResult>();
+            result->scriptName = scriptName;
+            result->clipboardMode = useClipboardOnly;
+            result->autoOutputLayout = autoOutputLayout;
+            result->inputTargetWindow = useClipboardOnly ? nullptr : inputTargetWindow;
+            result->executionError = DescribeBackgroundException(error);
+            SendOwnedCompletion(
+                dispatchTarget, WM_SCRIPT_EXECUTION_COMPLETE, std::move(result));
+        }
+    );
+    if (!started) {
         m_scriptExecutionGate.Release(GetTickCount64());
         const std::wstring message = T(L"app.status.script_thread_start_failed");
         SetStatusText(message);
@@ -5153,7 +5258,7 @@ void Application::CreateOrActivateInfoWindow(InfoWindowKind kind, HWND& targetHa
         width = aboutClient.right - aboutClient.left;
         height = aboutClient.bottom - aboutClient.top;
     }
-    state->minimumOuterSize = ResolveMinimumOuterSize({width, height});
+    state->minimumOuterSize = {width, height};
     const int x = ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2;
     const int y = ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2;
 
@@ -5351,7 +5456,7 @@ std::vector<std::wstring> Application::SelectRunningApplications() {
     GetWindowRect(dialogOwner, &ownerRect);
     const int width = 760;
     const int height = 520;
-    state->minimumOuterSize = ResolveMinimumOuterSize({width, height});
+    state->minimumOuterSize = {width, height};
     const int x = ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2;
     const int y = ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2;
     HWND messageWindow = CreateWindowExW(
@@ -5376,12 +5481,7 @@ std::vector<std::wstring> Application::SelectRunningApplications() {
     ShowWindow(messageWindow, SW_SHOWNORMAL);
     UpdateWindow(messageWindow);
     MSG message = {};
-    while (IsWindow(messageWindow) && GetMessageW(&message, nullptr, 0, 0)) {
-        if (!IsDialogMessageW(messageWindow, &message)) {
-            TranslateMessage(&message);
-            DispatchMessageW(&message);
-        }
-    }
+    RunModalMessageLoop(messageWindow);
     EnableWindow(dialogOwner, TRUE);
     SetForegroundWindow(dialogOwner);
     return selectedPaths;
@@ -5499,7 +5599,7 @@ int Application::ShowStyledMessageDialog(const wchar_t* title,
     GetWindowRect(m_hWnd, &ownerRect);
     const int width = 500;
     const int height = 230;
-    state->minimumOuterSize = ResolveMinimumOuterSize({width, height});
+    state->minimumOuterSize = {width, height};
     const int x = ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2;
     const int y = ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2;
 
@@ -5528,16 +5628,7 @@ int Application::ShowStyledMessageDialog(const wchar_t* title,
     ShowWindow(messageWindow, SW_SHOWNORMAL);
     UpdateWindow(messageWindow);
 
-    MSG msg = {};
-    while (IsWindow(messageWindow) && GetMessageW(&msg, nullptr, 0, 0)) {
-        if (!IsDialogMessageW(messageWindow, &msg)) {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-        if (!IsWindow(messageWindow)) {
-            break;
-        }
-    }
+    RunModalMessageLoop(messageWindow);
 
     EnableWindow(m_hWnd, TRUE);
     SetForegroundWindow(m_hWnd);
@@ -5564,11 +5655,25 @@ void Application::CheckForUpdates() {
         reinterpret_cast<LONG_PTR>(this),
         m_completionRegistry,
     };
-    std::thread([updateService, dispatchTarget]() {
-        auto result = std::make_unique<UpdateCheckTaskResult>();
-        result->check = updateService.CheckForUpdates(APP_VERSION);
-        SendOwnedCompletion(dispatchTarget, WM_UPDATE_CHECK_COMPLETE, std::move(result));
-    }).detach();
+    const bool started = BackgroundTask::StartDetached(
+        [updateService, dispatchTarget]() {
+            auto result = std::make_unique<UpdateCheckTaskResult>();
+            result->check = updateService.CheckForUpdates(APP_VERSION);
+            SendOwnedCompletion(dispatchTarget, WM_UPDATE_CHECK_COMPLETE, std::move(result));
+        },
+        [dispatchTarget](std::exception_ptr error) {
+            auto result = std::make_unique<UpdateCheckTaskResult>();
+            result->check.success = false;
+            result->check.errorMessage = DescribeBackgroundException(error);
+            SendOwnedCompletion(dispatchTarget, WM_UPDATE_CHECK_COMPLETE, std::move(result));
+        }
+    );
+    if (!started) {
+        m_updateInProgress = false;
+        const std::wstring message = T(L"app.status.background_thread_start_failed");
+        AppendLog(std::wstring(T(L"app.log.update.error_prefix")) + message);
+        ShowStyledMessage(T(L"app.title.update"), message);
+    }
 }
 
 void Application::RefreshLogsWindow() {
@@ -5843,7 +5948,7 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
 
                 state->blacklistList = CreateWindowExW(
                     0, WC_LISTVIEWW, nullptr,
-                    content_surface_style::ResolveApplicationTableWindowStyle(),
+                    content_surface_style::kApplicationTableWindowStyle,
                     0, 0, 100, 100,
                     hWnd,
                     reinterpret_cast<HMENU>(ID_INFO_BLACKLIST_LIST),
@@ -5858,8 +5963,7 @@ LRESULT CALLBACK Application::InfoWindowProc(HWND hWnd, UINT message, WPARAM wPa
                     state->blacklistList,
                     state->owner->m_hFont,
                     columns,
-                    static_cast<int>(sizeof(columns) / sizeof(columns[0])),
-                    content_surface_style::ScrollbarSurface::RunningPickerTable);
+                    static_cast<int>(sizeof(columns) / sizeof(columns[0])));
 
                 state->runningPickerButton = CreateWindowExW(
                     0, L"BUTTON", T(L"application_blacklist.running"),
@@ -6585,7 +6689,7 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
             if (state->runningApplicationSelection) {
                 state->textControl = CreateWindowExW(
                     0, WC_LISTVIEWW, nullptr,
-                    content_surface_style::ResolveApplicationTableWindowStyle(),
+                    content_surface_style::kApplicationTableWindowStyle,
                     0, 0, 100, 100,
                     hWnd, reinterpret_cast<HMENU>(ID_MESSAGE_TEXT), GetModuleHandleW(nullptr), nullptr
                 );
@@ -6598,8 +6702,7 @@ LRESULT CALLBACK Application::MessageWindowProc(HWND hWnd, UINT message, WPARAM 
                     state->textControl,
                     state->owner->m_hFont,
                     columns,
-                    static_cast<int>(sizeof(columns) / sizeof(columns[0])),
-                    content_surface_style::ScrollbarSurface::RunningPickerTable);
+                    static_cast<int>(sizeof(columns) / sizeof(columns[0])));
 
                 for (size_t index = 0; index < state->runningApplications.size(); ++index) {
                     const RunningApplication& application = state->runningApplications[index];

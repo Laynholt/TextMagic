@@ -302,22 +302,22 @@ std::wstring ExtractTagFromUrl(const std::wstring& url) {
     return tag;
 }
 
-std::vector<int> ParseVersionParts(const std::wstring& version) {
-    std::vector<int> parts;
-    int current = -1;
+std::vector<std::wstring> ParseVersionParts(const std::wstring& version) {
+    std::vector<std::wstring> parts;
+    std::wstring current;
 
     for (wchar_t ch : version) {
-        if (iswdigit(ch)) {
-            if (current < 0) {
-                current = 0;
-            }
-            current = (current * 10) + static_cast<int>(ch - L'0');
+        if (ch >= L'0' && ch <= L'9') {
+            current.push_back(ch);
             continue;
         }
 
-        if (current >= 0) {
-            parts.push_back(current);
-            current = -1;
+        if (!current.empty()) {
+            const size_t firstNonZero = current.find_first_not_of(L'0');
+            parts.push_back(firstNonZero == std::wstring::npos
+                                ? L"0"
+                                : current.substr(firstNonZero));
+            current.clear();
         }
 
         if (ch != L'.') {
@@ -325,8 +325,11 @@ std::vector<int> ParseVersionParts(const std::wstring& version) {
         }
     }
 
-    if (current >= 0) {
-        parts.push_back(current);
+    if (!current.empty()) {
+        const size_t firstNonZero = current.find_first_not_of(L'0');
+        parts.push_back(firstNonZero == std::wstring::npos
+                            ? L"0"
+                            : current.substr(firstNonZero));
     }
 
     return parts;
@@ -777,17 +780,19 @@ std::wstring UpdateService::NormalizeVersionFromTag(const std::wstring& rawTag) 
 }
 
 int UpdateService::CompareVersions(const std::wstring& left, const std::wstring& right) {
-    const std::vector<int> leftParts = ParseVersionParts(left);
-    const std::vector<int> rightParts = ParseVersionParts(right);
+    const std::vector<std::wstring> leftParts = ParseVersionParts(left);
+    const std::vector<std::wstring> rightParts = ParseVersionParts(right);
     const size_t maxParts = (std::max)(leftParts.size(), rightParts.size());
 
     for (size_t index = 0; index < maxParts; ++index) {
-        const int leftValue = (index < leftParts.size()) ? leftParts[index] : 0;
-        const int rightValue = (index < rightParts.size()) ? rightParts[index] : 0;
-        if (leftValue < rightValue) {
+        const std::wstring leftValue = (index < leftParts.size()) ? leftParts[index] : L"0";
+        const std::wstring rightValue = (index < rightParts.size()) ? rightParts[index] : L"0";
+        if (leftValue.size() < rightValue.size()
+            || (leftValue.size() == rightValue.size() && leftValue < rightValue)) {
             return -1;
         }
-        if (leftValue > rightValue) {
+        if (leftValue.size() > rightValue.size()
+            || (leftValue.size() == rightValue.size() && leftValue > rightValue)) {
             return 1;
         }
     }

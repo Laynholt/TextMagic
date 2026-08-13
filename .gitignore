@@ -14,3 +14,6 @@ tests/*
 !tests/PopupMenuNavigationTests.cpp
 !tests/OutputLayoutTests.cpp
 !tests/FileSystemUtilsTests.cpp
+!tests/ApplicationInfrastructureTests.cpp
+!tests/ArchiveFileTransactionTests.cpp
+!tests/ArchiveImportPolicyTests.cpp

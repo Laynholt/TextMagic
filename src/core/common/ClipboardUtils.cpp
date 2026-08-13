@@ -52,12 +52,23 @@ void FreeClipboardData(UINT format, HANDLE handle) {
         GlobalFree(handle);
     }
 }
+
+bool IsOpaqueClipboardFormat(UINT format) noexcept {
+    return format == CF_BITMAP
+        || format == CF_DSPBITMAP
+        || format == CF_PALETTE
+        || format == CF_ENHMETAFILE
+        || format == CF_DSPENHMETAFILE
+        || format == CF_METAFILEPICT
+        || format == CF_DSPMETAFILEPICT;
+}
 }
 
 namespace ClipboardUtils {
 Snapshot::Snapshot() {
     if (OpenClipboardWithRetry(nullptr)) {
         m_complete = true;
+        SIZE_T snapshotBytes = 0;
         SetLastError(ERROR_SUCCESS);
         const int formatCount = CountClipboardFormats();
         const DWORD countError = GetLastError();
@@ -83,6 +94,22 @@ Snapshot::Snapshot() {
                 continue;
             }
 
+            const bool opaqueFormat = IsOpaqueClipboardFormat(format);
+            const SIZE_T formatBytes = opaqueFormat ? 0 : GlobalSize(source);
+            if (!opaqueFormat && formatBytes == 0) {
+                m_complete = false;
+                break;
+            }
+            SIZE_T accumulatedBytes = snapshotBytes;
+            if (!Detail::TryAccumulateSnapshotBytes(
+                    snapshotBytes,
+                    formatBytes,
+                    Detail::kMaxSnapshotBytes,
+                    &accumulatedBytes)) {
+                m_complete = false;
+                break;
+            }
+
             HANDLE duplicate = OleDuplicateData(
                 source,
                 static_cast<CLIPFORMAT>(format),
@@ -92,12 +119,21 @@ Snapshot::Snapshot() {
                 m_complete = false;
                 continue;
             }
-            m_formats.push_back({format, duplicate});
+            try {
+                m_formats.push_back({format, duplicate});
+                snapshotBytes = accumulatedBytes;
+            } catch (...) {
+                FreeClipboardData(format, duplicate);
+                m_complete = false;
+                break;
+            }
         }
         CloseClipboard();
     }
 
-    m_hasText = ReadText(nullptr, &m_text);
+    if (m_complete && m_formats.empty()) {
+        m_hasText = ReadText(nullptr, &m_text);
+    }
     if (!m_hasText && m_formats.empty() && m_wasEmpty && m_complete) {
         m_text.clear();
         if (ProbeClipboardEmpty(nullptr) == Detail::ClipboardProbeResult::Unavailable) {
@@ -217,6 +253,19 @@ bool WriteText(HWND ownerWindow, const std::wstring& text) {
 }
 
 namespace Detail {
+bool TryAccumulateSnapshotBytes(
+    SIZE_T current,
+    SIZE_T next,
+    SIZE_T limit,
+    SIZE_T* total
+) noexcept {
+    if (!total || current > limit || next > limit - current) {
+        return false;
+    }
+    *total = current + next;
+    return true;
+}
+
 bool IsClipboardEnumerationComplete(DWORD terminalError) noexcept {
     return terminalError == ERROR_SUCCESS;
 }

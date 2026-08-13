@@ -14,10 +14,6 @@ struct WindowOuterSize {
     int height;
 };
 
-inline WindowOuterSize ResolveMinimumOuterSize(WindowOuterSize creationSize) {
-    return creationSize;
-}
-
 struct LogsWindowLayout {
     InfoRect title;
     InfoRect subtitle;

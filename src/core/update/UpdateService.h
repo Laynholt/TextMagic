@@ -29,6 +29,7 @@ public:
                                      const std::wstring& entryName,
                                      std::wstring& errorMessage,
                                      std::wstring* verifiedSha256 = nullptr);
+    static int CompareVersions(const std::wstring& left, const std::wstring& right);
 
 private:
     bool DownloadReleaseAsset(const std::wstring& tag,
@@ -38,5 +39,4 @@ private:
     bool ResolveLatestReleaseTag(std::wstring& latestTag, std::wstring& errorMessage) const;
 
     static std::wstring NormalizeVersionFromTag(const std::wstring& rawTag);
-    static int CompareVersions(const std::wstring& left, const std::wstring& right);
 };

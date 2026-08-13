@@ -34,12 +34,12 @@ bool TextBridge::WaitForModifiersRelease(HWND expectedTarget, int maxAttempts) c
     return TextBridgeInputUtils::WaitForModifiersRelease(maxAttempts, operations);
 }
 
-std::wstring TextBridge::GetSelectedText() const {
-    return CopyFromActiveControl();
+std::wstring TextBridge::GetSelectedText(HWND expectedTarget) const {
+    return CopyFromActiveControl(expectedTarget);
 }
 
-bool TextBridge::SetSelectedText(const std::wstring& text) const {
-    return PasteIntoActiveControl(text);
+bool TextBridge::SetSelectedText(HWND expectedTarget, const std::wstring& text) const {
+    return PasteIntoActiveControl(expectedTarget, text);
 }
 
 bool TextBridge::ReplaceText(
@@ -47,7 +47,7 @@ bool TextBridge::ReplaceText(
     const std::wstring& oldText,
     const std::wstring& replacement
 ) const {
-    const TextBridgeInputUtils::AtomicReplacementOperations operations{
+    const TextBridgeInputUtils::ReplacementOperations operations{
         [expectedTarget]() {
             return IsTargetCurrent(expectedTarget);
         },
@@ -56,7 +56,7 @@ bool TextBridge::ReplaceText(
             if (!IsTargetCurrent(expectedTarget)
                 || deleteCount > maxCharacters
                 || text.size() > maxCharacters - deleteCount) {
-                return false;
+                return TextBridgeInputUtils::InputBatchResult::NotSent;
             }
 
             std::vector<INPUT> inputs;
@@ -98,46 +98,67 @@ bool TextBridge::ReplaceText(
             }
 
             if (inputs.empty()) {
-                return true;
+                return TextBridgeInputUtils::InputBatchResult::Complete;
             }
             const UINT inputCount = static_cast<UINT>(inputs.size());
-            return SendInput(inputCount, inputs.data(), sizeof(INPUT)) == inputCount;
+            const UINT sentCount = SendInput(inputCount, inputs.data(), sizeof(INPUT));
+            if (sentCount == inputCount) {
+                return TextBridgeInputUtils::InputBatchResult::Complete;
+            }
+            if (sentCount > 0
+                && (inputs[sentCount - 1].ki.dwFlags & KEYEVENTF_KEYUP) == 0) {
+                INPUT keyUp = inputs[sentCount - 1];
+                keyUp.ki.dwFlags |= KEYEVENTF_KEYUP;
+                SendInput(1, &keyUp, sizeof(INPUT));
+            }
+            return sentCount == 0
+                ? TextBridgeInputUtils::InputBatchResult::NotSent
+                : TextBridgeInputUtils::InputBatchResult::Partial;
+        },
+        [this, expectedTarget]() {
+            return SendCtrlShortcut(expectedTarget, 'Z');
         }
     };
-    return TextBridgeInputUtils::RunAtomicReplacement(
+    return TextBridgeInputUtils::RunRecoverableReplacement(
         oldText.size(), replacement, operations);
 }
 
-std::wstring TextBridge::CopyFromActiveControl() const {
+std::wstring TextBridge::CopyFromActiveControl(HWND expectedTarget) const {
+    if (!IsTargetCurrent(expectedTarget)) {
+        return L"";
+    }
     ClipboardUtils::Snapshot snapshot;
     if (!snapshot.IsComplete()) {
         return L"";
     }
 
-    if (!WaitForModifiersRelease()) {
+    if (!WaitForModifiersRelease(expectedTarget)) {
         return L"";
     }
 
     std::wstring copied;
-    if (TryCopyShortcut(12, 5, &copied)) {
+    if (TryCopyShortcut(expectedTarget, 12, 5, &copied)
+        && IsTargetCurrent(expectedTarget)) {
         return copied;
     }
     return L"";
 }
 
-bool TextBridge::PasteIntoActiveControl(const std::wstring& text) const {
-    const HWND target = GetForegroundWindow();
-    if (!WaitForModifiersRelease(target)) {
+bool TextBridge::PasteIntoActiveControl(HWND expectedTarget, const std::wstring& text) const {
+    if (!WaitForModifiersRelease(expectedTarget)) {
         return false;
     }
     return ReplaceText(
-        target,
+        expectedTarget,
         std::wstring(TextBridgeInputUtils::SelectionDeleteCount(text), L' '),
         text
     );
 }
 
-bool TextBridge::TryCopyShortcut(int waitAttempts, int waitSleepMs, std::wstring* copied) const {
+bool TextBridge::TryCopyShortcut(HWND expectedTarget,
+                                 int waitAttempts,
+                                 int waitSleepMs,
+                                 std::wstring* copied) const {
     if (copied) {
         copied->clear();
     }
@@ -145,7 +166,7 @@ bool TextBridge::TryCopyShortcut(int waitAttempts, int waitSleepMs, std::wstring
     const DWORD sequenceBefore = GetClipboardSequenceNumber();
     std::wstring clipboardBefore;
     const bool hadClipboardText = ClipboardUtils::ReadText(nullptr, &clipboardBefore);
-    if (!SendCtrlShortcut('C')) {
+    if (!SendCtrlShortcut(expectedTarget, 'C')) {
         return false;
     }
 
@@ -168,7 +189,10 @@ bool TextBridge::TryCopyShortcut(int waitAttempts, int waitSleepMs, std::wstring
     return true;
 }
 
-bool TextBridge::SendCtrlShortcut(WORD virtualKey) const {
+bool TextBridge::SendCtrlShortcut(HWND expectedTarget, WORD virtualKey) const {
+    if (!IsTargetCurrent(expectedTarget)) {
+        return false;
+    }
     INPUT inputs[4] = {};
 
     inputs[0].type = INPUT_KEYBOARD;
@@ -185,7 +209,8 @@ bool TextBridge::SendCtrlShortcut(WORD virtualKey) const {
     inputs[3].ki.wVk = VK_CONTROL;
     inputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
 
-    return SendInput(4, inputs, sizeof(INPUT)) == 4;
+    return SendInput(4, inputs, sizeof(INPUT)) == 4
+        && IsTargetCurrent(expectedTarget);
 }
 
 bool TextBridge::WaitForClipboardChange(DWORD initialSequence, int maxAttempts, int sleepMs) {

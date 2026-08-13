@@ -22,31 +22,6 @@ bool IsInside(const InfoRect& child, int width, int height) {
 }
 
 int main() {
-    const WindowOuterSize mainDefault{940, 620};
-    const WindowOuterSize logsDefault{900, 600};
-    const WindowOuterSize blacklistDefault{760, 560};
-    const WindowOuterSize runningPickerDefault{760, 520};
-    const WindowOuterSize messageDefault{500, 230};
-    const WindowOuterSize aboutDefault{636, 479};
-    Check(ResolveMinimumOuterSize(mainDefault).width == mainDefault.width
-              && ResolveMinimumOuterSize(mainDefault).height == mainDefault.height,
-          "main minimum uses its coded outer creation size");
-    Check(ResolveMinimumOuterSize(logsDefault).width == logsDefault.width
-              && ResolveMinimumOuterSize(logsDefault).height == logsDefault.height,
-          "logs minimum uses its coded outer creation size");
-    Check(ResolveMinimumOuterSize(blacklistDefault).width == blacklistDefault.width
-              && ResolveMinimumOuterSize(blacklistDefault).height == blacklistDefault.height,
-          "blacklist minimum uses its coded outer creation size");
-    Check(ResolveMinimumOuterSize(runningPickerDefault).width == runningPickerDefault.width
-              && ResolveMinimumOuterSize(runningPickerDefault).height == runningPickerDefault.height,
-          "running picker minimum uses its coded outer creation size");
-    Check(ResolveMinimumOuterSize(messageDefault).width == messageDefault.width
-              && ResolveMinimumOuterSize(messageDefault).height == messageDefault.height,
-          "styled message keeps its coded outer creation size as policy");
-    Check(ResolveMinimumOuterSize(aboutDefault).width == aboutDefault.width
-              && ResolveMinimumOuterSize(aboutDefault).height == aboutDefault.height,
-          "about minimum uses the outer size converted from its 620x440 client design");
-
     const LogsWindowLayout logs = CalculateLogsWindowLayout(900, 600);
     Check(logs.title.height == 32,
           "logs title reserves the main-heading height");
@@ -225,11 +200,11 @@ int main() {
           "existing list fill remains unchanged");
     constexpr DWORD baseStyle = WS_CHILD | WS_VISIBLE | WS_TABSTOP
         | WS_VSCROLL | LVS_REPORT | LVS_SHOWSELALWAYS;
-    Check(content_surface_style::ResolveApplicationTableWindowStyle() == baseStyle,
+    Check(content_surface_style::kApplicationTableWindowStyle == baseStyle,
           "blacklist and running picker use the same ListView window style");
-    Check((content_surface_style::ResolveApplicationTableWindowStyle() & LVS_SINGLESEL) == 0,
+    Check((content_surface_style::kApplicationTableWindowStyle & LVS_SINGLESEL) == 0,
           "application tables allow multiple selected rows");
-    Check(content_surface_style::ResolveApplicationTableExtendedStyle()
+    Check(content_surface_style::kApplicationTableExtendedStyle
               == (LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_HEADERDRAGDROP),
           "blacklist and running picker use the same ListView extended style");
     Check(content_surface_style::StripListViewFrameStyle(baseStyle | WS_BORDER)
@@ -265,12 +240,6 @@ int main() {
           "custom draw preserves keyboard focus indication");
     Check(content_surface_style::kTableRegionInset == 2,
           "tables expose a two-pixel rounded frame");
-    Check(content_surface_style::ResolveTableFrameOwner()
-              == content_surface_style::TableFrameOwner::ParentAfterChild,
-          "table frames remain parent-owned after child paint");
-    Check(content_surface_style::ResolveTableFramePaintMode()
-              == content_surface_style::TableFramePaintMode::StrokeOnly,
-          "table frames draw an outline without covering child content");
     Check(!content_surface_style::UsesNativeTableHeaderTheme(),
           "table headers use custom non-themed painting");
     Check(content_surface_style::kDefaultRegionInset == 1,
@@ -287,20 +256,6 @@ int main() {
         content_surface_style::kRoundedListContentPadding);
     Check(tinySurface.width == 0 && tinySurface.height == 0,
           "tiny inset surfaces clamp dimensions to zero");
-
-    using content_surface_style::ScrollbarSurface;
-    Check(content_surface_style::UsesExplorerScrollbarTheme(
-              ScrollbarSurface::BlacklistTable),
-          "blacklist table uses the existing themed dark scrollbar");
-    Check(content_surface_style::UsesExplorerScrollbarTheme(
-              ScrollbarSurface::RunningPickerTable),
-          "running picker table uses the existing themed dark scrollbar");
-    Check(content_surface_style::UsesExplorerScrollbarTheme(
-              ScrollbarSurface::LogsList),
-          "logs keep the existing themed dark scrollbar");
-    Check(content_surface_style::UsesExplorerScrollbarTheme(
-              ScrollbarSurface::GenericMessageList),
-          "generic message lists keep the existing scrollbar policy");
 
     constexpr content_surface_style::ApplicationTableColumn blacklistColumns[] = {
         {L"application_blacklist.column.application", 190},

@@ -49,6 +49,8 @@ add_definitions(-DUNICODE -D_UNICODE)
 set(SOURCES
     src/app/main.cpp
     src/app/Application.cpp
+    src/app/ArchiveFileTransaction.cpp
+    src/app/ArchiveImportPolicy.cpp
     src/app/AppUiHelpers.cpp
     src/app/FullscreenUtils.cpp
     src/app/Localization.cpp
@@ -141,213 +143,211 @@ install(TARGETS ${PROJECT_NAME}
 enable_testing()
 
 function(textmagic_add_test target)
-    add_executable(${target} ${ARGN})
+    set(multiValueArgs
+        SOURCES
+        INCLUDE_DIRS
+        LINK_LIBRARIES
+        COMPILE_DEFINITIONS
+        DEPENDENCIES
+    )
+    cmake_parse_arguments(TEST "" "" "${multiValueArgs}" ${ARGN})
+    add_executable(${target} ${TEST_SOURCES})
     target_compile_features(${target} PRIVATE cxx_std_17)
     textmagic_apply_warnings(${target})
+    if(TEST_INCLUDE_DIRS)
+        target_include_directories(${target} PRIVATE ${TEST_INCLUDE_DIRS})
+    endif()
+    if(TEST_LINK_LIBRARIES)
+        target_link_libraries(${target} PRIVATE ${TEST_LINK_LIBRARIES})
+    endif()
+    if(TEST_COMPILE_DEFINITIONS)
+        target_compile_definitions(${target} PRIVATE ${TEST_COMPILE_DEFINITIONS})
+    endif()
+    if(TEST_DEPENDENCIES)
+        add_dependencies(${target} ${TEST_DEPENDENCIES})
+    endif()
     add_test(NAME ${target} COMMAND ${target})
 endfunction()
 
 textmagic_add_test(TextMagicAppVersionTests
-    tests/AppVersionTests.cpp
-)
-
-target_include_directories(TextMagicAppVersionTests PRIVATE
-    ${CMAKE_BINARY_DIR}/generated
+    SOURCES tests/AppVersionTests.cpp
+    INCLUDE_DIRS ${CMAKE_BINARY_DIR}/generated
 )
 
 textmagic_add_test(TextMagicInputBufferTests
-    src/core/text/InputBuffer.cpp
-    tests/InputBufferTests.cpp
-)
-
-target_include_directories(TextMagicInputBufferTests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/text
+    SOURCES src/core/text/InputBuffer.cpp tests/InputBufferTests.cpp
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src/core/text
 )
 
 textmagic_add_test(TextMagicLogFileTests
-    src/core/common/EncodingUtils.cpp
-    src/core/common/LogFile.cpp
-    tests/LogFileTests.cpp
+    SOURCES
+        src/core/common/EncodingUtils.cpp
+        src/core/common/LogFile.cpp
+        tests/LogFileTests.cpp
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
 )
 
 textmagic_add_test(TextMagicFileSystemUtilsTests
-    src/core/common/FileSystemUtils.cpp
-    tests/FileSystemUtilsTests.cpp
-)
-
-target_include_directories(TextMagicFileSystemUtilsTests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
-)
-
-target_include_directories(TextMagicLogFileTests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
+    SOURCES src/core/common/FileSystemUtils.cpp tests/FileSystemUtilsTests.cpp
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
 )
 
 textmagic_add_test(TextMagicApplicationBlacklistTests
-    src/core/common/ApplicationBlacklist.cpp
-    src/core/common/EncodingUtils.cpp
-    tests/ApplicationBlacklistTests.cpp
-)
-
-target_include_directories(TextMagicApplicationBlacklistTests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
+    SOURCES
+        src/core/common/ApplicationBlacklist.cpp
+        src/core/common/EncodingUtils.cpp
+        tests/ApplicationBlacklistTests.cpp
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
 )
 
 textmagic_add_test(TextMagicRunningApplicationTests
-    src/core/common/ApplicationBlacklist.cpp
-    src/core/common/EncodingUtils.cpp
-    tests/RunningApplicationTests.cpp
-)
-
-target_include_directories(TextMagicRunningApplicationTests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/app
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
+    SOURCES
+        src/core/common/ApplicationBlacklist.cpp
+        src/core/common/EncodingUtils.cpp
+        tests/RunningApplicationTests.cpp
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
 )
 
 textmagic_add_test(TextMagicScriptExecutionGateTests
-    tests/ScriptExecutionGateTests.cpp
-)
-
-target_include_directories(TextMagicScriptExecutionGateTests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+    SOURCES tests/ScriptExecutionGateTests.cpp
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src/app
 )
 
 textmagic_add_test(TextMagicTextBridgeInputUtilsTests
-    tests/TextBridgeInputUtilsTests.cpp
-)
-
-target_include_directories(TextMagicTextBridgeInputUtilsTests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/text
+    SOURCES tests/TextBridgeInputUtilsTests.cpp
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src/core/text
 )
 
 textmagic_add_test(TextMagicFullscreenUtilsTests
-    src/app/FullscreenUtils.cpp
-    tests/FullscreenUtilsTests.cpp
+    SOURCES src/app/FullscreenUtils.cpp tests/FullscreenUtilsTests.cpp
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+    LINK_LIBRARIES dwmapi user32
 )
-
-target_include_directories(TextMagicFullscreenUtilsTests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/app
-)
-
-target_link_libraries(TextMagicFullscreenUtilsTests PRIVATE dwmapi user32)
 
 textmagic_add_test(TextMagicLocalizationTests
-    src/app/Localization.cpp
-    src/core/common/EncodingUtils.cpp
-    tests/LocalizationTests.cpp
-)
-add_dependencies(TextMagicLocalizationTests TextMagicEmbeddedLanguages)
-
-target_include_directories(TextMagicLocalizationTests PRIVATE
-    ${CMAKE_BINARY_DIR}/generated
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/app
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
+    SOURCES
+        src/app/Localization.cpp
+        src/core/common/EncodingUtils.cpp
+        tests/LocalizationTests.cpp
+    INCLUDE_DIRS
+        ${CMAKE_BINARY_DIR}/generated
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
+    DEPENDENCIES TextMagicEmbeddedLanguages
 )
 
 textmagic_add_test(TextMagicScriptRunnerTests
-    src/app/Localization.cpp
-    src/core/common/EncodingUtils.cpp
-    src/core/common/FileSystemUtils.cpp
-    src/core/scripts/ScriptManifest.cpp
-    src/core/scripts/ScriptRunner.cpp
-    tests/ScriptRunnerTests.cpp
+    SOURCES
+        src/app/Localization.cpp
+        src/core/common/EncodingUtils.cpp
+        src/core/common/FileSystemUtils.cpp
+        src/core/scripts/ScriptManifest.cpp
+        src/core/scripts/ScriptRunner.cpp
+        tests/ScriptRunnerTests.cpp
+    INCLUDE_DIRS
+        ${CMAKE_BINARY_DIR}/generated
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/core/scripts
+    COMPILE_DEFINITIONS TEXTMAGIC_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    LINK_LIBRARIES crypt32
+    DEPENDENCIES TextMagicEmbeddedLanguages
 )
-add_dependencies(TextMagicScriptRunnerTests TextMagicEmbeddedLanguages)
-
-target_include_directories(TextMagicScriptRunnerTests PRIVATE
-    ${CMAKE_BINARY_DIR}/generated
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/app
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/scripts
-)
-
-target_compile_definitions(TextMagicScriptRunnerTests PRIVATE
-    TEXTMAGIC_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
-)
-target_link_libraries(TextMagicScriptRunnerTests PRIVATE crypt32)
 
 textmagic_add_test(TextMagicClipboardUtilsTests
-    src/core/common/ClipboardUtils.cpp
-    tests/ClipboardUtilsTests.cpp
+    SOURCES src/core/common/ClipboardUtils.cpp tests/ClipboardUtilsTests.cpp
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
+    LINK_LIBRARIES ole32 user32
 )
-
-target_include_directories(TextMagicClipboardUtilsTests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
-)
-
-target_link_libraries(TextMagicClipboardUtilsTests PRIVATE ole32 user32)
 
 textmagic_add_test(TextMagicUpdateServiceTests
-    src/app/Localization.cpp
-    src/core/common/EncodingUtils.cpp
-    src/core/common/PowerShellUtils.cpp
-    src/core/update/UpdateService.cpp
-    tests/UpdateServiceTests.cpp
+    SOURCES
+        src/app/Localization.cpp
+        src/core/common/EncodingUtils.cpp
+        src/core/common/PowerShellUtils.cpp
+        src/core/update/UpdateService.cpp
+        tests/UpdateServiceTests.cpp
+    INCLUDE_DIRS
+        ${CMAKE_BINARY_DIR}/generated
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/core/update
+    LINK_LIBRARIES bcrypt winhttp
+    DEPENDENCIES TextMagicEmbeddedLanguages
 )
-add_dependencies(TextMagicUpdateServiceTests TextMagicEmbeddedLanguages)
-
-target_include_directories(TextMagicUpdateServiceTests PRIVATE
-    ${CMAKE_BINARY_DIR}/generated
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/app
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/update
-)
-
-target_link_libraries(TextMagicUpdateServiceTests PRIVATE bcrypt winhttp)
 
 textmagic_add_test(TextMagicScriptManifestTests
-    src/app/Localization.cpp
-    src/core/common/EncodingUtils.cpp
-    src/core/scripts/ScriptManifest.cpp
-    tests/ScriptManifestTests.cpp
-)
-add_dependencies(TextMagicScriptManifestTests TextMagicEmbeddedLanguages)
-
-target_include_directories(TextMagicScriptManifestTests PRIVATE
-    ${CMAKE_BINARY_DIR}/generated
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/app
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/scripts
+    SOURCES
+        src/app/Localization.cpp
+        src/core/common/EncodingUtils.cpp
+        src/core/scripts/ScriptManifest.cpp
+        tests/ScriptManifestTests.cpp
+    INCLUDE_DIRS
+        ${CMAKE_BINARY_DIR}/generated
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/core/scripts
+    DEPENDENCIES TextMagicEmbeddedLanguages
 )
 
 textmagic_add_test(TextMagicPopupMenuNavigationTests
-    tests/PopupMenuNavigationTests.cpp
-)
-
-target_include_directories(TextMagicPopupMenuNavigationTests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/app
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/ui
+    SOURCES tests/PopupMenuNavigationTests.cpp
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/ui
 )
 
 textmagic_add_test(TextMagicOutputLayoutTests
-    tests/OutputLayoutTests.cpp
+    SOURCES tests/OutputLayoutTests.cpp
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src/app
 )
 
-target_include_directories(TextMagicOutputLayoutTests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+textmagic_add_test(TextMagicApplicationInfrastructureTests
+    SOURCES tests/ApplicationInfrastructureTests.cpp
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+)
+
+textmagic_add_test(TextMagicArchiveFileTransactionTests
+    SOURCES
+        src/app/ArchiveFileTransaction.cpp
+        tests/ArchiveFileTransactionTests.cpp
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+)
+
+textmagic_add_test(TextMagicArchiveImportPolicyTests
+    SOURCES
+        src/app/ArchiveImportPolicy.cpp
+        src/app/Localization.cpp
+        src/core/common/EncodingUtils.cpp
+        src/core/common/FileSystemUtils.cpp
+        src/core/common/PowerShellUtils.cpp
+        src/core/scripts/ScriptManifest.cpp
+        src/core/scripts/ScriptRunner.cpp
+        tests/ArchiveImportPolicyTests.cpp
+    INCLUDE_DIRS
+        ${CMAKE_BINARY_DIR}/generated
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/core/scripts
+    LINK_LIBRARIES crypt32
+    DEPENDENCIES TextMagicEmbeddedLanguages
 )
 
 textmagic_add_test(TextMagicModifierGestureResolverTests
-    tests/ModifierGestureResolverTests.cpp
-)
-
-target_include_directories(TextMagicModifierGestureResolverTests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/app
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/scripts
+    SOURCES tests/ModifierGestureResolverTests.cpp
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/core/scripts
 )
 
 textmagic_add_test(TextMagicInfoWindowModelTests
-    tests/InfoWindowModelTests.cpp
-)
-
-target_include_directories(TextMagicInfoWindowModelTests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+    SOURCES tests/InfoWindowModelTests.cpp
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src/app
 )
 
 textmagic_add_test(TextMagicInfoWindowLayoutTests
-    tests/InfoWindowLayoutTests.cpp
-)
-
-target_include_directories(TextMagicInfoWindowLayoutTests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+    SOURCES tests/InfoWindowLayoutTests.cpp
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src/app
 )

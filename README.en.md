@@ -4,6 +4,25 @@
 
 TextMagic is a Windows application that processes text in the active input field using global hotkeys. Its functionality can be extended with `.tmscript` files, so scripts can be added or changed without recompiling the application.
 
+## Build
+
+Requires Windows x64, Microsoft Build Tools 2026 with the C++ workload and
+Windows SDK, and CMake 4.2 or newer for the Visual Studio 18 2026 generator.
+The Visual Studio IDE is not required.
+
+```powershell
+cmake -S . -B build -G "Visual Studio 18 2026" -A x64 -T v145
+cmake --build build --config Release --parallel 2
+ctest --test-dir build -C Release --output-on-failure
+```
+
+The executable is `build\bin\Release\TextMagic.exe`. Release x64 was rebuilt
+with MSVC 19.51.36260, Windows SDK 10.0.26100.0, and CMake 4.4.4.
+If `build` was configured with another generator, add `--fresh` to the configure
+command. The MSVC runtime is linked statically (`/MT`), so this build does not
+need a separate Visual C++ Redistributable.
+Scripts use the Windows PowerShell supplied with Windows.
+
 ## Included scripts
 
 | Script | Hotkey | Purpose |

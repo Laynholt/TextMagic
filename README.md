@@ -4,6 +4,25 @@
 
 TextMagic — приложение для Windows, которое обрабатывает текст в активном поле ввода по глобальным горячим клавишам. Возможности приложения расширяются с помощью файлов `.tmscript`, поэтому для добавления и изменения сценариев не требуется перекомпиляция.
 
+## Сборка
+
+Нужны Windows x64, Microsoft Build Tools 2026 с компонентами C++ и Windows SDK,
+а также CMake 4.2 или новее для генератора Visual Studio 18 2026.
+Среда Visual Studio IDE не требуется.
+
+```powershell
+cmake -S . -B build -G "Visual Studio 18 2026" -A x64 -T v145
+cmake --build build --config Release --parallel 2
+ctest --test-dir build -C Release --output-on-failure
+```
+
+Исполняемый файл: `build\bin\Release\TextMagic.exe`. Сборка Release x64 проверена
+с MSVC 19.51.36260, Windows SDK 10.0.26100.0 и CMake 4.4.4.
+Если папка `build` ранее использовала другой генератор, добавьте `--fresh`
+к команде конфигурации. Библиотеки MSVC связаны статически (`/MT`), поэтому
+отдельный Visual C++ Redistributable для этой сборки не нужен.
+Для выполнения сценариев используется встроенный в Windows Windows PowerShell.
+
 ## Встроенные сценарии
 
 | Сценарий | Горячая клавиша | Назначение |

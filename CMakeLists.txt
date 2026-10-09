@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 project(TextMagic
     VERSION 1.1.0
     DESCRIPTION "Global text transformer host for Windows hotkey scripts"

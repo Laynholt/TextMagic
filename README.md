@@ -19,8 +19,9 @@ ctest --test-dir build -C Release --output-on-failure
 Исполняемый файл: `build\bin\Release\TextMagic.exe`. Сборка Release x64 проверена
 с MSVC 19.51.36260, Windows SDK 10.0.26100.0 и CMake 4.4.4.
 Если папка `build` ранее использовала другой генератор, добавьте `--fresh`
-к команде конфигурации. Библиотеки MSVC связаны статически (`/MT`), поэтому
-отдельный Visual C++ Redistributable для этой сборки не нужен.
+к команде конфигурации. Библиотеки MSVC подключаются динамически (`/MD` в Release).
+Для запуска нужен актуальный [Microsoft Visual C++ Redistributable x64](https://aka.ms/vc14/vc_redist.x64.exe).
+Если пакет отсутствует или устарел, установите или обновите его. Visual Studio для запуска не требуется.
 Для выполнения сценариев используется встроенный в Windows Windows PowerShell.
 
 ## Встроенные сценарии

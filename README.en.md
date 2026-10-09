@@ -19,8 +19,9 @@ ctest --test-dir build -C Release --output-on-failure
 The executable is `build\bin\Release\TextMagic.exe`. Release x64 was rebuilt
 with MSVC 19.51.36260, Windows SDK 10.0.26100.0, and CMake 4.4.4.
 If `build` was configured with another generator, add `--fresh` to the configure
-command. The MSVC runtime is linked statically (`/MT`), so this build does not
-need a separate Visual C++ Redistributable.
+command. The MSVC runtime is linked dynamically (`/MD` in Release).
+The latest [Microsoft Visual C++ Redistributable x64](https://aka.ms/vc14/vc_redist.x64.exe) is required to run the application.
+Install or update the package if it is missing or outdated. The Visual Studio IDE is not required at runtime.
 Scripts use the Windows PowerShell supplied with Windows.
 
 ## Included scripts

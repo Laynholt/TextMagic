@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 
 project(TextMagic
     VERSION 1.1.0
